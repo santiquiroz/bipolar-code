@@ -15,6 +15,8 @@ api.interceptors.response.use(
 export const proxyApi = {
   getStatus: () => api.get<{ running: boolean; port: number; active_provider_id: string; healthy_models: number; unhealthy_models: number }>('/proxy/status').then(r => r.data),
   start: () => api.post<{ started: boolean; provider: string }>('/proxy/start').then(r => r.data),
+  getRoute: () => api.get<{ mode: string; litellm_running: boolean; proxy_status: any }>('/proxy/route').then(r => r.data),
+  setRoute: (mode: 'direct' | 'proxy') => api.post('/proxy/route', { mode }).then(r => r.data),
 }
 
 export const providersApi = {

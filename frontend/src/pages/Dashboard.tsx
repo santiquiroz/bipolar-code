@@ -5,6 +5,7 @@ import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
 import { ModelPicker } from '@/components/ModelPicker'
 import { useProxyStatus, useStartProxy } from '@/hooks/useProxy'
+import { useProxyRoute } from '@/hooks/useProxyRoute'
 import { useProviders, useSwitchProvider } from '@/hooks/useProviders'
 import { useLogStats } from '@/hooks/useUsage'
 
@@ -15,6 +16,7 @@ export function Dashboard() {
   const switchProvider = useSwitchProvider()
   const startProxy = useStartProxy()
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
+  const { route, setRoute } = useProxyRoute()
 
   const totalRequests = logStats.reduce((s, r) => s + r.requests_count, 0)
   const totalCost = logStats.reduce((s, r) => s + (r.estimated_cost_usd ?? 0), 0)
@@ -133,6 +135,37 @@ export function Dashboard() {
             )}
           </>
         )}
+      </Card>
+
+      {/* Claude routing (new) */}
+      <Card title="Claude routing">
+        {route?.isLoading ? (
+          <div className="flex items-center gap-2">
+            <Spinner className="h-4 w-4 text-brand-500" />
+            <span className="text-xs text-gray-400">Cargando…</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <button
+                className={`px-2 py-1 rounded ${route?.data?.mode === 'direct' ? 'bg-gray-100' : 'bg-white'}`}
+                onClick={() => setRoute.mutate('direct')}
+                disabled={setRoute.isPending}
+              >
+                Direct
+              </button>
+              <button
+                className={`px-2 py-1 rounded ${route?.data?.mode === 'proxy' ? 'bg-brand-50 border-brand-400' : 'bg-white'}`}
+                onClick={() => setRoute.mutate('proxy')}
+                disabled={setRoute.isPending || !status?.running}
+              >
+                Via LiteLLM
+              </button>
+            </div>
+            <span className="text-xs text-gray-500">{route?.data?.mode === 'proxy' ? 'Routing via LiteLLM' : 'Direct Claude'}</span>
+          </div>
+        )}
+        {setRoute.isError && <p className="text-xs text-red-500 mt-2">Error aplicando el modo</p>}
       </Card>
 
       {/* Stats */}
