@@ -100,6 +100,25 @@ def create_app() -> FastAPI:
         log.info("health_check")
         return {"status": "ok", "version": "0.2.0"}
 
+    # Servir frontend compilado si existe (producción / binario PyInstaller)
+    import pathlib
+    dist_dir = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
+    if dist_dir.exists():
+        from fastapi.staticfiles import StaticFiles
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        class SPAStaticFiles(StaticFiles):
+            """StaticFiles con fallback SPA: cualquier 404 devuelve index.html."""
+            async def get_response(self, path: str, scope):
+                try:
+                    return await super().get_response(path, scope)
+                except StarletteHTTPException as ex:
+                    if ex.status_code == 404:
+                        return await super().get_response("index.html", scope)
+                    raise
+
+        app.mount("/", SPAStaticFiles(directory=str(dist_dir), html=True), name="spa")
+
     log.info("app_created", env=settings.env)
     return app
 
