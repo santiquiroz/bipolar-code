@@ -1,6 +1,5 @@
 import { Card } from '@/components/Card'
 import { Badge } from '@/components/Badge'
-import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
 import { useProxyStatus, useSwitchBackend } from '@/hooks/useProxy'
 import { useActiveModels } from '@/hooks/useModels'
