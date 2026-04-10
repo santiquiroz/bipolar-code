@@ -3,7 +3,7 @@ import re
 from typing import List
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.models.schemas import UsageStats, BackendType
+from app.models.schemas import UsageStats
 
 log = get_logger(__name__)
 
@@ -21,7 +21,7 @@ async def get_anthropic_usage() -> List[UsageStats]:
     key = settings.anthropic_api_key or settings.anthropic_real_api_key
     if not key:
         log.warning("anthropic_key_missing_for_usage")
-        return [UsageStats(backend=BackendType.claude, model="all", note="No API key configured", requests_count=0)]
+        return [UsageStats(provider_id="anthropic", model="all", note="No API key configured", requests_count=0)]
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -32,7 +32,7 @@ async def get_anthropic_usage() -> List[UsageStats]:
             if resp.status_code == 404:
                 # Usage endpoint may not exist — return placeholder
                 log.info("anthropic_usage_endpoint_unavailable")
-                return [UsageStats(backend=BackendType.claude, model="all",
+                return [UsageStats(provider_id="anthropic", model="all",
                                    note="Usage API not available on this plan", requests_count=0)]
             resp.raise_for_status()
             data = resp.json()
@@ -40,7 +40,7 @@ async def get_anthropic_usage() -> List[UsageStats]:
             return _parse_anthropic_usage(data)
     except Exception as e:
         log.error("anthropic_usage_error", error=str(e))
-        return [UsageStats(backend=BackendType.claude, model="all", note=str(e), requests_count=0)]
+        return [UsageStats(provider_id="anthropic", model="all", note=str(e), requests_count=0)]
 
 
 async def get_proxy_log_stats() -> List[UsageStats]:
@@ -77,7 +77,7 @@ async def get_proxy_log_stats() -> List[UsageStats]:
                     (s["output"] / 1_000_000) * pricing["output"], 6
                 )
             result.append(UsageStats(
-                backend=BackendType.claude,
+                provider_id="anthropic",
                 model=model,
                 input_tokens=s["input"] or None,
                 output_tokens=s["output"] or None,
@@ -103,7 +103,7 @@ def _parse_anthropic_usage(data: dict) -> List[UsageStats]:
         if pricing:
             cost = round((input_t / 1_000_000) * pricing["input"] + (output_t / 1_000_000) * pricing["output"], 6)
         result.append(UsageStats(
-            backend=BackendType.claude,
+            provider_id="anthropic",
             model=model,
             input_tokens=input_t,
             output_tokens=output_t,

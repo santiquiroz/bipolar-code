@@ -17,24 +17,3 @@ export function useSetEnvKey() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['settings', 'env'] }),
   })
 }
-
-export function useCopilotActiveModel() {
-  return useQuery({
-    queryKey: ['settings', 'copilot-model'],
-    queryFn: settingsApi.getCopilotActiveModel,
-    staleTime: 10_000,
-  })
-}
-
-export function useSetCopilotModel() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (model_id: string) => settingsApi.setCopilotModel(model_id),
-    onSuccess: () => {
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ['settings', 'copilot-model'] })
-        qc.invalidateQueries({ queryKey: ['proxy'] })
-      }, 3000)
-    },
-  })
-}

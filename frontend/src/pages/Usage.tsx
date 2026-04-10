@@ -17,7 +17,7 @@ function TokenBar({ used, label }: { used: number; label: string }) {
           style={{ width: `${Math.min((used / 1_000_000) * 100, 100)}%` }}
         />
       </div>
-      <p className="text-xs text-gray-400 mt-0.5">of 1M shown</p>
+      <p className="text-xs text-gray-400 mt-0.5">de 1M mostrado</p>
     </div>
   )
 }
@@ -28,14 +28,14 @@ export function Usage() {
 
   return (
     <div className="space-y-6">
-      <Card title="Anthropic API Usage">
+      <Card title="Uso Anthropic API">
         {anthropic.isLoading ? <Spinner className="h-5 w-5 text-brand-500" /> : (
           <div className="space-y-4">
             {anthropic.data?.map((u, i) => (
               <div key={i} className="p-4 rounded-xl bg-gray-50 space-y-3">
                 <div className="flex items-center gap-2">
                   <p className="font-medium text-sm text-gray-800">{u.model}</p>
-                  <Badge label={u.backend} variant="info" />
+                  <Badge label={u.provider_id} variant="info" />
                 </div>
                 {u.note ? (
                   <p className="text-xs text-gray-400">{u.note}</p>
@@ -45,7 +45,7 @@ export function Usage() {
                     {u.output_tokens != null && <TokenBar used={u.output_tokens} label="Output tokens" />}
                     {u.estimated_cost_usd != null && (
                       <p className="text-sm font-semibold text-emerald-600">
-                        Estimated cost: ${u.estimated_cost_usd.toFixed(6)}
+                        Costo estimado: ${u.estimated_cost_usd.toFixed(6)}
                       </p>
                     )}
                   </>
@@ -55,20 +55,20 @@ export function Usage() {
           </div>
         )}
         <Button variant="secondary" size="sm" className="mt-4" onClick={() => anthropic.refetch()}>
-          Refresh
+          Actualizar
         </Button>
       </Card>
 
-      <Card title="Usage from proxy logs">
+      <Card title="Uso desde logs del proxy">
         {logs.isLoading ? <Spinner className="h-5 w-5 text-brand-500" /> : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-400 border-b border-gray-100">
-                <th className="pb-2">Model</th>
+                <th className="pb-2">Modelo</th>
                 <th className="pb-2">Requests</th>
-                <th className="pb-2">Input tokens</th>
-                <th className="pb-2">Output tokens</th>
-                <th className="pb-2">Est. cost</th>
+                <th className="pb-2">Tokens entrada</th>
+                <th className="pb-2">Tokens salida</th>
+                <th className="pb-2">Costo est.</th>
               </tr>
             </thead>
             <tbody>
@@ -84,13 +84,13 @@ export function Usage() {
                 </tr>
               ))}
               {logs.data?.length === 0 && (
-                <tr><td colSpan={5} className="py-4 text-center text-gray-400">No log data found</td></tr>
+                <tr><td colSpan={5} className="py-4 text-center text-gray-400">Sin datos de log</td></tr>
               )}
             </tbody>
           </table>
         )}
         <Button variant="secondary" size="sm" className="mt-4" onClick={() => logs.refetch()}>
-          Refresh
+          Actualizar
         </Button>
       </Card>
     </div>

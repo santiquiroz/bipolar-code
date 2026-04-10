@@ -1,5 +1,4 @@
 from app.services.usage_service import _parse_anthropic_usage, ANTHROPIC_PRICING
-from app.models.schemas import BackendType
 
 
 def test_parse_anthropic_usage_basic():

@@ -1,26 +1,21 @@
-from app.services.proxy_service import _detect_backend, BACKEND_CONFIGS
-from app.models.schemas import BackendType
+import pytest
+from unittest.mock import patch, AsyncMock
+from app.services import proxy_service
 
 
-def test_detect_backend_copilot():
-    health = {"healthy_endpoints": [{"api_base": "https://api.business.githubcopilot.com"}]}
-    assert _detect_backend(health) == BackendType.copilot
+@pytest.mark.asyncio
+async def test_get_proxy_status_running():
+    mock_health = {"healthy_count": 2, "unhealthy_count": 0, "healthy_endpoints": []}
+    with patch("app.services.proxy_service.get_proxy_health", AsyncMock(return_value=mock_health)):
+        with patch("app.services.providers_service.detect_active_provider_from_health", return_value="copilot"):
+            status = await proxy_service.get_proxy_status()
+    assert status["running"] is True
+    assert status["healthy_models"] == 2
 
 
-def test_detect_backend_claude():
-    health = {"healthy_endpoints": [{"api_base": "https://api.anthropic.com"}]}
-    assert _detect_backend(health) == BackendType.claude
-
-
-def test_detect_backend_gemma():
-    health = {"healthy_endpoints": [{"api_base": "http://localhost:1234/v1"}]}
-    assert _detect_backend(health) == BackendType.gemma
-
-
-def test_detect_backend_empty():
-    assert _detect_backend({}) == BackendType.copilot
-
-
-def test_backend_configs_complete():
-    for backend in [BackendType.copilot, BackendType.claude, BackendType.gemma]:
-        assert backend in BACKEND_CONFIGS
+@pytest.mark.asyncio
+async def test_get_proxy_status_unreachable():
+    with patch("app.services.proxy_service.get_proxy_health", AsyncMock(return_value={})):
+        with patch("app.services.providers_service.detect_active_provider_from_health", return_value="copilot"):
+            status = await proxy_service.get_proxy_status()
+    assert status["running"] is False

@@ -1,10 +1,11 @@
 import { NavLink, Outlet } from 'react-router-dom'
 
 const NAV = [
-  { to: '/',          label: 'Dashboard',  icon: '⬡' },
-  { to: '/models',    label: 'Models',     icon: '◈' },
-  { to: '/usage',     label: 'Usage',      icon: '◎' },
-  { to: '/settings',  label: 'Settings',   icon: '◧' },
+  { to: '/',           label: 'Dashboard',  icon: '⬡' },
+  { to: '/providers',  label: 'Providers',  icon: '◈' },
+  { to: '/models',     label: 'Models',     icon: '▣' },
+  { to: '/usage',      label: 'Usage',      icon: '◎' },
+  { to: '/settings',   label: 'Settings',   icon: '◧' },
 ]
 
 export function Layout() {

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import proxy, models, usage
 from app.api import settings as settings_router
+from app.api import providers as providers_router
 from app.core.logging import setup_logging, get_logger
 from app.core.config import get_settings
 
@@ -15,7 +16,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Bipolar Code",
         description="LiteLLM Proxy Manager API",
-        version="0.1.0",
+        version="0.2.0",
     )
 
     app.add_middleware(
@@ -30,11 +31,12 @@ def create_app() -> FastAPI:
     app.include_router(models.router, prefix="/api")
     app.include_router(usage.router, prefix="/api")
     app.include_router(settings_router.router, prefix="/api")
+    app.include_router(providers_router.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():
         log.info("health_check")
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": "0.2.0"}
 
     log.info("app_created", env=settings.env)
     return app

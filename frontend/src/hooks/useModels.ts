@@ -8,19 +8,3 @@ export function useActiveModels() {
     refetchInterval: 15_000,
   })
 }
-
-export function useCopilotModels() {
-  return useQuery({
-    queryKey: ['models', 'copilot'],
-    queryFn: modelsApi.getCopilot,
-    staleTime: 60_000,
-  })
-}
-
-export function useGitHubModels() {
-  return useQuery({
-    queryKey: ['models', 'github'],
-    queryFn: modelsApi.getGitHub,
-    staleTime: 60_000,
-  })
-}
