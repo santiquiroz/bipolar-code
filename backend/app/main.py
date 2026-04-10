@@ -101,8 +101,14 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": "0.2.0"}
 
     # Servir frontend compilado si existe (producción / binario PyInstaller)
+    import sys
     import pathlib
-    dist_dir = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
+    if getattr(sys, "frozen", False):
+        # Ejecutable PyInstaller: los assets están en sys._MEIPASS
+        dist_dir = pathlib.Path(sys._MEIPASS) / "frontend" / "dist"
+    else:
+        # Dev: buscar relative al archivo fuente
+        dist_dir = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if dist_dir.exists():
         from fastapi.staticfiles import StaticFiles
         from starlette.exceptions import HTTPException as StarletteHTTPException
