@@ -1,41 +1,41 @@
 # Bipolar Code
 
-Web UI for managing a [LiteLLM](https://github.com/BerriAI/litellm) proxy — switch backends, browse available models, and monitor usage from a single dashboard.
+Web UI para gestionar un proxy [LiteLLM](https://github.com/BerriAI/litellm) — cambia backends, explora modelos disponibles, monitorea uso y enruta Claude Code a través del proxy con un clic.
 
-## Stack
+## Quick Start (ejecutable)
 
-- **Frontend**: React 18 + Vite + TypeScript + Tailwind CSS + TanStack Query
-- **Backend**: Python FastAPI + structlog + httpx + pydantic-settings
+1. Descarga el ejecutable de la [página de Releases](../../releases) para tu plataforma:
+   - `bipolar-code-windows.exe` — Windows
+   - `bipolar-code-linux` — Linux
+   - `bipolar-code-macos` — macOS
 
-## Features
+2. Crea el directorio de configuración:
+   - Windows: `C:\litellm\`
+   - Linux/macOS: `~/.litellm/`
 
-- Live proxy health status and active backend indicator
-- One-click backend switching (Copilot / Claude / Gemma)
-- Browse all models available on GitHub Copilot and GitHub Models
-- Token usage and estimated cost from Anthropic API and local proxy logs
-- Structured JSON logging throughout the backend for easy debugging
+3. Copia [`backend/.env.example`](backend/.env.example) a ese directorio como `.env` y rellena tus API keys.
 
-## Project structure
+4. Instala `litellm` y verifica que está en el PATH:
+   ```bash
+   pip install litellm
+   litellm --version
+   ```
 
-```
-bipolar-code/
-├── backend/
-│   ├── app/
-│   │   ├── api/          # FastAPI routers
-│   │   ├── services/     # Business logic (proxy, copilot, models, usage)
-│   │   ├── models/       # Pydantic schemas
-│   │   └── core/         # Config, logging
-│   └── tests/
-└── frontend/
-    └── src/
-        ├── components/   # Atomic UI (Card, Badge, Button, Layout)
-        ├── hooks/        # useProxy, useModels, useUsage
-        ├── pages/        # Dashboard, Models, Usage
-        ├── services/     # Axios API client
-        └── types/        # Shared TypeScript types
-```
+5. Ejecuta el binario:
+   - Windows: doble clic en `bipolar-code-windows.exe`
+   - Linux/macOS: `chmod +x bipolar-code-linux && ./bipolar-code-linux`
 
-## Setup
+6. Abre [http://localhost:8000](http://localhost:8000)
+
+---
+
+## Dev Setup (código fuente)
+
+### Requisitos
+
+- Python 3.11+
+- Node 20+
+- `litellm` instalado y en PATH (`pip install litellm`)
 
 ### Backend
 
@@ -45,7 +45,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend
+### Frontend (dev)
 
 ```bash
 cd frontend
@@ -54,16 +54,43 @@ npm run dev        # http://localhost:5173
 npm test           # vitest
 ```
 
-### Backend tests
+### Tests backend
 
 ```bash
 cd backend
 pytest
 ```
 
-## Environment
+---
 
-The backend reads `C:/litellm/.env` automatically. No extra configuration needed if the proxy is already set up.
+## Configuración
+
+El backend lee el archivo `.env` desde el directorio de configuración:
+
+| Plataforma | Ruta por defecto |
+|---|---|
+| Windows | `C:\litellm\.env` |
+| Linux/macOS | `~/.litellm\.env` |
+
+Puede sobreridarse con la variable de entorno `LITELLM_CONFIG_DIR`.
+
+Ver [`backend/.env.example`](backend/.env.example) para todas las variables disponibles.
+
+---
+
+## Stack
+
+- **Frontend**: React 18 + Vite + TypeScript + Tailwind CSS + TanStack Query
+- **Backend**: Python FastAPI + structlog + httpx + pydantic-settings
+
+## Features
+
+- Estado del proxy en tiempo real con indicador de backend activo
+- Cambio de proveedor con un clic (Copilot / Claude / LM Studio / cualquier OpenAI-compatible)
+- Chat con streaming y soporte de visión (imágenes)
+- Auto-refresco del token de GitHub Copilot en background
+- Enrutamiento de Claude Code: cambia entre Anthropic directo y LiteLLM proxy
+- Logs de uso y costo estimado
 
 ## License
 
