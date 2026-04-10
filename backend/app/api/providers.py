@@ -1,5 +1,5 @@
-import httpx
 import os
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -191,48 +191,10 @@ async def refresh_provider_token(provider_id: str):
     log.info("request_refresh_token", provider=provider_id)
 
     if provider_id == "copilot":
-        settings = get_settings()
-        oauth_token = os.environ.get("GITHUB_OAUTH_TOKEN", "") or settings.github_oauth_token
-        if not oauth_token:
-            raise HTTPException(status_code=400, detail="GITHUB_OAUTH_TOKEN no configurado")
-
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    "https://api.github.com/copilot_internal/v2/token",
-                    headers={
-                        "Authorization": f"Bearer {oauth_token}",
-                        "Editor-Version": "vscode/1.85.0",
-                        "Editor-Plugin-Version": "copilot-chat/0.22.0",
-                        "User-Agent": "GithubCopilot/1.138.0",
-                    }
-                )
-            resp.raise_for_status()
-            data = resp.json()
-            new_token = data.get("token", "")
-            if not new_token:
-                raise HTTPException(status_code=502, detail=f"GitHub no devolvió token: {data}")
-
-            # Actualizar .env en disco
-            env_path = providers_service._config_dir() / ".env"
-            lines = [l for l in env_path.read_text(encoding="utf-8").splitlines()
-                     if not l.startswith("COPILOT_SESSION_TOKEN")]
-            lines.append(f"COPILOT_SESSION_TOKEN={new_token}")
-            env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-            # Actualizar env del proceso actual para que el próximo start_litellm lo use
-            os.environ["COPILOT_SESSION_TOKEN"] = new_token
-
-            # Limpiar caché de settings
-            from app.core.config import get_settings as _gs
-            _gs.cache_clear()
-
-            log.info("copilot_token_refreshed", token_length=len(new_token))
-            return {"refreshed": True, "token_length": len(new_token)}
-
-        except httpx.HTTPStatusError as e:
-            log.error("copilot_token_http_error", status=e.response.status_code)
-            raise HTTPException(status_code=502, detail=f"Error de GitHub ({e.response.status_code})")
+            return await providers_service.refresh_copilot_token()
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             log.error("copilot_token_error", error=str(e))
             raise HTTPException(status_code=500, detail=str(e))

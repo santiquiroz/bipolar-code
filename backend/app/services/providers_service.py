@@ -145,6 +145,10 @@ def generate_litellm_config(provider: Provider) -> Path:
     }
     if provider.auth_env_var:
         entry_base["api_key"] = f"os.environ/{provider.auth_env_var}"
+    elif provider.litellm_prefix == "openai":
+        # Servidores OpenAI-compatible locales (LM Studio, Ollama) necesitan
+        # algún valor en api_key o litellm lanza AuthenticationError
+        entry_base["api_key"] = "lm-studio"
     if provider.extra_headers:
         entry_base["extra_headers"] = provider.extra_headers
 
@@ -216,6 +220,55 @@ def _kill_litellm() -> None:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     log.info("litellm_kill_done", killed=killed)
+
+
+async def refresh_copilot_token() -> dict:
+    """Refresca el token de sesión de Copilot llamando a la GitHub Copilot token API."""
+    import httpx, os
+    settings = get_settings()
+    oauth_token = os.environ.get("GITHUB_OAUTH_TOKEN", "") or settings.github_oauth_token
+    if not oauth_token:
+        raise ValueError("GITHUB_OAUTH_TOKEN no configurado")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            "https://api.github.com/copilot_internal/v2/token",
+            headers={
+                "Authorization": f"Bearer {oauth_token}",
+                "Editor-Version": "vscode/1.85.0",
+                "Editor-Plugin-Version": "copilot-chat/0.22.0",
+                "User-Agent": "GithubCopilot/1.138.0",
+            }
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    new_token = data.get("token", "")
+    if not new_token:
+        raise ValueError(f"GitHub no devolvió token: {data}")
+
+    env_path = _config_dir() / ".env"
+    lines = [l for l in env_path.read_text(encoding="utf-8").splitlines()
+             if not l.startswith("COPILOT_SESSION_TOKEN")]
+    lines.append(f"COPILOT_SESSION_TOKEN={new_token}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    import os as _os
+    _os.environ["COPILOT_SESSION_TOKEN"] = new_token
+    from app.core.config import get_settings as _gs
+    _gs.cache_clear()
+
+    # Reiniciar litellm para que tome el nuevo token (solo si copilot está activo)
+    registry = load_registry()
+    if registry.active_provider_id == "copilot":
+        provider = get_provider("copilot")
+        if provider:
+            config_path = generate_litellm_config(provider)
+            _kill_litellm()
+            _start_litellm(config_path)
+            log.info("litellm_restarted_with_fresh_copilot_token")
+
+    log.info("copilot_token_refreshed", token_length=len(new_token))
+    return {"refreshed": True, "token_length": len(new_token)}
 
 
 def _start_litellm(config_path: Path) -> None:
