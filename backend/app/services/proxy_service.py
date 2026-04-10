@@ -62,49 +62,52 @@ async def set_route_mode(new_mode: str) -> None:
         log.info('route_mode_changed', mode=new_mode)
 
 def _set_user_env(key: str, value: str | None) -> None:
-    """Escribe o borra una variable de entorno en:
-    1. HKCU\\Environment (registry de usuario)
-    2. ~/.claude/settings.json sección 'env' (leída directamente por Claude Code)
+    """Escribe o borra una variable de entorno persistente para Claude Code.
+
+    Windows: HKCU\\Environment (registry) + WM_SETTINGCHANGE broadcast
+    Todas las plataformas: ~/.claude/settings.json sección 'env'
     """
-    import winreg
-    import ctypes
+    import sys
     import json
 
-    # 1. Registry
-    reg_key = winreg.OpenKey(
-        winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE
-    )
-    try:
-        if value is None:
-            try:
-                winreg.DeleteValue(reg_key, key)
-            except FileNotFoundError:
-                pass
-        else:
-            winreg.SetValueEx(reg_key, key, 0, winreg.REG_EXPAND_SZ, value)
-    finally:
-        winreg.CloseKey(reg_key)
+    # --- Windows: registry ---
+    if sys.platform == "win32":
+        import winreg
+        import ctypes
+        reg_key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE
+        )
+        try:
+            if value is None:
+                try:
+                    winreg.DeleteValue(reg_key, key)
+                except FileNotFoundError:
+                    pass
+            else:
+                winreg.SetValueEx(reg_key, key, 0, winreg.REG_EXPAND_SZ, value)
+        finally:
+            winreg.CloseKey(reg_key)
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", 2, 5000, None
+        )
 
-    # Broadcast para que Explorer actualice su entorno
-    HWND_BROADCAST = 0xFFFF
-    WM_SETTINGCHANGE = 0x001A
-    ctypes.windll.user32.SendMessageTimeoutW(
-        HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", 2, 5000, None
-    )
-
-    # 2. ~/.claude/settings.json — Claude Code lo lee al arrancar
+    # --- Todas las plataformas: ~/.claude/settings.json ---
     settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
     try:
         with open(settings_path, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-        env_section = settings.setdefault("env", {})
+            claude_settings = json.load(f)
+        env_section = claude_settings.setdefault("env", {})
         if value is None:
             env_section.pop(key, None)
         else:
             env_section[key] = value
         with open(settings_path, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
+            json.dump(claude_settings, f, indent=2)
         log.info("claude_settings_env_written", key=key, has_value=value is not None)
+    except FileNotFoundError:
+        log.debug("claude_settings_not_found", path=settings_path)
     except Exception as e:
         log.warning("claude_settings_env_failed", key=key, error=str(e))
 
