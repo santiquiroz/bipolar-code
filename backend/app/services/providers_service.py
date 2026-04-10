@@ -220,10 +220,55 @@ def _kill_litellm() -> None:
 
 def _start_litellm(config_path: Path) -> None:
     settings = get_settings()
-    script = str(Path(settings.litellm_config_dir) / "start-litellm.ps1")
+    env_path = Path(settings.litellm_config_dir) / ".env"
+
+    # Cargar variables del .env en el entorno del nuevo proceso
+    import os, copy
+    child_env = copy.copy(os.environ)
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    child_env["PYTHONUTF8"] = "1"
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            child_env[k.strip()] = v.strip()
+    except Exception as e:
+        log.warning("env_load_warning", error=str(e))
+
+    import sys, shutil
+    litellm_exe = shutil.which("litellm") or str(Path(sys.executable).parent / "Scripts" / "litellm.exe")
+    log.info("litellm_executable", path=litellm_exe)
+
+    out_log = Path(settings.litellm_config_dir) / "litellm-out.log"
+    err_log = Path(settings.litellm_config_dir) / "litellm-err.log"
+    ps1_file = Path(settings.litellm_config_dir) / "_start_litellm.ps1"
+
+    # Escribir script .ps1 temporal — evita problemas de escaping con tokens largos
+    # y el UnicodeEncodeError del banner de litellm en consolas Windows cp1252.
+    lines = [
+        "$ErrorActionPreference = 'Stop'",
+    ]
+    for k in ("PYTHONIOENCODING", "PYTHONUTF8", "COPILOT_SESSION_TOKEN",
+              "ANTHROPIC_API_KEY", "ANTHROPIC_REAL_API_KEY",
+              "GITHUB_TOKEN", "GITHUB_OAUTH_TOKEN"):
+        if k in child_env:
+            # Escapar comillas dobles dentro del valor
+            v = child_env[k].replace("'", "''")
+            lines.append(f"$env:{k} = '{v}'")
+    lines += [
+        f"Start-Process '{litellm_exe}' "
+        f"-ArgumentList '--config','{config_path}','--port','4001' "
+        f"-WorkingDirectory 'C:\\litellm' "
+        f"-RedirectStandardOutput '{out_log}' "
+        f"-RedirectStandardError '{err_log}' "
+        f"-WindowStyle Hidden",
+    ]
+    ps1_file.write_text("\n".join(lines), encoding="utf-8")
+
     subprocess.Popen(
-        ["powershell.exe", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-         "-File", script, "-config", str(config_path), "-port", "4001"],
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        ["powershell.exe", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", str(ps1_file)],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        stdin=subprocess.DEVNULL,
     )
-    log.info("litellm_started", config=str(config_path))
+    log.info("litellm_started", config=str(config_path), out_log=str(out_log))
