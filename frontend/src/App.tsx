@@ -4,6 +4,7 @@ import { Layout } from '@/components/Layout'
 import { Dashboard } from '@/pages/Dashboard'
 import { Models } from '@/pages/Models'
 import { Usage } from '@/pages/Usage'
+import { Settings } from '@/pages/Settings'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,6 +21,7 @@ export function App() {
             <Route index element={<Dashboard />} />
             <Route path="models" element={<Models />} />
             <Route path="usage" element={<Usage />} />
+            <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>
       </BrowserRouter>

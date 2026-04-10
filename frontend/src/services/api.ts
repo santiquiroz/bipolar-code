@@ -23,6 +23,18 @@ export const modelsApi = {
   getGitHub: () => api.get<CopilotModel[]>('/models/github').then(r => r.data),
 }
 
+export const settingsApi = {
+  getEnv: () => api.get<Record<string, string>>('/settings/env').then(r => r.data),
+  setEnvKey: (key: string, value: string) =>
+    api.post('/settings/env', { key, value }).then(r => r.data),
+  getCopilotActiveModel: () =>
+    api.get<{ model: string }>('/settings/copilot/active-model').then(r => r.data),
+  setCopilotModel: (model_id: string) =>
+    api.post<{ model: string; restarted: boolean; note?: string }>(
+      '/settings/copilot/model', { model_id }
+    ).then(r => r.data),
+}
+
 export const usageApi = {
   getAnthropicUsage: () => api.get<UsageStats[]>('/usage/anthropic').then(r => r.data),
   getLogStats: () => api.get<UsageStats[]>('/usage/logs').then(r => r.data),

@@ -1,6 +1,7 @@
 import { Card } from '@/components/Card'
 import { Badge } from '@/components/Badge'
 import { Spinner } from '@/components/Spinner'
+import { CopilotModelPicker } from '@/components/CopilotModelPicker'
 import { useProxyStatus, useSwitchBackend } from '@/hooks/useProxy'
 import { useActiveModels } from '@/hooks/useModels'
 import { useLogStats } from '@/hooks/useUsage'
@@ -74,6 +75,13 @@ export function Dashboard() {
         )}
         {switchMut.isSuccess && (
           <p className="mt-3 text-sm text-emerald-600">Switched — reloading status in 3s…</p>
+        )}
+
+        {/* Selector de modelo Copilot — solo visible cuando Copilot está activo */}
+        {status?.active_backend === 'copilot' && (
+          <div className="mt-5 pt-5 border-t border-gray-100">
+            <CopilotModelPicker />
+          </div>
         )}
       </Card>
 

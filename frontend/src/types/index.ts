@@ -25,6 +25,10 @@ export interface CopilotModel {
   capabilities?: Record<string, unknown>
 }
 
+export interface EnvVars {
+  [key: string]: string
+}
+
 export interface UsageStats {
   backend: BackendType
   model: string
