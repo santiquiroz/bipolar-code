@@ -1,0 +1,3 @@
+# Require @santiquiroz to review all changes by default
+# Format: <pattern> <owner>
+* @santiquiroz
