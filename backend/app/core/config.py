@@ -1,10 +1,23 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 import os
+import sys
+from pathlib import Path
 
-# Allow override via env var; default to C:/litellm for backwards compatibility
-_DEFAULT_CONFIG_DIR = os.environ.get("LITELLM_CONFIG_DIR", "C:/litellm")
+
+def _default_config_dir() -> str:
+    if "LITELLM_CONFIG_DIR" in os.environ:
+        return os.environ["LITELLM_CONFIG_DIR"]
+    if sys.platform == "win32":
+        return "C:/litellm"
+    return str(Path.home() / ".litellm")
+
+
+_DEFAULT_CONFIG_DIR = _default_config_dir()
 _ENV_FILE = os.path.join(_DEFAULT_CONFIG_DIR, ".env")
+
+# Crear el directorio si no existe (primera ejecución en Linux/Mac)
+Path(_DEFAULT_CONFIG_DIR).mkdir(parents=True, exist_ok=True)
 
 
 class Settings(BaseSettings):
