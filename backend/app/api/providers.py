@@ -146,14 +146,20 @@ async def list_provider_models(provider_id: str):
 
         # Normalizar respuesta: OpenAI devuelve {"data": [{"id":...}]}, otros pueden devolver lista directa
         items = raw if isinstance(raw, list) else raw.get("data", raw.get("models", []))
-        models = [
-            {
-                "id": m.get("id", m.get("name", "")),
-                "name": m.get("name", m.get("id", "")),
+        seen_ids: set = set()
+        models = []
+        for m in items:
+            if not isinstance(m, dict):
+                continue
+            model_id = m.get("id", m.get("name", ""))
+            if not model_id or model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            models.append({
+                "id": model_id,
+                "name": m.get("name", model_id),
                 "vendor": (m.get("vendor", {}) or {}).get("name") if isinstance(m.get("vendor"), dict) else m.get("vendor"),
-            }
-            for m in items if isinstance(m, dict)
-        ]
+            })
         log.info("provider_models_fetched", provider=provider_id, count=len(models))
         return {"models": models}
     except httpx.HTTPStatusError as e:

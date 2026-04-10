@@ -1,14 +1,14 @@
 from fastapi import APIRouter, HTTPException
-from app.services import proxy_service, providers_service
 from pydantic import BaseModel
-
-
-class RouteRequest(BaseModel):
-    mode: str  # 'direct' or 'proxy'
+from app.services import proxy_service, providers_service
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/proxy", tags=["proxy"])
+
+
+class RouteRequest(BaseModel):
+    mode: str  # 'direct' or 'proxy'
 
 
 @router.get("/status")
