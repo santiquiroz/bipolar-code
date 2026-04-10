@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { Card } from '@/components/Card'
 import { Badge } from '@/components/Badge'
+import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
 import { ModelPicker } from '@/components/ModelPicker'
-import { useProxyStatus } from '@/hooks/useProxy'
+import { useProxyStatus, useStartProxy } from '@/hooks/useProxy'
 import { useProviders, useSwitchProvider } from '@/hooks/useProviders'
 import { useLogStats } from '@/hooks/useUsage'
 
@@ -12,6 +13,7 @@ export function Dashboard() {
   const { data: registry, isLoading: providersLoading } = useProviders()
   const { data: logStats = [] } = useLogStats()
   const switchProvider = useSwitchProvider()
+  const startProxy = useStartProxy()
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
 
   const totalRequests = logStats.reduce((s, r) => s + r.requests_count, 0)
@@ -22,22 +24,50 @@ export function Dashboard() {
     <div className="space-y-6">
       {/* Proxy status */}
       <Card title="Proxy Status">
-        {statusLoading ? <Spinner className="h-5 w-5 text-brand-500" /> : status ? (
+        {statusLoading ? <Spinner className="h-5 w-5 text-brand-500" /> : (
           <div className="flex flex-wrap items-center gap-3">
-            <Badge label={status.running ? 'Running' : 'Stopped'} variant={status.running ? 'success' : 'error'} />
-            <span className="text-sm text-gray-500">Puerto <strong>{status.port}</strong></span>
-            <Badge label={`${status.healthy_models} healthy`} variant="success" />
-            {status.unhealthy_models > 0 && (
-              <Badge label={`${status.unhealthy_models} unhealthy`} variant="error" />
+            <Badge
+              label={status?.running ? 'Running' : 'Stopped'}
+              variant={status?.running ? 'success' : 'error'}
+            />
+            <span className="text-sm text-gray-500">Puerto <strong>{status?.port ?? 4001}</strong></span>
+            {status?.running && (
+              <Badge label={`${status.healthy_models} healthy`} variant="success" />
             )}
+            {status?.unhealthy_models ? (
+              <Badge label={`${status.unhealthy_models} unhealthy`} variant="error" />
+            ) : null}
             {activeProvider && (
               <span className="text-sm text-gray-500">
                 Proveedor: <strong>{activeProvider.name}</strong>
               </span>
             )}
+            {!status?.running && (
+              <Button
+                size="sm"
+                loading={startProxy.isPending}
+                onClick={() => startProxy.mutate()}
+              >
+                Iniciar proxy
+              </Button>
+            )}
+            {status?.running && (
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={startProxy.isPending}
+                onClick={() => startProxy.mutate()}
+              >
+                Reiniciar
+              </Button>
+            )}
+            {startProxy.isSuccess && (
+              <span className="text-xs text-emerald-600">Iniciando… (~5s)</span>
+            )}
+            {startProxy.isError && (
+              <span className="text-xs text-red-500">Error al iniciar proxy</span>
+            )}
           </div>
-        ) : (
-          <p className="text-sm text-red-500">Proxy no disponible</p>
         )}
       </Card>
 

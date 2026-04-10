@@ -14,6 +14,7 @@ api.interceptors.response.use(
 
 export const proxyApi = {
   getStatus: () => api.get<{ running: boolean; port: number; active_provider_id: string; healthy_models: number; unhealthy_models: number }>('/proxy/status').then(r => r.data),
+  start: () => api.post<{ started: boolean; provider: string }>('/proxy/start').then(r => r.data),
 }
 
 export const providersApi = {
@@ -27,6 +28,8 @@ export const providersApi = {
     api.post<Provider>(`/providers/${provider_id}/model`, { model_id }).then(r => r.data),
   listModels: (provider_id: string) =>
     api.get<{ models: ProviderModel[]; note?: string }>(`/providers/${provider_id}/models`).then(r => r.data),
+  refreshToken: (provider_id: string) =>
+    api.post<{ refreshed: boolean; note?: string; token_length?: number }>(`/providers/${provider_id}/refresh-token`).then(r => r.data),
 }
 
 export const modelsApi = {

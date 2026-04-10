@@ -1,5 +1,6 @@
 import httpx
 import os
+import subprocess
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -158,7 +159,54 @@ async def list_provider_models(provider_id: str):
         return {"models": models}
     except httpx.HTTPStatusError as e:
         log.error("provider_models_http_error", provider=provider_id, status=e.response.status_code)
-        raise HTTPException(status_code=e.response.status_code, detail=f"Error del proveedor: {e.response.text[:200]}")
+        # Devolvemos el status real para que el frontend pueda mostrar mensajes específicos
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail={"message": f"Error del proveedor ({e.response.status_code})", "http_status": e.response.status_code}
+        )
+    except httpx.ConnectError:
+        log.error("provider_models_connect_error", provider=provider_id)
+        raise HTTPException(status_code=503, detail={"message": "No se pudo conectar al endpoint de modelos", "http_status": 503})
     except Exception as e:
         log.error("provider_models_error", provider=provider_id, error=str(e))
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail={"message": str(e), "http_status": 502})
+
+
+@router.post("/{provider_id}/refresh-token")
+async def refresh_provider_token(provider_id: str):
+    """
+    Refresca el token de autenticación del proveedor.
+    Para Copilot: ejecuta refresh-token.ps1 y recarga el .env.
+    Para otros: retorna instrucciones manuales.
+    """
+    provider = providers_service.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_id}' no encontrado")
+
+    log.info("request_refresh_token", provider=provider_id)
+
+    if provider_id == "copilot":
+        settings = get_settings()
+        script = f"{settings.litellm_config_dir}/refresh-token.ps1"
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-ExecutionPolicy", "Bypass",
+                 "-Command", f"& '{script}' -RunOnce"],
+                capture_output=True, text=True, timeout=20
+            )
+            # Independientemente del resultado, recargamos el token del .env
+            from app.core.config import get_settings as _gs
+            _gs.cache_clear()
+            new_settings = _gs()
+            token = new_settings.copilot_session_token
+            log.info("copilot_token_refreshed", token_length=len(token))
+            return {"refreshed": True, "token_length": len(token), "output": result.stdout.strip()[:200]}
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="Timeout al refrescar token")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "refreshed": False,
+        "note": f"Refresh automático no disponible para '{provider_id}'. Actualiza {provider.auth_env_var} manualmente en Settings."
+    }

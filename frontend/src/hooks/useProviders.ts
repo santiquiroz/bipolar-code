@@ -52,6 +52,17 @@ export function useAddProvider() {
   })
 }
 
+export function useRefreshToken() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (provider_id: string) => providersApi.refreshToken(provider_id),
+    onSuccess: (_data, provider_id) => {
+      // Recargar modelos del proveedor tras refrescar token
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['providers', provider_id, 'models'] }), 500)
+    },
+  })
+}
+
 export function useDeleteProvider() {
   const qc = useQueryClient()
   return useMutation({
