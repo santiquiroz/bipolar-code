@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: bipolar-code-windows.exe
+            binary: dist/bipolar-code.exe
+          - os: ubuntu-latest
+            artifact: bipolar-code-linux
+            binary: dist/bipolar-code
+          - os: macos-latest
+            artifact: bipolar-code-macos
+            binary: dist/bipolar-code
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt pyinstaller aiofiles
+
+      - name: Build executable
+        run: pyinstaller bipolar-code.spec --clean
+
+      - name: Rename artifact
+        shell: bash
+        run: mv "${{ matrix.binary }}" "${{ matrix.artifact }}"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}
+          generate_release_notes: true
