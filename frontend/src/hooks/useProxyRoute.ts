@@ -6,8 +6,10 @@ export function useProxyRoute() {
   const route = useQuery({ queryKey: ['proxy','route'], queryFn: proxyApi.getRoute, refetchInterval: 5000 })
   const setRoute = useMutation({
     mutationFn: (mode: 'direct'|'proxy') => proxyApi.setRoute(mode),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['proxy','route'] })
+    onSuccess: (_data, mode) => {
+      // optimistic update so button switches instantly, refetch confirms
+      qc.setQueryData(['proxy', 'route'], (old: any) => ({ ...(old ?? {}), mode }))
+      qc.invalidateQueries({ queryKey: ['proxy', 'route'] })
       qc.invalidateQueries({ queryKey: ['proxy'] })
     },
   })

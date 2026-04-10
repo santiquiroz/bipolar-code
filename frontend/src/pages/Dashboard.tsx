@@ -137,7 +137,7 @@ export function Dashboard() {
         )}
       </Card>
 
-      {/* Claude routing (new) */}
+      {/* Claude routing */}
       <Card title="Claude routing">
         {route?.isLoading ? (
           <div className="flex items-center gap-2">
@@ -145,27 +145,48 @@ export function Dashboard() {
             <span className="text-xs text-gray-400">Cargando…</span>
           </div>
         ) : (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <button
-                className={`px-2 py-1 rounded ${route?.data?.mode === 'direct' ? 'bg-gray-100' : 'bg-white'}`}
-                onClick={() => setRoute.mutate('direct')}
-                disabled={setRoute.isPending}
-              >
-                Direct
-              </button>
-              <button
-                className={`px-2 py-1 rounded ${route?.data?.mode === 'proxy' ? 'bg-brand-50 border-brand-400' : 'bg-white'}`}
-                onClick={() => setRoute.mutate('proxy')}
-                disabled={setRoute.isPending || !status?.running}
-              >
-                Via LiteLLM
-              </button>
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+                <button
+                  className={`px-3 py-1.5 text-sm font-medium transition-colors
+                    ${route?.data?.mode === 'direct'
+                      ? 'bg-gray-800 text-white'
+                      : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+                  onClick={() => setRoute.mutate('direct')}
+                  disabled={setRoute.isPending}
+                >
+                  Direct
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-sm font-medium transition-colors border-l border-gray-200
+                    ${route?.data?.mode === 'proxy'
+                      ? 'bg-brand-600 text-white'
+                      : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+                  onClick={() => setRoute.mutate('proxy')}
+                  disabled={setRoute.isPending}
+                >
+                  Via LiteLLM
+                </button>
+              </div>
+              {setRoute.isPending && <Spinner className="h-4 w-4 text-brand-500" />}
+              <span className="text-xs text-gray-400">
+                {route?.data?.mode === 'proxy'
+                  ? `→ ${route.data.proxy_status?.port ?? 4001}`
+                  : 'api.anthropic.com'}
+              </span>
             </div>
-            <span className="text-xs text-gray-500">{route?.data?.mode === 'proxy' ? 'Routing via LiteLLM' : 'Direct Claude'}</span>
+            {setRoute.isSuccess && (
+              <p className="text-xs text-amber-600 flex items-center gap-1.5">
+                <span>⚠</span>
+                Reinicia Claude Code para que tome el cambio
+              </p>
+            )}
+            {setRoute.isError && (
+              <p className="text-xs text-red-500">Error aplicando el modo</p>
+            )}
           </div>
         )}
-        {setRoute.isError && <p className="text-xs text-red-500 mt-2">Error aplicando el modo</p>}
       </Card>
 
       {/* Stats */}
