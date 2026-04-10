@@ -272,11 +272,14 @@ async def refresh_copilot_token() -> dict:
 
 
 def _start_litellm(config_path: Path) -> None:
+    import sys
+    import os
+    import copy
+    import shutil
     settings = get_settings()
     env_path = Path(settings.litellm_config_dir) / ".env"
 
     # Cargar variables del .env en el entorno del nuevo proceso
-    import os, copy
     child_env = copy.copy(os.environ)
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
@@ -289,39 +292,51 @@ def _start_litellm(config_path: Path) -> None:
     except Exception as e:
         log.warning("env_load_warning", error=str(e))
 
-    import sys, shutil
-    litellm_exe = shutil.which("litellm") or str(Path(sys.executable).parent / "Scripts" / "litellm.exe")
+    # Resolver path del ejecutable litellm
+    if sys.platform == "win32":
+        fallback = Path(sys.executable).parent / "Scripts" / "litellm.exe"
+    else:
+        fallback = Path(sys.executable).parent / "litellm"
+    litellm_exe = shutil.which("litellm") or str(fallback)
     log.info("litellm_executable", path=litellm_exe)
 
     out_log = Path(settings.litellm_config_dir) / "litellm-out.log"
     err_log = Path(settings.litellm_config_dir) / "litellm-err.log"
-    ps1_file = Path(settings.litellm_config_dir) / "_start_litellm.ps1"
 
-    # Escribir script .ps1 temporal — evita problemas de escaping con tokens largos
-    # y el UnicodeEncodeError del banner de litellm en consolas Windows cp1252.
-    lines = [
-        "$ErrorActionPreference = 'Stop'",
-    ]
-    for k in ("PYTHONIOENCODING", "PYTHONUTF8", "COPILOT_SESSION_TOKEN",
-              "ANTHROPIC_API_KEY", "ANTHROPIC_REAL_API_KEY",
-              "GITHUB_TOKEN", "GITHUB_OAUTH_TOKEN"):
-        if k in child_env:
-            # Escapar comillas dobles dentro del valor
-            v = child_env[k].replace("'", "''")
-            lines.append(f"$env:{k} = '{v}'")
-    lines += [
-        f"Start-Process '{litellm_exe}' "
-        f"-ArgumentList '--config','{config_path}','--port','4001' "
-        f"-WorkingDirectory 'C:\\litellm' "
-        f"-RedirectStandardOutput '{out_log}' "
-        f"-RedirectStandardError '{err_log}' "
-        f"-WindowStyle Hidden",
-    ]
-    ps1_file.write_text("\n".join(lines), encoding="utf-8")
+    if sys.platform == "win32":
+        # PowerShell script — evita UnicodeEncodeError en consolas cp1252
+        ps1_file = Path(settings.litellm_config_dir) / "_start_litellm.ps1"
+        lines = ["$ErrorActionPreference = 'Stop'"]
+        for k in ("PYTHONIOENCODING", "PYTHONUTF8", "COPILOT_SESSION_TOKEN",
+                  "ANTHROPIC_API_KEY", "ANTHROPIC_REAL_API_KEY",
+                  "GITHUB_TOKEN", "GITHUB_OAUTH_TOKEN"):
+            if k in child_env:
+                v = child_env[k].replace("'", "''")
+                lines.append(f"$env:{k} = '{v}'")
+        lines += [
+            f"Start-Process '{litellm_exe}' "
+            f"-ArgumentList '--config','{config_path}','--port','4001' "
+            f"-WorkingDirectory '{settings.litellm_config_dir}' "
+            f"-RedirectStandardOutput '{out_log}' "
+            f"-RedirectStandardError '{err_log}' "
+            f"-WindowStyle Hidden",
+        ]
+        ps1_file.write_text("\n".join(lines), encoding="utf-8")
+        subprocess.Popen(
+            ["powershell.exe", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", str(ps1_file)],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdin=subprocess.DEVNULL,
+        )
+    else:
+        # Linux / macOS: subprocess directo con start_new_session
+        with open(out_log, "ab") as fout, open(err_log, "ab") as ferr:
+            subprocess.Popen(
+                [litellm_exe, "--config", str(config_path), "--port", "4001"],
+                env=child_env,
+                stdout=fout,
+                stderr=ferr,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
 
-    subprocess.Popen(
-        ["powershell.exe", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", str(ps1_file)],
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        stdin=subprocess.DEVNULL,
-    )
     log.info("litellm_started", config=str(config_path), out_log=str(out_log))
