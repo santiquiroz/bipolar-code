@@ -1,0 +1,39 @@
+{
+  "version": "2026-04-29",
+  "providers": {
+    "anthropic": {
+      "claude-sonnet-4-6":       { "input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75 },
+      "claude-opus-4-6":         { "input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_write": 18.75 },
+      "claude-haiku-4-5":        { "input": 0.80, "output": 4.00, "cache_read": 0.08, "cache_write": 1.00 },
+      "claude-3-5-sonnet-20241022": { "input": 3.00, "output": 15.00 },
+      "claude-3-opus-20240229":  { "input": 15.00, "output": 75.00 },
+      "claude-3-haiku-20240307": { "input": 0.25, "output": 1.25 }
+    },
+    "nvidia_nim": {
+      "meta/llama-3.1-70b-instruct":            { "input": 0.35, "output": 0.40 },
+      "meta/llama-3.2-90b-vision-instruct":     { "input": 0.35, "output": 0.40 },
+      "mistralai/mistral-large-2-instruct":      { "input": 2.00, "output": 6.00 },
+      "nvidia/llama-3.1-nemotron-70b-instruct":  { "input": 0.35, "output": 0.40 }
+    },
+    "deepseek": {
+      "deepseek-chat":     { "input": 0.27, "output": 1.10 },
+      "deepseek-reasoner": { "input": 0.55, "output": 2.19 }
+    },
+    "openrouter": {
+      "__dynamic__": true,
+      "__note__": "Precios cargados dinámicamente desde /v1/models en memoria"
+    },
+    "copilot": {
+      "__flat_rate__": true,
+      "__note__": "Incluido en suscripción GitHub Copilot"
+    },
+    "lmstudio": {
+      "__free__": true,
+      "__note__": "Local — sin costo"
+    },
+    "ollama": {
+      "__free__": true,
+      "__note__": "Local — sin costo"
+    }
+  }
+}
