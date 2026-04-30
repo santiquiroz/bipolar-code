@@ -128,7 +128,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "version": "0.2.0",
-            "api_key_prefix": s.ui_api_key[:8] + "..." if s.ui_api_key else "",
+            "api_key_configured": bool(s.ui_api_key),
         }
 
     import sys

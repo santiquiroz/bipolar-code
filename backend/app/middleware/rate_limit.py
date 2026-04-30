@@ -26,12 +26,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ip = self._client_ip(request)
         now = time.monotonic()
 
-        if ip not in self._buckets:
-            self._buckets[ip] = collections.deque()
+        bucket = self._buckets.setdefault(ip, collections.deque())
 
-        bucket = self._buckets[ip]
         while bucket and bucket[0] < now - _WINDOW:
             bucket.popleft()
+
+        # Eliminar entradas de IPs sin actividad reciente para evitar crecimiento ilimitado
+        if not bucket:
+            del self._buckets[ip]
+            bucket = collections.deque()
+            self._buckets[ip] = bucket
 
         if len(bucket) >= self._rpm:
             retry_after = int(_WINDOW - (now - bucket[0])) + 1

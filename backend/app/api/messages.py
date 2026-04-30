@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 
 import httpx
 from fastapi import APIRouter, Request
@@ -8,6 +7,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.utils import sanitize_error as _sanitize_error
 from app.services import providers_service, token_service, usage_tracker
 from app.services.pricing_service import estimate_cost
 
@@ -24,15 +24,6 @@ async def _litellm_reachable(proxy_url: str) -> bool:
             return resp.status_code < 400
     except Exception:
         return False
-
-
-def _sanitize_error(msg: str) -> str:
-    """Elimina URLs internas y rutas del sistema de mensajes de error."""
-    msg = re.sub(r'https?://127\.0\.0\.1:\d+\S*', '[proxy]', msg)
-    msg = re.sub(r'https?://localhost:\d+\S*', '[proxy]', msg)
-    msg = re.sub(r'[A-Za-z]:\\[^\s"\']+', '[path]', msg)
-    msg = re.sub(r'/(?:home|usr|var|etc|tmp)/\S+', '[path]', msg)
-    return msg
 
 
 @router.post("/v1/messages")

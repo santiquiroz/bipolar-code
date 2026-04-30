@@ -17,10 +17,7 @@ def _extract_key(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    return (
-        request.headers.get("x-api-key", "")
-        or request.headers.get("X-API-Key", "")
-    )
+    return request.headers.get("x-api-key", "")
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -32,8 +29,14 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if _is_public(request.url.path):
             return await call_next(request)
 
+        if not self._key:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Autenticación no configurada en el servidor"},
+            )
+
         provided = _extract_key(request)
-        if not self._key or secrets.compare_digest(provided, self._key):
+        if secrets.compare_digest(provided, self._key):
             return await call_next(request)
 
         return JSONResponse(

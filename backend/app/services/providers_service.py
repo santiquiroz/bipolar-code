@@ -17,6 +17,7 @@ from app.core.logging import get_logger
 log = get_logger(__name__)
 
 _registry_lock = threading.Lock()
+_switch_lock = asyncio.Lock()
 
 # Aliases que el proxy siempre expone — las herramientas externas (Claude Code, etc.) los usan
 PROXY_ALIASES = ["claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o"]
@@ -251,50 +252,51 @@ async def switch_to_provider(provider_id: str) -> dict:
     """Genera el config, actualiza el registry PRIMERO, luego reinicia litellm.
     Actualizar el registry antes del restart garantiza consistencia si el proceso
     crashea durante la transición."""
-    import httpx
-    provider = get_provider(provider_id)
-    if not provider:
-        raise ValueError(f"Provider '{provider_id}' no encontrado")
+    async with _switch_lock:
+        import httpx
+        provider = get_provider(provider_id)
+        if not provider:
+            raise ValueError(f"Provider '{provider_id}' no encontrado")
 
-    config_path = generate_litellm_config(provider)
-    log.info("switching_provider", provider=provider_id, config=str(config_path))
+        config_path = generate_litellm_config(provider)
+        log.info("switching_provider", provider=provider_id, config=str(config_path))
 
-    # Guardar registry ANTES de matar litellm
-    registry = load_registry()
-    previous_provider_id = registry.active_provider_id
-    registry.active_provider_id = provider_id
-    save_registry(registry)
-
-    try:
-        await _kill_litellm()
-        _start_litellm(config_path)
-    except Exception as e:
-        # Si falla el restart, revertir el registry
-        log.error("switch_restart_failed", provider=provider_id, error=str(e))
+        # Guardar registry ANTES de matar litellm
         registry = load_registry()
-        registry.active_provider_id = previous_provider_id
+        previous_provider_id = registry.active_provider_id
+        registry.active_provider_id = provider_id
         save_registry(registry)
-        raise
 
-    # Esperar a que LiteLLM esté listo (máx 15 s)
-    proxy_url = get_settings().proxy_url
-    ready = False
-    async with httpx.AsyncClient() as client:
-        for _ in range(30):
-            await asyncio.sleep(0.5)
-            try:
-                resp = await client.get(
-                    f"{proxy_url}/health/readiness",
-                    timeout=httpx.Timeout(1.0),
-                )
-                if resp.status_code < 400:
-                    ready = True
-                    break
-            except Exception:
-                pass
+        try:
+            await _kill_litellm()
+            _start_litellm(config_path)
+        except Exception as e:
+            # Si falla el restart, revertir el registry
+            log.error("switch_restart_failed", provider=provider_id, error=str(e))
+            registry = load_registry()
+            registry.active_provider_id = previous_provider_id
+            save_registry(registry)
+            raise
 
-    log.info("switch_complete", provider=provider_id, ready=ready)
-    return {"switched_to": provider_id, "config": str(config_path), "ready": ready}
+        # Esperar a que LiteLLM esté listo (máx 15 s)
+        proxy_url = get_settings().proxy_url
+        ready = False
+        async with httpx.AsyncClient() as client:
+            for _ in range(30):
+                await asyncio.sleep(0.5)
+                try:
+                    resp = await client.get(
+                        f"{proxy_url}/health/readiness",
+                        timeout=httpx.Timeout(1.0),
+                    )
+                    if resp.status_code < 400:
+                        ready = True
+                        break
+                except Exception:
+                    pass
+
+        log.info("switch_complete", provider=provider_id, ready=ready)
+        return {"switched_to": provider_id, "config": str(config_path), "ready": ready}
 
 
 async def _kill_litellm() -> None:

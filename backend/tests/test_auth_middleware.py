@@ -69,6 +69,23 @@ def test_messages_endpoint_with_valid_key():
     assert resp.status_code == 200
 
 
+def make_app_no_key():
+    app = FastAPI()
+    app.add_middleware(APIKeyMiddleware, api_key="")
+
+    @app.get("/api/protected")
+    def protected():
+        return {"secret": "data"}
+
+    return app
+
+
+def test_empty_key_returns_503():
+    c = TestClient(make_app_no_key(), raise_server_exceptions=False)
+    resp = c.get("/api/protected")
+    assert resp.status_code == 503
+
+
 def make_rate_limited_app(rpm: int):
     app = FastAPI()
     app.add_middleware(RateLimitMiddleware, rpm=rpm)

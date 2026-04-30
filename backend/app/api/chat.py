@@ -1,24 +1,25 @@
 import json
-import re
 import httpx
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 from app.services import providers_service, token_service
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.utils import sanitize_error as _sanitize_error
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-def _sanitize_error(msg: str) -> str:
-    msg = re.sub(r'https?://127\.0\.0\.1:\d+\S*', '[proxy]', msg)
-    msg = re.sub(r'https?://localhost:\d+\S*', '[proxy]', msg)
-    msg = re.sub(r'[A-Za-z]:\\[^\s"\']+', '[path]', msg)
-    msg = re.sub(r'/(?:home|usr|var|etc|tmp)/\S+', '[path]', msg)
-    return msg
+async def _litellm_reachable(proxy_url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=0.5)) as client:
+            resp = await client.get(f"{proxy_url}/health/readiness")
+            return resp.status_code < 400
+    except Exception:
+        return False
 
 
 class ChatMessage(BaseModel):
@@ -40,6 +41,12 @@ async def chat_completions(body: ChatRequest):
     # un switch de proveedor concurrente
     provider = providers_service.get_active_provider()
     active_provider_id = provider.id if provider else "unknown"
+
+    if not await _litellm_reachable(settings.proxy_url):
+        return JSONResponse(
+            status_code=503,
+            content={"error": {"message": "El proxy LiteLLM no está disponible."}},
+        )
 
     model = body.model
     if not model or (model not in _PROXY_ALIASES and provider and model == provider.active_model):
