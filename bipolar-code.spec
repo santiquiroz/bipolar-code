@@ -14,6 +14,8 @@ a = Analysis(
         (str(frontend_dist), "frontend/dist"),
         ("backend/app/data", "app/data"),
         *collect_data_files("litellm"),
+        *collect_data_files("tiktoken"),
+        *collect_data_files("tiktoken_ext"),
     ],
     hiddenimports=[
         "uvicorn.logging",
@@ -28,6 +30,8 @@ a = Analysis(
         "structlog",
         "psutil",
         *collect_submodules("app"),
+        *collect_submodules("tiktoken"),
+        *collect_submodules("tiktoken_ext"),
     ],
     hookspath=[],
     hooksconfig={},
