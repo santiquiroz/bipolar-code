@@ -8,3 +8,5 @@ structlog>=24.2.0
 pyyaml>=6.0.1
 psutil>=5.9.0
 aiofiles>=23.0.0
+tiktoken>=0.7.0
+aiosqlite>=0.20.0
