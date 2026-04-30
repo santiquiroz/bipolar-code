@@ -57,9 +57,14 @@ def supports_vision(model: str) -> bool:
 
 
 def truncate_messages(messages: list[dict], context_window: int) -> list[dict]:
+    if not messages:
+        return messages
     system = [m for m in messages if m.get("role") == "system"]
-    last_user = messages[-1]
-    history = [m for m in messages[:-1] if m.get("role") != "system"]
+    non_system = [m for m in messages if m.get("role") != "system"]
+    if not non_system:
+        return messages
+    last_user = non_system[-1]
+    history = non_system[:-1]
 
     reserved = count_tokens(system + [last_user]) + 1000
     budget = context_window - reserved

@@ -13,6 +13,8 @@ from app.services.pricing_service import estimate_cost
 log = get_logger(__name__)
 router = APIRouter(tags=["messages"])
 
+_background_tasks: set[asyncio.Task] = set()
+
 
 @router.post("/v1/messages")
 async def messages_passthrough(request: Request):
@@ -75,7 +77,7 @@ async def messages_passthrough(request: Request):
                                     active = providers_service.get_active_provider()
                                     pid = active.id if active else "unknown"
                                     cost = estimate_cost(pid, model, usage_buf["input_tokens"], usage_buf["output_tokens"])
-                                    asyncio.create_task(
+                                    task = asyncio.create_task(
                                         usage_tracker.record(
                                             pid, model,
                                             usage_buf["input_tokens"],
@@ -83,6 +85,8 @@ async def messages_passthrough(request: Request):
                                             cost, truncated,
                                         )
                                     )
+                                    _background_tasks.add(task)
+                                    task.add_done_callback(_background_tasks.discard)
                             except Exception:
                                 pass
                         if line:
