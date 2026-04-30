@@ -1,10 +1,14 @@
 import json
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 import tiktoken
 
-_DATA_DIR = Path(__file__).parent.parent / "data"
+if getattr(sys, "frozen", False):
+    _DATA_DIR = Path(sys._MEIPASS) / "app" / "data"
+else:
+    _DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 @lru_cache(maxsize=1)

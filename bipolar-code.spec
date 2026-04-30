@@ -12,6 +12,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(frontend_dist), "frontend/dist"),
+        ("backend/app/data", "app/data"),
         *collect_data_files("litellm"),
     ],
     hiddenimports=[
