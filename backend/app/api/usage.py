@@ -1,5 +1,6 @@
+from typing import Optional
 from fastapi import APIRouter
-from app.services import usage_service
+from app.services import usage_service, usage_tracker
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -16,3 +17,17 @@ async def anthropic_usage():
 async def log_stats():
     log.info("request_log_stats")
     return await usage_service.get_proxy_log_stats()
+
+
+@router.get("/history")
+async def usage_history(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    limit: int = 100,
+):
+    return await usage_tracker.get_history(provider_id=provider, model=model, limit=limit)
+
+
+@router.get("/summary")
+async def usage_summary(period: str = "day"):
+    return await usage_tracker.get_summary(period=period)

@@ -177,6 +177,62 @@ async def list_provider_models(provider_id: str):
         raise HTTPException(status_code=502, detail={"message": str(e), "http_status": 502})
 
 
+@router.post("/{provider_id}/verify-key")
+async def verify_provider_key(provider_id: str, body: dict):
+    from app.services.settings_service import write_env_key
+    api_key = body.get("api_key", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key required")
+
+    if provider_id == "nvidia_nim":
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://integrate.api.nvidia.com/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                if resp.status_code == 200:
+                    models = resp.json().get("data", [])
+                    write_env_key("NVIDIA_NIM_API_KEY", api_key)
+                    get_settings.cache_clear()
+                    return {"valid": True, "model_count": len(models)}
+                return {"valid": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    if provider_id == "openrouter":
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://openrouter.ai/api/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                if resp.status_code == 200:
+                    write_env_key("OPENROUTER_API_KEY", api_key)
+                    get_settings.cache_clear()
+                    return {"valid": True, "model_count": len(resp.json().get("data", []))}
+                return {"valid": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    if provider_id == "deepseek":
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://api.deepseek.com/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                if resp.status_code == 200:
+                    write_env_key("DEEPSEEK_API_KEY", api_key)
+                    get_settings.cache_clear()
+                    return {"valid": True}
+                return {"valid": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    raise HTTPException(status_code=400, detail=f"verify-key not supported for {provider_id}")
+
+
 @router.post("/{provider_id}/refresh-token")
 async def refresh_provider_token(provider_id: str):
     """

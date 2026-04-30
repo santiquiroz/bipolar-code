@@ -134,9 +134,9 @@ async def enable_proxy_routing() -> dict:
                 if status.get('running'):
                     break
 
-        proxy_url = settings.proxy_url or 'http://localhost:4001'
+        fastapi_url = 'http://localhost:8000'
         api_key = settings.proxy_api_key or 'sk-litellm'
-        _set_user_env('ANTHROPIC_BASE_URL', proxy_url)
+        _set_user_env('ANTHROPIC_BASE_URL', fastapi_url)
         _set_user_env('ANTHROPIC_API_KEY', api_key)
         await set_route_mode('proxy')
         log.info('route_apply_success', mode='proxy')
