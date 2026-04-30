@@ -2,7 +2,9 @@
 Gestión del registro de proveedores: CRUD, generación de configs litellm, switch activo.
 El estado persiste en providers.json. Los configs YAML se generan dinámicamente.
 """
+import asyncio
 import json
+import threading
 import yaml
 import subprocess
 import psutil
@@ -13,6 +15,8 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
+
+_registry_lock = threading.Lock()
 
 # Aliases que el proxy siempre expone — las herramientas externas (Claude Code, etc.) los usan
 PROXY_ALIASES = ["claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o"]
@@ -55,6 +59,51 @@ _DEFAULTS: list[dict] = [
         "models_endpoint": "http://localhost:1234/v1/models",
         "active_model": "google/gemma-4-26b-a4b",
     },
+    {
+        "id": "nvidia_nim",
+        "name": "NVIDIA NIM",
+        "description": "NVIDIA NIM — modelos Llama, Mistral y más con créditos gratuitos",
+        "api_base": "https://integrate.api.nvidia.com/v1",
+        "litellm_prefix": "openai",
+        "auth_env_var": "NVIDIA_NIM_API_KEY",
+        "models_endpoint": "https://integrate.api.nvidia.com/v1/models",
+        "models_auth_env_var": "NVIDIA_NIM_API_KEY",
+        "active_model": "meta/llama-3.1-70b-instruct",
+        "drop_params": True,
+    },
+    {
+        "id": "openrouter",
+        "name": "OpenRouter",
+        "description": "Cientos de modelos — incluye opciones gratuitas",
+        "api_base": "https://openrouter.ai/api/v1",
+        "litellm_prefix": "openrouter",
+        "auth_env_var": "OPENROUTER_API_KEY",
+        "models_endpoint": "https://openrouter.ai/api/v1/models",
+        "models_auth_env_var": "OPENROUTER_API_KEY",
+        "active_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "drop_params": True,
+    },
+    {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "description": "Modelos DeepSeek — Chat y Reasoner",
+        "api_base": "https://api.deepseek.com/v1",
+        "litellm_prefix": "deepseek",
+        "auth_env_var": "DEEPSEEK_API_KEY",
+        "active_model": "deepseek-chat",
+        "drop_params": True,
+    },
+    {
+        "id": "ollama",
+        "name": "Ollama (Local)",
+        "description": "Modelos locales via Ollama",
+        "api_base": "http://localhost:11434",
+        "litellm_prefix": "openai",
+        "auth_env_var": "",
+        "models_endpoint": "http://localhost:11434/api/tags",
+        "active_model": "llama3.2",
+        "drop_params": True,
+    },
 ]
 
 
@@ -78,7 +127,14 @@ def load_registry() -> ProviderRegistry:
         return registry
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return ProviderRegistry(**data)
+        registry = ProviderRegistry(**data)
+        existing_ids = {p.id for p in registry.providers}
+        added = [Provider(**d) for d in _DEFAULTS if d["id"] not in existing_ids]
+        if added:
+            registry.providers.extend(added)
+            save_registry(registry)
+            log.info("registry_migrated_new_defaults", added=[p.id for p in added])
+        return registry
     except Exception as e:
         log.error("registry_load_error", error=str(e))
         return ProviderRegistry(providers=[Provider(**d) for d in _DEFAULTS])
@@ -112,27 +168,29 @@ def add_provider(provider: Provider) -> Provider:
 
 
 def update_provider(provider_id: str, updates: dict) -> Provider:
-    registry = load_registry()
-    for i, p in enumerate(registry.providers):
-        if p.id == provider_id:
-            updated = p.model_copy(update=updates)
-            registry.providers[i] = updated
-            save_registry(registry)
-            log.info("provider_updated", id=provider_id)
-            return updated
+    with _registry_lock:
+        registry = load_registry()
+        for i, p in enumerate(registry.providers):
+            if p.id == provider_id:
+                updated = p.model_copy(update=updates)
+                registry.providers[i] = updated
+                save_registry(registry)
+                log.info("provider_updated", id=provider_id)
+                return updated
     raise ValueError(f"Provider '{provider_id}' no encontrado")
 
 
 def delete_provider(provider_id: str) -> None:
-    registry = load_registry()
-    if registry.active_provider_id == provider_id:
-        raise ValueError("No se puede eliminar el proveedor activo")
-    original = len(registry.providers)
-    registry.providers = [p for p in registry.providers if p.id != provider_id]
-    if len(registry.providers) == original:
-        raise ValueError(f"Provider '{provider_id}' no encontrado")
-    save_registry(registry)
-    log.info("provider_deleted", id=provider_id)
+    with _registry_lock:
+        registry = load_registry()
+        if registry.active_provider_id == provider_id:
+            raise ValueError("No se puede eliminar el proveedor activo")
+        original = len(registry.providers)
+        registry.providers = [p for p in registry.providers if p.id != provider_id]
+        if len(registry.providers) == original:
+            raise ValueError(f"Provider '{provider_id}' no encontrado")
+        save_registry(registry)
+        log.info("provider_deleted", id=provider_id)
 
 
 def generate_litellm_config(provider: Provider) -> Path:
@@ -197,7 +255,7 @@ async def switch_to_provider(provider_id: str) -> dict:
     config_path = generate_litellm_config(provider)
     log.info("switching_provider", provider=provider_id, config=str(config_path))
 
-    _kill_litellm()
+    await _kill_litellm()
     _start_litellm(config_path)
 
     # Actualizar active en registry
@@ -208,7 +266,7 @@ async def switch_to_provider(provider_id: str) -> dict:
     return {"switched_to": provider_id, "config": str(config_path)}
 
 
-def _kill_litellm() -> None:
+async def _kill_litellm() -> None:
     killed = 0
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -220,6 +278,19 @@ def _kill_litellm() -> None:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     log.info("litellm_kill_done", killed=killed)
+
+    # Esperar a que el puerto 4001 quede libre sin bloquear el event loop
+    for _ in range(30):  # máx 12 s (30 × 0.4 s)
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", 4001), timeout=0.3
+            )
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.sleep(0.4)
+        except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
+            return  # puerto libre
+    log.warning("litellm_port_not_released", port=4001)
 
 
 async def refresh_copilot_token() -> dict:
@@ -246,11 +317,14 @@ async def refresh_copilot_token() -> dict:
     if not new_token:
         raise ValueError(f"GitHub no devolvió token: {data}")
 
+    import os as _os
     env_path = _config_dir() / ".env"
     lines = [l for l in env_path.read_text(encoding="utf-8").splitlines()
              if not l.startswith("COPILOT_SESSION_TOKEN")]
     lines.append(f"COPILOT_SESSION_TOKEN={new_token}")
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp_path = env_path.with_suffix(".env.tmp")
+    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _os.replace(tmp_path, env_path)
 
     import os as _os
     _os.environ["COPILOT_SESSION_TOKEN"] = new_token
@@ -263,7 +337,7 @@ async def refresh_copilot_token() -> dict:
         provider = get_provider("copilot")
         if provider:
             config_path = generate_litellm_config(provider)
-            _kill_litellm()
+            await _kill_litellm()
             _start_litellm(config_path)
             log.info("litellm_restarted_with_fresh_copilot_token")
 
@@ -307,19 +381,28 @@ def _start_litellm(config_path: Path) -> None:
         # PowerShell script — evita UnicodeEncodeError en consolas cp1252
         ps1_file = Path(settings.litellm_config_dir) / "_start_litellm.ps1"
         lines = ["$ErrorActionPreference = 'Stop'"]
-        for k in ("PYTHONIOENCODING", "PYTHONUTF8", "COPILOT_SESSION_TOKEN",
-                  "ANTHROPIC_API_KEY", "ANTHROPIC_REAL_API_KEY",
-                  "GITHUB_TOKEN", "GITHUB_OAUTH_TOKEN"):
-            if k in child_env:
-                v = child_env[k].replace("'", "''")
-                lines.append(f"$env:{k} = '{v}'")
+        # Pasar todas las variables de credenciales (cualquier *_KEY, *_TOKEN, *_SECRET)
+        _CRED_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+        _ALWAYS_PASS = ("PYTHONIOENCODING", "PYTHONUTF8")
+        for k, v in child_env.items():
+            if k in _ALWAYS_PASS or any(k.endswith(s) for s in _CRED_SUFFIXES):
+                escaped = v.replace("'", "''")
+                lines.append(f"$env:{k} = '{escaped}'")
+        def _ps_escape(s: str) -> str:
+            return str(s).replace("'", "''")
+
         lines += [
-            f"Start-Process '{litellm_exe}' "
-            f"-ArgumentList '--config','{config_path}','--port','4001' "
-            f"-WorkingDirectory '{settings.litellm_config_dir}' "
-            f"-RedirectStandardOutput '{out_log}' "
-            f"-RedirectStandardError '{err_log}' "
-            f"-WindowStyle Hidden",
+            f"$litellmExe = '{_ps_escape(litellm_exe)}'",
+            f"$configPath = '{_ps_escape(config_path)}'",
+            f"$workDir = '{_ps_escape(settings.litellm_config_dir)}'",
+            f"$outLog = '{_ps_escape(out_log)}'",
+            f"$errLog = '{_ps_escape(err_log)}'",
+            "Start-Process $litellmExe "
+            "-ArgumentList '--config',$configPath,'--port','4001' "
+            "-WorkingDirectory $workDir "
+            "-RedirectStandardOutput $outLog "
+            "-RedirectStandardError $errLog "
+            "-WindowStyle Hidden",
         ]
         ps1_file.write_text("\n".join(lines), encoding="utf-8")
         subprocess.Popen(

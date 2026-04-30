@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/Button'
 import { useProviderModels, useSetProviderModel, useRefreshToken } from '@/hooks/useProviders'
+import { usePricing } from '@/hooks/usePricing'
 import type { Provider } from '@/types/provider'
 
 interface ModelPickerProps {
@@ -25,6 +26,18 @@ export function ModelPicker({ provider }: ModelPickerProps) {
   const { data, isLoading, error, refetch } = useProviderModels(provider.id, !!provider.models_endpoint)
   const setModel = useSetProviderModel()
   const refreshToken = useRefreshToken()
+  const { data: pricing } = usePricing()
+
+  const getPriceLabel = (modelId: string): string => {
+    if (!pricing) return ''
+    const pp = pricing.providers[provider.id]
+    if (!pp) return ''
+    if (pp['__free__'] || pp['__flat_rate__']) return 'GRATIS'
+    if (pp['__dynamic__']) return ''
+    const p = pp[modelId] as { input: number; output: number } | undefined
+    if (!p || typeof p !== 'object') return ''
+    return `$${p.input.toFixed(2)}/$${p.output.toFixed(2)}`
+  }
 
   if (!provider.models_endpoint) {
     return (
@@ -155,6 +168,11 @@ export function ModelPicker({ provider }: ModelPickerProps) {
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-gray-800 truncate">{m.name || m.id}</p>
                   {m.vendor && <p className="text-xs text-gray-400">{m.vendor}</p>}
+                  {getPriceLabel(m.id) && (
+                    <p className={`text-xs mt-0.5 ${getPriceLabel(m.id) === 'GRATIS' ? 'text-emerald-600 font-medium' : 'text-gray-400'}`}>
+                      {getPriceLabel(m.id)}
+                    </p>
+                  )}
                 </div>
                 {isActive && <span className="shrink-0 w-2 h-2 rounded-full bg-brand-500" />}
               </button>

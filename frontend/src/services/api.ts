@@ -48,3 +48,27 @@ export const usageApi = {
   getAnthropicUsage: () => api.get<UsageStats[]>('/usage/anthropic').then(r => r.data),
   getLogStats: () => api.get<UsageStats[]>('/usage/logs').then(r => r.data),
 }
+
+export const capabilitiesApi = {
+  getAll: () => api.get('/models/capabilities').then(r => r.data),
+  getModel: (modelId: string) =>
+    api.get(`/models/capabilities/${encodeURIComponent(modelId)}`).then(r => r.data),
+}
+
+export const pricingApi = {
+  getAll: () => api.get('/pricing/models').then(r => r.data),
+  getModel: (providerId: string, modelId: string) =>
+    api.get(`/pricing/model/${providerId}/${encodeURIComponent(modelId)}`).then(r => r.data),
+}
+
+export const usageHistoryApi = {
+  getHistory: (params?: { provider?: string; model?: string; limit?: number }) =>
+    api.get('/usage/history', { params }).then(r => r.data),
+  getSummary: (period: 'day' | 'week' | 'month' = 'day') =>
+    api.get('/usage/summary', { params: { period } }).then(r => r.data),
+}
+
+export const verifyKeyApi = {
+  verify: (providerId: string, apiKey: string) =>
+    api.post(`/providers/${providerId}/verify-key`, { api_key: apiKey }).then(r => r.data),
+}

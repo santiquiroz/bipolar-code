@@ -4,7 +4,9 @@ import { Badge } from '@/components/Badge'
 import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
 import { AddProviderModal } from '@/components/AddProviderModal'
+import { NvidiaWizard } from '@/components/NvidiaWizard'
 import { useProviders, useSwitchProvider, useDeleteProvider } from '@/hooks/useProviders'
+import type { Provider } from '@/types/provider'
 
 export function Providers() {
   const { data: registry, isLoading } = useProviders()
@@ -12,6 +14,15 @@ export function Providers() {
   const deleteProvider = useDeleteProvider()
   const [showAdd, setShowAdd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [showNvidiaWizard, setShowNvidiaWizard] = useState(false)
+
+  const handleActivate = (provider: Provider) => {
+    if (provider.id === 'nvidia_nim') {
+      setShowNvidiaWizard(true)
+      return
+    }
+    switchProvider.mutate(provider.id)
+  }
 
   return (
     <div className="space-y-4">
@@ -62,7 +73,7 @@ export function Providers() {
                         variant="secondary"
                         size="sm"
                         loading={switchProvider.isPending && switchProvider.variables === p.id}
-                        onClick={() => switchProvider.mutate(p.id)}
+                        onClick={() => handleActivate(p)}
                       >
                         Activar
                       </Button>
@@ -97,6 +108,15 @@ export function Providers() {
       )}
 
       {showAdd && <AddProviderModal onClose={() => setShowAdd(false)} />}
+      {showNvidiaWizard && (
+        <NvidiaWizard
+          onClose={() => setShowNvidiaWizard(false)}
+          onComplete={() => {
+            setShowNvidiaWizard(false)
+            switchProvider.mutate('nvidia_nim')
+          }}
+        />
+      )}
     </div>
   )
 }

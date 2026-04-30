@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
-from app.services import providers_service
+from app.services import providers_service, token_service
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -26,17 +26,25 @@ class ChatRequest(BaseModel):
 async def chat_completions(body: ChatRequest):
     settings = get_settings()
 
-    model = body.model
-    if not model:
-        provider = providers_service.get_active_provider()
-        model = (provider.active_model if provider else None) or "claude-sonnet-4-6"
+    _PROXY_ALIASES = set(providers_service.PROXY_ALIASES)
+    provider = providers_service.get_active_provider()
 
+    model = body.model
+    if not model or (model not in _PROXY_ALIASES and provider and model == provider.active_model):
+        # Modelo nativo del proveedor → usar alias primario de LiteLLM
+        model = "claude-sonnet-4-6"
+
+    messages_raw = [m.model_dump() for m in body.messages]
     payload = {
         "model": model,
-        "messages": [m.model_dump() for m in body.messages],
+        "messages": messages_raw,
         "stream": True,
     }
     log.info("chat_request", model=model, n_messages=len(body.messages))
+
+    ctx_window = token_service.get_context_window(model)
+    used = token_service.count_tokens(messages_raw)
+    ctx_pct = int(used / ctx_window * 100) if ctx_window else 0
 
     async def generate():
         try:
@@ -69,5 +77,9 @@ async def chat_completions(body: ChatRequest):
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Context-Usage": f"{used}/{ctx_window} tokens ({ctx_pct}%)",
+        },
     )

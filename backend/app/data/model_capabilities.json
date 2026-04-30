@@ -1,0 +1,21 @@
+{
+  "claude-sonnet-4-6": { "context_window": 200000, "supports_vision": true, "supports_tools": true },
+  "claude-opus-4-6": { "context_window": 200000, "supports_vision": true, "supports_tools": true },
+  "claude-haiku-4-5": { "context_window": 200000, "supports_vision": true, "supports_tools": true },
+  "claude-3-5-sonnet-20241022": { "context_window": 200000, "supports_vision": true, "supports_tools": true },
+  "claude-3-opus-20240229": { "context_window": 200000, "supports_vision": true, "supports_tools": true },
+  "claude-3-haiku-20240307": { "context_window": 200000, "supports_vision": true, "supports_tools": true },
+  "gpt-4o": { "context_window": 128000, "supports_vision": true, "supports_tools": true },
+  "meta/llama-3.1-70b-instruct": { "context_window": 128000, "supports_vision": false, "supports_tools": true },
+  "meta/llama-3.2-90b-vision-instruct": { "context_window": 128000, "supports_vision": true, "supports_tools": true },
+  "meta/llama-3.1-8b-instruct": { "context_window": 128000, "supports_vision": false, "supports_tools": true },
+  "mistralai/mistral-large-2-instruct": { "context_window": 128000, "supports_vision": false, "supports_tools": true },
+  "nvidia/llama-3.1-nemotron-70b-instruct": { "context_window": 128000, "supports_vision": false, "supports_tools": true },
+  "deepseek-chat": { "context_window": 64000, "supports_vision": false, "supports_tools": true },
+  "deepseek-reasoner": { "context_window": 64000, "supports_vision": false, "supports_tools": false },
+  "meta-llama/llama-3.1-8b-instruct:free": { "context_window": 32768, "supports_vision": false, "supports_tools": true },
+  "llama3.2": { "context_window": 128000, "supports_vision": false, "supports_tools": true },
+  "llama3.1": { "context_window": 128000, "supports_vision": false, "supports_tools": true },
+  "openrouter/*": { "context_window": 32000, "supports_vision": false, "supports_tools": true },
+  "__default__": { "context_window": 8192, "supports_vision": false, "supports_tools": true }
+}

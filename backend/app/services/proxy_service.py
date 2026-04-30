@@ -61,56 +61,60 @@ async def set_route_mode(new_mode: str) -> None:
         route_mode = new_mode
         log.info('route_mode_changed', mode=new_mode)
 
-def _set_user_env(key: str, value: str | None) -> None:
-    """Escribe o borra una variable de entorno persistente para Claude Code.
+_claude_settings_lock = asyncio.Lock()
 
-    Windows: HKCU\\Environment (registry) + WM_SETTINGCHANGE broadcast
-    Todas las plataformas: ~/.claude/settings.json sección 'env'
-    """
-    import sys
-    import json
 
-    # --- Windows: registry ---
-    if sys.platform == "win32":
-        import winreg
-        import ctypes
-        reg_key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE
-        )
-        try:
-            if value is None:
-                try:
-                    winreg.DeleteValue(reg_key, key)
-                except FileNotFoundError:
-                    pass
-            else:
-                winreg.SetValueEx(reg_key, key, 0, winreg.REG_EXPAND_SZ, value)
-        finally:
-            winreg.CloseKey(reg_key)
-        HWND_BROADCAST = 0xFFFF
-        WM_SETTINGCHANGE = 0x001A
-        ctypes.windll.user32.SendMessageTimeoutW(
-            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", 2, 5000, None
-        )
-
-    # --- Todas las plataformas: ~/.claude/settings.json ---
+def _write_claude_settings(updates: dict[str, str | None]) -> None:
+    """Atomically apply multiple env var updates to ~/.claude/settings.json."""
+    import json, tempfile
     settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
     try:
         with open(settings_path, "r", encoding="utf-8") as f:
             claude_settings = json.load(f)
         env_section = claude_settings.setdefault("env", {})
-        if value is None:
-            env_section.pop(key, None)
-        else:
-            env_section[key] = value
-        with open(settings_path, "w", encoding="utf-8") as f:
-            json.dump(claude_settings, f, indent=2)
-        log.info("claude_settings_env_written", key=key, has_value=value is not None)
+        for key, value in updates.items():
+            if value is None:
+                env_section.pop(key, None)
+            else:
+                env_section[key] = value
+        settings_dir = os.path.dirname(settings_path)
+        with tempfile.NamedTemporaryFile("w", dir=settings_dir, suffix=".tmp",
+                                        delete=False, encoding="utf-8") as tf:
+            json.dump(claude_settings, tf, indent=2)
+            tmp_name = tf.name
+        os.replace(tmp_name, settings_path)
+        log.info("claude_settings_env_written", keys=list(updates.keys()))
     except FileNotFoundError:
         log.debug("claude_settings_not_found", path=settings_path)
     except Exception as e:
-        log.warning("claude_settings_env_failed", key=key, error=str(e))
+        log.warning("claude_settings_env_failed", error=str(e))
 
+
+def _set_registry_env(key: str, value: str | None) -> None:
+    """Windows-only: write or delete a single env var in HKCU\\Environment."""
+    import sys
+    if sys.platform != "win32":
+        return
+    import winreg
+    import ctypes
+    reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE)
+    try:
+        if value is None:
+            try:
+                winreg.DeleteValue(reg_key, key)
+            except FileNotFoundError:
+                pass
+        else:
+            winreg.SetValueEx(reg_key, key, 0, winreg.REG_EXPAND_SZ, value)
+    finally:
+        winreg.CloseKey(reg_key)
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 2, 5000, None)
+
+
+def _set_user_env(key: str, value: str | None) -> None:
+    """Write or delete a single persistent env var (registry + settings.json)."""
+    _set_registry_env(key, value)
+    _write_claude_settings({key: value})
     log.info("user_env_written", key=key, has_value=value is not None)
 
 
@@ -134,10 +138,12 @@ async def enable_proxy_routing() -> dict:
                 if status.get('running'):
                     break
 
-        proxy_url = settings.proxy_url or 'http://localhost:4001'
+        fastapi_url = 'http://localhost:8000'
         api_key = settings.proxy_api_key or 'sk-litellm'
-        _set_user_env('ANTHROPIC_BASE_URL', proxy_url)
-        _set_user_env('ANTHROPIC_API_KEY', api_key)
+        _set_registry_env('ANTHROPIC_BASE_URL', fastapi_url)
+        _set_registry_env('ANTHROPIC_API_KEY', api_key)
+        async with _claude_settings_lock:
+            _write_claude_settings({'ANTHROPIC_BASE_URL': fastapi_url, 'ANTHROPIC_API_KEY': api_key})
         await set_route_mode('proxy')
         log.info('route_apply_success', mode='proxy')
         return {
@@ -155,10 +161,12 @@ async def enable_direct_routing(stop_litellm: bool = False) -> dict:
     Requiere reiniciar Claude Code para volver a apuntar directo a Anthropic."""
     log.info('route_apply_attempt', requested='direct')
     try:
-        _set_user_env('ANTHROPIC_BASE_URL', None)
-        _set_user_env('ANTHROPIC_API_KEY', None)
+        _set_registry_env('ANTHROPIC_BASE_URL', None)
+        _set_registry_env('ANTHROPIC_API_KEY', None)
+        async with _claude_settings_lock:
+            _write_claude_settings({'ANTHROPIC_BASE_URL': None, 'ANTHROPIC_API_KEY': None})
         if stop_litellm:
-            providers_service._kill_litellm()
+            await providers_service._kill_litellm()
         await set_route_mode('direct')
         status = await get_proxy_status()
         log.info('route_apply_success', mode='direct')
