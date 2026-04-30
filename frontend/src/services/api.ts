@@ -75,6 +75,12 @@ export const settingsApi = {
   getEnv: () => api.get<Record<string, string>>('/settings/env').then(r => r.data),
   setEnvKey: (key: string, value: string) =>
     api.post('/settings/env', { key, value }).then(r => r.data),
+  getAuthInfo: () => api.get<{
+    api_key_prefix: string
+    api_key_length: number
+    rate_limit_rpm: number
+    allowed_origins: string
+  }>('/settings/auth-info').then(r => r.data),
 }
 
 export const usageApi = {
