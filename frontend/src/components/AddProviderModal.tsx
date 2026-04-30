@@ -27,9 +27,9 @@ const PRESETS = [
   },
   {
     label: 'Ollama (local)',
-    id: 'ollama', name: 'Ollama', api_base: 'http://localhost:11434/v1',
+    id: 'ollama', name: 'Ollama', api_base: 'http://127.0.0.1:11434/v1',
     litellm_prefix: 'openai', auth_env_var: '',
-    models_endpoint: 'http://localhost:11434/v1/models', active_model: 'llama3',
+    models_endpoint: 'http://127.0.0.1:11434/v1/models', active_model: 'llama3',
   },
   {
     label: 'Personalizado',

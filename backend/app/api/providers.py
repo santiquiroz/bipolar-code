@@ -20,7 +20,7 @@ def _validate_provider_id(pid: str) -> None:
 
 def _validate_url(url: Optional[str], field: str) -> None:
     if url and not any(url.startswith(p) for p in _ALLOWED_URL_PREFIXES):
-        raise HTTPException(status_code=422, detail=f"{field} debe usar https:// o http://localhost")
+        raise HTTPException(status_code=422, detail=f"{field} debe usar https://, http://localhost o http://127.0.0.1")
 
 
 def _safe_http_error(e: Exception) -> str:
