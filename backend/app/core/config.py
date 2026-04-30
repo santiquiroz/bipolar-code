@@ -22,7 +22,7 @@ Path(_DEFAULT_CONFIG_DIR).mkdir(parents=True, exist_ok=True)
 
 class Settings(BaseSettings):
     # Proxy
-    proxy_url: str = "http://localhost:4001"
+    proxy_url: str = "http://127.0.0.1:4001"
     proxy_api_key: str = "sk-litellm"
 
     # Anthropic

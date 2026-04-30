@@ -53,10 +53,10 @@ _DEFAULTS: list[dict] = [
         "id": "lmstudio",
         "name": "LM Studio",
         "description": "Servidor local OpenAI-compatible (LM Studio / Ollama)",
-        "api_base": "http://localhost:1234/v1",
+        "api_base": "http://127.0.0.1:1234/v1",
         "litellm_prefix": "openai",
         "auth_env_var": "",
-        "models_endpoint": "http://localhost:1234/v1/models",
+        "models_endpoint": "http://127.0.0.1:1234/v1/models",
         "active_model": "google/gemma-4-26b-a4b",
     },
     {
@@ -97,10 +97,10 @@ _DEFAULTS: list[dict] = [
         "id": "ollama",
         "name": "Ollama (Local)",
         "description": "Modelos locales via Ollama",
-        "api_base": "http://localhost:11434",
+        "api_base": "http://127.0.0.1:11434",
         "litellm_prefix": "openai",
         "auth_env_var": "",
-        "models_endpoint": "http://localhost:11434/api/tags",
+        "models_endpoint": "http://127.0.0.1:11434/api/tags",
         "active_model": "llama3.2",
         "drop_params": True,
     },
@@ -247,7 +247,9 @@ def detect_active_provider_from_health(health: dict) -> str:
 
 
 async def switch_to_provider(provider_id: str) -> dict:
-    """Genera el config, mata el litellm actual y lo reinicia con el nuevo config."""
+    """Genera el config, mata el litellm actual y lo reinicia con el nuevo config.
+    Espera hasta 15 s a que el nuevo proceso quede listo."""
+    import httpx
     provider = get_provider(provider_id)
     if not provider:
         raise ValueError(f"Provider '{provider_id}' no encontrado")
@@ -258,12 +260,30 @@ async def switch_to_provider(provider_id: str) -> dict:
     await _kill_litellm()
     _start_litellm(config_path)
 
-    # Actualizar active en registry
+    # Actualizar active en registry antes de esperar
     registry = load_registry()
     registry.active_provider_id = provider_id
     save_registry(registry)
 
-    return {"switched_to": provider_id, "config": str(config_path)}
+    # Esperar a que LiteLLM esté listo (máx 15 s)
+    proxy_url = get_settings().proxy_url
+    ready = False
+    async with httpx.AsyncClient() as client:
+        for _ in range(30):
+            await asyncio.sleep(0.5)
+            try:
+                resp = await client.get(
+                    f"{proxy_url}/health/readiness",
+                    timeout=httpx.Timeout(1.0),
+                )
+                if resp.status_code < 400:
+                    ready = True
+                    break
+            except Exception:
+                pass
+
+    log.info("switch_complete", provider=provider_id, ready=ready)
+    return {"switched_to": provider_id, "config": str(config_path), "ready": ready}
 
 
 async def _kill_litellm() -> None:

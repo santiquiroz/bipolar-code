@@ -19,8 +19,8 @@ _background_tasks: set[asyncio.Task] = set()
 async def _litellm_reachable(proxy_url: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(f"{proxy_url}/health")
-            return resp.status_code < 500
+            resp = await client.get(f"{proxy_url}/health/readiness")
+            return resp.status_code < 400
     except Exception:
         return False
 

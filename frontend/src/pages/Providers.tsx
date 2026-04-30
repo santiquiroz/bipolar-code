@@ -6,18 +6,23 @@ import { Spinner } from '@/components/Spinner'
 import { AddProviderModal } from '@/components/AddProviderModal'
 import { NvidiaWizard } from '@/components/NvidiaWizard'
 import { useProviders, useSwitchProvider, useDeleteProvider } from '@/hooks/useProviders'
+import { useQuery } from '@tanstack/react-query'
+import { settingsApi } from '@/services/api'
 import type { Provider } from '@/types/provider'
 
 export function Providers() {
   const { data: registry, isLoading } = useProviders()
   const switchProvider = useSwitchProvider()
   const deleteProvider = useDeleteProvider()
+  const { data: envVars } = useQuery({ queryKey: ['settings-env'], queryFn: settingsApi.getEnv })
   const [showAdd, setShowAdd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showNvidiaWizard, setShowNvidiaWizard] = useState(false)
 
+  const nvidiaKeyConfigured = !!(envVars?.['NVIDIA_NIM_API_KEY'])
+
   const handleActivate = (provider: Provider) => {
-    if (provider.id === 'nvidia_nim') {
+    if (provider.id === 'nvidia_nim' && !nvidiaKeyConfigured) {
       setShowNvidiaWizard(true)
       return
     }
@@ -33,6 +38,13 @@ export function Providers() {
         </div>
         <Button onClick={() => setShowAdd(true)}>+ Agregar proveedor</Button>
       </div>
+
+      {switchProvider.isError && (
+        <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          Error al cambiar proveedor:{' '}
+          {(switchProvider.error as any)?.response?.data?.detail || (switchProvider.error as any)?.message || 'Error desconocido'}
+        </div>
+      )}
 
       {isLoading ? (
         <Spinner className="h-6 w-6 text-brand-500" />

@@ -24,10 +24,8 @@ export function useSwitchProvider() {
   return useMutation({
     mutationFn: (provider_id: string) => providersApi.switch(provider_id),
     onSuccess: () => {
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ['providers'] })
-        qc.invalidateQueries({ queryKey: ['proxy'] })
-      }, 3000)
+      qc.invalidateQueries({ queryKey: ['providers'] })
+      qc.invalidateQueries({ queryKey: ['proxy'] })
     },
   })
 }
