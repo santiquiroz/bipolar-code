@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 import httpx
 from fastapi import APIRouter, Request
@@ -18,11 +19,20 @@ _background_tasks: set[asyncio.Task] = set()
 
 async def _litellm_reachable(proxy_url: str) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=0.5)) as client:
             resp = await client.get(f"{proxy_url}/health/readiness")
             return resp.status_code < 400
     except Exception:
         return False
+
+
+def _sanitize_error(msg: str) -> str:
+    """Elimina URLs internas y rutas del sistema de mensajes de error."""
+    msg = re.sub(r'https?://127\.0\.0\.1:\d+\S*', '[proxy]', msg)
+    msg = re.sub(r'https?://localhost:\d+\S*', '[proxy]', msg)
+    msg = re.sub(r'[A-Za-z]:\\[^\s"\']+', '[path]', msg)
+    msg = re.sub(r'/(?:home|usr|var|etc|tmp)/\S+', '[path]', msg)
+    return msg
 
 
 @router.post("/v1/messages")
@@ -32,6 +42,11 @@ async def messages_passthrough(request: Request):
 
     messages = body.get("messages", [])
     model = body.get("model", "__default__")
+
+    # Capturar provider_id al inicio — antes de cualquier await que permita
+    # un switch de proveedor concurrente
+    active = providers_service.get_active_provider()
+    active_provider_id = active.id if active else "unknown"
 
     ctx_window = token_service.get_context_window(model)
     used = token_service.count_tokens(messages)
@@ -59,7 +74,8 @@ async def messages_passthrough(request: Request):
         "Authorization": f"Bearer {settings.proxy_api_key}",
         "Content-Type": "application/json",
     }
-    for h in ("anthropic-version", "anthropic-beta", "x-api-key"):
+    # Solo forwardear headers de versión/beta de Anthropic — NO x-api-key del cliente
+    for h in ("anthropic-version", "anthropic-beta"):
         if h in request.headers:
             forward_headers[h] = request.headers[h]
 
@@ -77,7 +93,13 @@ async def messages_passthrough(request: Request):
                 ) as resp:
                     if resp.status_code >= 400:
                         raw = await resp.aread()
-                        yield f"data: {raw.decode(errors='replace')}\n\n"
+                        try:
+                            err_data = json.loads(raw)
+                            err_msg = err_data.get("error", {}).get("message") or str(err_data)
+                        except Exception:
+                            err_msg = raw.decode(errors="replace")
+                        err = {"type": "error", "error": {"type": "api_error", "message": f"litellm {resp.status_code}: {_sanitize_error(err_msg)}"}}
+                        yield f"data: {json.dumps(err)}\n\n"
                         return
                     async for line in resp.aiter_lines():
                         if line.startswith("data: "):
@@ -89,12 +111,11 @@ async def messages_passthrough(request: Request):
                                 elif etype == "message_delta":
                                     usage_buf["output_tokens"] = event.get("usage", {}).get("output_tokens", 0)
                                 elif etype == "message_stop":
-                                    active = providers_service.get_active_provider()
-                                    pid = active.id if active else "unknown"
-                                    cost = estimate_cost(pid, model, usage_buf["input_tokens"], usage_buf["output_tokens"])
+                                    # Usar active_provider_id capturado al inicio del request
+                                    cost = estimate_cost(active_provider_id, model, usage_buf["input_tokens"], usage_buf["output_tokens"])
                                     task = asyncio.create_task(
                                         usage_tracker.record(
-                                            pid, model,
+                                            active_provider_id, model,
                                             usage_buf["input_tokens"],
                                             usage_buf["output_tokens"],
                                             cost, truncated,
@@ -102,13 +123,13 @@ async def messages_passthrough(request: Request):
                                     )
                                     _background_tasks.add(task)
                                     task.add_done_callback(_background_tasks.discard)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                log.warning("event_parse_failed", error=str(e), line=line[:200])
                         if line:
                             yield f"{line}\n"
         except Exception as e:
-            log.error("messages_passthrough_error", error=str(e))
-            err = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
+            log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
+            err = {"type": "error", "error": {"type": "api_error", "message": _sanitize_error(str(e))}}
             yield f"data: {json.dumps(err)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers=extra_headers)
