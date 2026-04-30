@@ -1,4 +1,5 @@
 import json
+import re
 import httpx
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -10,6 +11,14 @@ from app.core.logging import get_logger
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _sanitize_error(msg: str) -> str:
+    msg = re.sub(r'https?://127\.0\.0\.1:\d+\S*', '[proxy]', msg)
+    msg = re.sub(r'https?://localhost:\d+\S*', '[proxy]', msg)
+    msg = re.sub(r'[A-Za-z]:\\[^\s"\']+', '[path]', msg)
+    msg = re.sub(r'/(?:home|usr|var|etc|tmp)/\S+', '[path]', msg)
+    return msg
 
 
 class ChatMessage(BaseModel):
@@ -27,7 +36,10 @@ async def chat_completions(body: ChatRequest):
     settings = get_settings()
 
     _PROXY_ALIASES = set(providers_service.PROXY_ALIASES)
+    # Capturar provider al inicio — antes de cualquier await que permita
+    # un switch de proveedor concurrente
     provider = providers_service.get_active_provider()
+    active_provider_id = provider.id if provider else "unknown"
 
     model = body.model
     if not model or (model not in _PROXY_ALIASES and provider and model == provider.active_model):
@@ -58,20 +70,23 @@ async def chat_completions(body: ChatRequest):
                 ) as resp:
                     if resp.status_code >= 400:
                         raw = await resp.aread()
+                        err_msg = _sanitize_error(raw.decode(errors="replace"))
                         err = json.dumps({
                             "error": {
-                                "message": raw.decode(errors="replace"),
+                                "message": err_msg,
                                 "status": resp.status_code,
                             }
                         })
+                        log.warning("chat_upstream_error", status=resp.status_code, provider=active_provider_id)
                         yield f"data: {err}\n\ndata: [DONE]\n\n"
                         return
                     async for line in resp.aiter_lines():
                         if line:
                             yield f"{line}\n\n"
         except Exception as e:
-            log.error("chat_stream_error", error=str(e))
-            err = json.dumps({"error": {"message": str(e)}})
+            sanitized = _sanitize_error(str(e))
+            log.error("chat_stream_error", error=sanitized, provider=active_provider_id)
+            err = json.dumps({"error": {"message": sanitized}})
             yield f"data: {err}\n\ndata: [DONE]\n\n"
 
     return StreamingResponse(
