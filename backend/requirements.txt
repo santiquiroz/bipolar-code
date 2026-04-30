@@ -10,3 +10,4 @@ psutil>=5.9.0
 aiofiles>=23.0.0
 tiktoken>=0.7.0
 aiosqlite>=0.20.0
+pytest-asyncio>=0.23.0
