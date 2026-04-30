@@ -152,7 +152,7 @@ Se activa automáticamente cuando el usuario intenta activar NVIDIA NIM sin `NVI
 | DeepSeek | Lista estática en backend | No tiene endpoint público |
 | Ollama | `GET /api/tags` | Array de `{name, size}` |
 
-Los precios de OpenRouter se cachean en memoria y enriquecen `pricing.json` dinámicamente para esos modelos.
+Los precios de OpenRouter se cachean en memoria en `pricing_service.py` (no se escriben a disco). Al arrancar, `pricing_service` carga `pricing.json`; cuando se hace fetch de modelos de OpenRouter, los precios recibidos sobreescriben el caché en memoria solo para esa sesión.
 
 ---
 
@@ -246,7 +246,7 @@ Modelo activo: claude-sonnet-4-6
 - **Amarillo:** 70–90% usado
 - **Rojo + badge "Truncando automáticamente":** > 90%
 
-Fuente de datos: header `X-Context-Usage` leído por el hook `useProxyStatus`.
+Fuente de datos: header `X-Context-Usage` leído desde los headers de la respuesta de chat en `Chat.tsx`. El componente actualiza un estado local `contextUsage` después de cada respuesta completada y lo muestra en el header del chat. El Dashboard muestra el último valor conocido (persistido en memoria en el frontend).
 
 ---
 
@@ -312,7 +312,7 @@ CREATE TABLE requests (
 );
 ```
 
-El tracker escucha el evento `message_delta` del stream SSE de LiteLLM (que contiene `usage.input_tokens` y `usage.output_tokens`) y calcula el costo multiplicando por los precios de `pricing_service`.
+El tracker es invocado desde `chat.py` al finalizar cada stream. `chat.py` acumula los tokens del evento `message_delta` (campo `usage`) y al detectar el evento `message_stop` llama a `usage_tracker.record(provider_id, model, input_tokens, output_tokens)`. El tracker calcula el costo con `pricing_service` y persiste en SQLite.
 
 ### UI: 3 puntos de precio
 
