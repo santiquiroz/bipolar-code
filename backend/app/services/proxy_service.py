@@ -7,16 +7,32 @@ log = get_logger(__name__)
 
 
 async def get_proxy_health() -> dict:
+    """Two-phase health check: fast liveness via /health/readiness, then model counts via /health."""
     settings = get_settings()
+    url_base = settings.proxy_url
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.proxy_url}/health")
-            resp.raise_for_status()
-            data = resp.json()
-            log.info("proxy_health_ok", healthy=data.get("healthy_count"), unhealthy=data.get("unhealthy_count"))
-            return data
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{url_base}/health/readiness",
+                timeout=httpx.Timeout(5.0),
+            )
+            if resp.status_code >= 400:
+                log.warning("proxy_not_ready", status=resp.status_code, url=url_base)
+                return {}
+            # Proxy is up — try to get model counts (may be slow when models are timing out)
+            try:
+                model_resp = await client.get(
+                    f"{url_base}/health",
+                    timeout=httpx.Timeout(8.0),
+                )
+                data = model_resp.json()
+                log.info("proxy_health_ok", healthy=data.get("healthy_count"), unhealthy=data.get("unhealthy_count"))
+                return data
+            except Exception:
+                log.info("proxy_health_model_check_slow", url=url_base)
+                return {"healthy_count": 0, "unhealthy_count": 0}
     except httpx.ConnectError:
-        log.warning("proxy_unreachable", url=settings.proxy_url)
+        log.warning("proxy_unreachable", url=url_base)
         return {}
     except Exception as e:
         log.error("proxy_health_error", error=str(e))
@@ -130,7 +146,7 @@ async def enable_proxy_routing() -> dict:
             if not provider:
                 raise RuntimeError('No active provider to generate config')
             config_path = providers_service.generate_litellm_config(provider)
-            providers_service._kill_litellm()
+            await providers_service._kill_litellm()
             providers_service._start_litellm(config_path)
             for _ in range(10):
                 await asyncio.sleep(0.5)
@@ -138,7 +154,7 @@ async def enable_proxy_routing() -> dict:
                 if status.get('running'):
                     break
 
-        fastapi_url = 'http://localhost:8000'
+        fastapi_url = 'http://127.0.0.1:8000'
         api_key = settings.proxy_api_key or 'sk-litellm'
         _set_registry_env('ANTHROPIC_BASE_URL', fastapi_url)
         _set_registry_env('ANTHROPIC_API_KEY', api_key)
