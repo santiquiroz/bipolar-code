@@ -1,15 +1,25 @@
 import json
 import httpx
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 from app.services import providers_service, token_service
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.utils import sanitize_error as _sanitize_error
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+async def _litellm_reachable(proxy_url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=0.5)) as client:
+            resp = await client.get(f"{proxy_url}/health/readiness")
+            return resp.status_code < 400
+    except Exception:
+        return False
 
 
 class ChatMessage(BaseModel):
@@ -27,7 +37,16 @@ async def chat_completions(body: ChatRequest):
     settings = get_settings()
 
     _PROXY_ALIASES = set(providers_service.PROXY_ALIASES)
+    # Capturar provider al inicio — antes de cualquier await que permita
+    # un switch de proveedor concurrente
     provider = providers_service.get_active_provider()
+    active_provider_id = provider.id if provider else "unknown"
+
+    if not await _litellm_reachable(settings.proxy_url):
+        return JSONResponse(
+            status_code=503,
+            content={"error": {"message": "El proxy LiteLLM no está disponible."}},
+        )
 
     model = body.model
     if not model or (model not in _PROXY_ALIASES and provider and model == provider.active_model):
@@ -58,20 +77,23 @@ async def chat_completions(body: ChatRequest):
                 ) as resp:
                     if resp.status_code >= 400:
                         raw = await resp.aread()
+                        err_msg = _sanitize_error(raw.decode(errors="replace"))
                         err = json.dumps({
                             "error": {
-                                "message": raw.decode(errors="replace"),
+                                "message": err_msg,
                                 "status": resp.status_code,
                             }
                         })
+                        log.warning("chat_upstream_error", status=resp.status_code, provider=active_provider_id)
                         yield f"data: {err}\n\ndata: [DONE]\n\n"
                         return
                     async for line in resp.aiter_lines():
                         if line:
                             yield f"{line}\n\n"
         except Exception as e:
-            log.error("chat_stream_error", error=str(e))
-            err = json.dumps({"error": {"message": str(e)}})
+            sanitized = _sanitize_error(str(e))
+            log.error("chat_stream_error", error=sanitized, provider=active_provider_id)
+            err = json.dumps({"error": {"message": sanitized}})
             yield f"data: {err}\n\ndata: [DONE]\n\n"
 
     return StreamingResponse(

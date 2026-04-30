@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Card } from '@/components/Card'
 import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
 import { useEnvVars, useSetEnvKey } from '@/hooks/useSettings'
 import { useProviders } from '@/hooks/useProviders'
+import { settingsApi } from '@/services/api'
 
 function EnvField({ envKey, label, hint, masked }: {
   envKey: string; label: string; hint: string; masked: string
@@ -59,6 +60,16 @@ function EnvField({ envKey, label, hint, masked }: {
 export function Settings() {
   const { data: env, isLoading: envLoading } = useEnvVars()
   const { data: registry } = useProviders()
+  const [authInfo, setAuthInfo] = useState<{
+    api_key_prefix: string
+    api_key_length: number
+    rate_limit_rpm: number
+    allowed_origins: string
+  } | null>(null)
+
+  useEffect(() => {
+    settingsApi.getAuthInfo().then(setAuthInfo).catch(() => {})
+  }, [])
 
   // Recolectar todas las variables de autenticación de los proveedores
   const providerVars = registry?.providers
@@ -125,6 +136,31 @@ export function Settings() {
           </Card>
         </>
       )}
+
+      <div className="mt-6 bg-white rounded-xl border border-gray-200 p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">Acceso y Seguridad</h3>
+        <div className="space-y-2 text-sm text-gray-600">
+          <div className="flex items-center justify-between">
+            <span>API Key (prefix)</span>
+            <code className="bg-gray-100 px-2 py-0.5 rounded text-xs font-mono">
+              {authInfo?.api_key_prefix ?? '—'}
+            </code>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>Rate limit</span>
+            <span className="text-gray-500">{authInfo?.rate_limit_rpm ?? 0} req/min</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>Orígenes permitidos</span>
+            <span className="text-gray-500 text-xs">{authInfo?.allowed_origins ?? '*'}</span>
+          </div>
+        </div>
+        <p className="text-xs text-gray-400">
+          La API key completa está en{' '}
+          <code className="bg-gray-100 px-1 rounded">C:\litellm\.env</code>{' '}
+          (variable <code className="bg-gray-100 px-1 rounded">UI_API_KEY</code>)
+        </p>
+      </div>
     </div>
   )
 }

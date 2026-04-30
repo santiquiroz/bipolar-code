@@ -84,13 +84,33 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # CORS — soporta red compartida
+    raw_origins = settings.allowed_origins.strip()
+    if raw_origins in ("*", ""):
+        cors_origins = ["*"]
+        cors_credentials = False
+    else:
+        cors_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+        for dev in ("http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:8000"):
+            if dev not in cors_origins:
+                cors_origins.append(dev)
+        cors_credentials = True
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:3000"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=cors_origins,
+        allow_credentials=cors_credentials,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-API-Key", "x-api-key",
+                       "anthropic-version", "anthropic-beta", "x-context-usage"],
+        expose_headers=["X-Context-Usage"],
     )
+
+    from app.middleware.auth import APIKeyMiddleware
+    from app.middleware.rate_limit import RateLimitMiddleware
+    app.add_middleware(APIKeyMiddleware, api_key=settings.ui_api_key)
+    if settings.rate_limit_rpm > 0:
+        app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm)
 
     app.include_router(proxy.router, prefix="/api")
     app.include_router(models.router, prefix="/api")
@@ -98,29 +118,30 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router, prefix="/api")
     app.include_router(providers_router.router, prefix="/api")
     app.include_router(chat_router.router, prefix="/api")
-    app.include_router(messages_router.router)  # /v1/messages — no /api prefix
+    app.include_router(messages_router.router)
     app.include_router(pricing_router.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():
+        s = get_settings()
         log.info("health_check")
-        return {"status": "ok", "version": "0.2.0"}
+        return {
+            "status": "ok",
+            "version": "0.2.0",
+            "api_key_configured": bool(s.ui_api_key),
+        }
 
-    # Servir frontend compilado si existe (producción / binario PyInstaller)
     import sys
     import pathlib
     if getattr(sys, "frozen", False):
-        # Ejecutable PyInstaller: los assets están en sys._MEIPASS
         dist_dir = pathlib.Path(sys._MEIPASS) / "frontend" / "dist"
     else:
-        # Dev: buscar relative al archivo fuente
         dist_dir = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if dist_dir.exists():
         from fastapi.staticfiles import StaticFiles
         from starlette.exceptions import HTTPException as StarletteHTTPException
 
         class SPAStaticFiles(StaticFiles):
-            """StaticFiles con fallback SPA: cualquier 404 devuelve index.html."""
             async def get_response(self, path: str, scope):
                 try:
                     return await super().get_response(path, scope)

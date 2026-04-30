@@ -6,7 +6,9 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client():
     from app.main import app
-    return TestClient(app)
+    from app.core.config import get_settings
+    api_key = get_settings().ui_api_key
+    return TestClient(app, headers={"x-api-key": api_key})
 
 
 def test_messages_endpoint_exists(client):

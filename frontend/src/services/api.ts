@@ -2,7 +2,29 @@ import axios from 'axios'
 import type { ModelEntry, UsageStats } from '@/types'
 import type { Provider, ProviderRegistry, ProviderModel } from '@/types/provider'
 
+const STORAGE_KEY = 'bipolar_api_key'
+
+export function getStoredApiKey(): string {
+  return localStorage.getItem(STORAGE_KEY) ?? ''
+}
+
+export function setStoredApiKey(key: string): void {
+  localStorage.setItem(STORAGE_KEY, key)
+}
+
+export function clearStoredApiKey(): void {
+  localStorage.removeItem(STORAGE_KEY)
+}
+
 const api = axios.create({ baseURL: '/api' })
+
+api.interceptors.request.use((config) => {
+  const key = getStoredApiKey()
+  if (key) {
+    config.headers['X-API-Key'] = key
+  }
+  return config
+})
 
 api.interceptors.response.use(
   (res) => res,
@@ -11,6 +33,17 @@ api.interceptors.response.use(
     return Promise.reject(err)
   }
 )
+
+export async function validateApiKey(key: string): Promise<boolean> {
+  try {
+    const resp = await axios.get('/api/providers', {
+      headers: { 'X-API-Key': key },
+    })
+    return resp.status === 200
+  } catch {
+    return false
+  }
+}
 
 export const proxyApi = {
   getStatus: () => api.get<{ running: boolean; port: number; active_provider_id: string; healthy_models: number; unhealthy_models: number }>('/proxy/status').then(r => r.data),
@@ -42,6 +75,12 @@ export const settingsApi = {
   getEnv: () => api.get<Record<string, string>>('/settings/env').then(r => r.data),
   setEnvKey: (key: string, value: string) =>
     api.post('/settings/env', { key, value }).then(r => r.data),
+  getAuthInfo: () => api.get<{
+    api_key_prefix: string
+    api_key_length: number
+    rate_limit_rpm: number
+    allowed_origins: string
+  }>('/settings/auth-info').then(r => r.data),
 }
 
 export const usageApi = {
