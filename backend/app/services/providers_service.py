@@ -221,7 +221,8 @@ def generate_litellm_config(provider: Provider) -> Path:
         ],
         "litellm_settings": {
             "drop_params": provider.drop_params,
-            "use_chat_completions_url_for_anthropic_messages": provider.use_chat_completions_for_anthropic,
+            # Non-Anthropic backends need this so litellm translates /v1/messages → /v1/chat/completions
+            "use_chat_completions_url_for_anthropic_messages": provider.litellm_prefix != "anthropic",
         },
     }
 
@@ -247,8 +248,9 @@ def detect_active_provider_from_health(health: dict) -> str:
 
 
 async def switch_to_provider(provider_id: str) -> dict:
-    """Genera el config, mata el litellm actual y lo reinicia con el nuevo config.
-    Espera hasta 15 s a que el nuevo proceso quede listo."""
+    """Genera el config, actualiza el registry PRIMERO, luego reinicia litellm.
+    Actualizar el registry antes del restart garantiza consistencia si el proceso
+    crashea durante la transición."""
     import httpx
     provider = get_provider(provider_id)
     if not provider:
@@ -257,13 +259,22 @@ async def switch_to_provider(provider_id: str) -> dict:
     config_path = generate_litellm_config(provider)
     log.info("switching_provider", provider=provider_id, config=str(config_path))
 
-    await _kill_litellm()
-    _start_litellm(config_path)
-
-    # Actualizar active en registry antes de esperar
+    # Guardar registry ANTES de matar litellm
     registry = load_registry()
+    previous_provider_id = registry.active_provider_id
     registry.active_provider_id = provider_id
     save_registry(registry)
+
+    try:
+        await _kill_litellm()
+        _start_litellm(config_path)
+    except Exception as e:
+        # Si falla el restart, revertir el registry
+        log.error("switch_restart_failed", provider=provider_id, error=str(e))
+        registry = load_registry()
+        registry.active_provider_id = previous_provider_id
+        save_registry(registry)
+        raise
 
     # Esperar a que LiteLLM esté listo (máx 15 s)
     proxy_url = get_settings().proxy_url
@@ -288,19 +299,38 @@ async def switch_to_provider(provider_id: str) -> dict:
 
 async def _kill_litellm() -> None:
     killed = 0
+    pid_file = _pid_file_path()
+
+    # Intentar matar por PID file primero (más preciso)
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            proc = psutil.Process(pid)
+            proc.kill()
+            killed += 1
+            log.info("litellm_killed_by_pid_file", pid=pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, FileNotFoundError) as e:
+            log.warning("pid_file_kill_failed", error=str(e))
+        finally:
+            try:
+                pid_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    # Fallback: buscar por cmdline
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             cmdline = " ".join(proc.info.get("cmdline") or [])
-            if "litellm" in cmdline.lower() and proc.info["name"] in ("python.exe", "python"):
+            if "litellm" in cmdline.lower() and proc.info["name"] in ("python.exe", "python", "litellm", "litellm.exe"):
                 proc.kill()
                 killed += 1
-                log.info("litellm_process_killed", pid=proc.pid)
+                log.info("litellm_process_killed_by_cmdline", pid=proc.pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
+
     log.info("litellm_kill_done", killed=killed)
 
-    # Esperar a que el puerto 4001 quede libre sin bloquear el event loop
-    for _ in range(30):  # máx 12 s (30 × 0.4 s)
+    for _ in range(30):
         try:
             _, writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", 4001), timeout=0.3
@@ -309,7 +339,7 @@ async def _kill_litellm() -> None:
             await writer.wait_closed()
             await asyncio.sleep(0.4)
         except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
-            return  # puerto libre
+            return
     log.warning("litellm_port_not_released", port=4001)
 
 
@@ -365,6 +395,10 @@ async def refresh_copilot_token() -> dict:
     return {"refreshed": True, "token_length": len(new_token)}
 
 
+def _pid_file_path() -> Path:
+    return Path(get_settings().litellm_config_dir) / "litellm.pid"
+
+
 def _start_litellm(config_path: Path) -> None:
     import sys
     import os
@@ -417,12 +451,15 @@ def _start_litellm(config_path: Path) -> None:
             f"$workDir = '{_ps_escape(settings.litellm_config_dir)}'",
             f"$outLog = '{_ps_escape(out_log)}'",
             f"$errLog = '{_ps_escape(err_log)}'",
-            "Start-Process $litellmExe "
+            f"$pidFile = '{_ps_escape(str(_pid_file_path()))}'",
+            "$proc = Start-Process $litellmExe "
             "-ArgumentList '--config',$configPath,'--port','4001' "
             "-WorkingDirectory $workDir "
             "-RedirectStandardOutput $outLog "
             "-RedirectStandardError $errLog "
-            "-WindowStyle Hidden",
+            "-WindowStyle Hidden "
+            "-PassThru",
+            "$proc.Id | Out-File -FilePath $pidFile -Encoding utf8 -NoNewline",
         ]
         ps1_file.write_text("\n".join(lines), encoding="utf-8")
         subprocess.Popen(
@@ -433,7 +470,7 @@ def _start_litellm(config_path: Path) -> None:
     else:
         # Linux / macOS: subprocess directo con start_new_session
         with open(out_log, "ab") as fout, open(err_log, "ab") as ferr:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [litellm_exe, "--config", str(config_path), "--port", "4001"],
                 env=child_env,
                 stdout=fout,
@@ -441,5 +478,10 @@ def _start_litellm(config_path: Path) -> None:
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
             )
+        try:
+            _pid_file_path().write_text(str(proc.pid), encoding="utf-8")
+            log.info("litellm_pid_written", pid=proc.pid)
+        except Exception as e:
+            log.warning("pid_file_write_failed", error=str(e))
 
     log.info("litellm_started", config=str(config_path), out_log=str(out_log))
