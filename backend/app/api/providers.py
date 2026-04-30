@@ -1,12 +1,36 @@
 import os
+import re
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 from app.models.provider import Provider
 from app.services import providers_service
 from app.core.logging import get_logger
 from app.core.config import get_settings
+
+_PROVIDER_ID_RE = re.compile(r'^[a-z0-9_-]{1,64}$')
+_ALLOWED_URL_PREFIXES = ("https://", "http://localhost", "http://127.0.0.1")
+
+
+def _validate_provider_id(pid: str) -> None:
+    if not _PROVIDER_ID_RE.match(pid):
+        raise HTTPException(status_code=422, detail="provider id solo puede contener a-z, 0-9, _ y - (máx 64 chars)")
+
+
+def _validate_url(url: Optional[str], field: str) -> None:
+    if url and not any(url.startswith(p) for p in _ALLOWED_URL_PREFIXES):
+        raise HTTPException(status_code=422, detail=f"{field} debe usar https:// o http://localhost")
+
+
+def _safe_http_error(e: Exception) -> str:
+    name = type(e).__name__.lower()
+    msg = str(e).lower()
+    if "timeout" in name or "timeout" in msg:
+        return "Timeout al conectar con el proveedor"
+    if "connect" in name:
+        return "No se pudo conectar con el proveedor"
+    return "Error inesperado al verificar la clave"
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/providers", tags=["providers"])
@@ -72,6 +96,9 @@ def get_provider(provider_id: str):
 @router.post("")
 def add_provider(body: AddProviderRequest):
     log.info("request_add_provider", id=body.id)
+    _validate_provider_id(body.id)
+    _validate_url(body.api_base, "api_base")
+    _validate_url(body.models_endpoint, "models_endpoint")
     try:
         return providers_service.add_provider(Provider(**body.model_dump()))
     except ValueError as e:
@@ -81,7 +108,7 @@ def add_provider(body: AddProviderRequest):
 @router.patch("/{provider_id}")
 def update_provider(provider_id: str, body: UpdateProviderRequest):
     log.info("request_update_provider", id=provider_id)
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates = body.model_dump(exclude_unset=True)
     try:
         return providers_service.update_provider(provider_id, updates)
     except ValueError as e:
@@ -110,11 +137,18 @@ async def switch_provider(body: SwitchProviderRequest):
 
 
 @router.post("/{provider_id}/model")
-def set_provider_model(provider_id: str, body: SetModelRequest):
-    """Cambia el modelo activo de un proveedor (sin reiniciar)."""
+async def set_provider_model(provider_id: str, body: SetModelRequest):
+    """Cambia el modelo activo. Si el provider es el activo, reinicia LiteLLM."""
     log.info("request_set_provider_model", provider_id=provider_id, model=body.model_id)
     try:
-        return providers_service.update_provider(provider_id, {"active_model": body.model_id})
+        updated = providers_service.update_provider(provider_id, {"active_model": body.model_id})
+        registry = providers_service.load_registry()
+        if registry.active_provider_id == provider_id:
+            config_path = providers_service.generate_litellm_config(updated)
+            await providers_service._kill_litellm()
+            providers_service._start_litellm(config_path)
+            log.info("litellm_restarted_after_model_change", provider=provider_id, model=body.model_id)
+        return updated
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -130,7 +164,7 @@ async def list_provider_models(provider_id: str):
 
     settings = get_settings()
     env_var = provider.models_auth_env_var or provider.auth_env_var
-    token = os.environ.get(env_var, "") or getattr(settings, env_var.lower(), "")
+    token = os.environ.get(env_var, "") if env_var else ""
 
     headers = {}
     if token:
@@ -184,51 +218,25 @@ async def verify_provider_key(provider_id: str, body: dict):
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key required")
 
-    if provider_id == "nvidia_nim":
+    _VERIFY_ENDPOINTS = {
+        "nvidia_nim":  ("https://integrate.api.nvidia.com/v1/models", "NVIDIA_NIM_API_KEY"),
+        "openrouter":  ("https://openrouter.ai/api/v1/models",        "OPENROUTER_API_KEY"),
+        "deepseek":    ("https://api.deepseek.com/models",             "DEEPSEEK_API_KEY"),
+    }
+    if provider_id in _VERIFY_ENDPOINTS:
+        url, env_key = _VERIFY_ENDPOINTS[provider_id]
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    "https://integrate.api.nvidia.com/v1/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                if resp.status_code == 200:
-                    models = resp.json().get("data", [])
-                    write_env_key("NVIDIA_NIM_API_KEY", api_key)
-                    get_settings.cache_clear()
-                    return {"valid": True, "model_count": len(models)}
-                return {"valid": False, "error": f"HTTP {resp.status_code}"}
+                resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            if resp.status_code == 200:
+                write_env_key(env_key, api_key)
+                get_settings.cache_clear()
+                model_count = len(resp.json().get("data", []))
+                return {"valid": True, "model_count": model_count}
+            return {"valid": False, "error": f"HTTP {resp.status_code}"}
         except Exception as e:
-            return {"valid": False, "error": str(e)}
-
-    if provider_id == "openrouter":
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    "https://openrouter.ai/api/v1/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                if resp.status_code == 200:
-                    write_env_key("OPENROUTER_API_KEY", api_key)
-                    get_settings.cache_clear()
-                    return {"valid": True, "model_count": len(resp.json().get("data", []))}
-                return {"valid": False, "error": f"HTTP {resp.status_code}"}
-        except Exception as e:
-            return {"valid": False, "error": str(e)}
-
-    if provider_id == "deepseek":
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    "https://api.deepseek.com/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                if resp.status_code == 200:
-                    write_env_key("DEEPSEEK_API_KEY", api_key)
-                    get_settings.cache_clear()
-                    return {"valid": True}
-                return {"valid": False, "error": f"HTTP {resp.status_code}"}
-        except Exception as e:
-            return {"valid": False, "error": str(e)}
+            log.warning("verify_key_error", provider=provider_id, error=str(e))
+            return {"valid": False, "error": _safe_http_error(e)}
 
     raise HTTPException(status_code=400, detail=f"verify-key not supported for {provider_id}")
 

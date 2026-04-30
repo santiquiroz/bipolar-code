@@ -1,5 +1,5 @@
-from typing import Optional
-from fastapi import APIRouter
+from typing import Literal, Optional
+from fastapi import APIRouter, Query
 from app.services import usage_service, usage_tracker
 from app.core.logging import get_logger
 
@@ -23,11 +23,11 @@ async def log_stats():
 async def usage_history(
     provider: Optional[str] = None,
     model: Optional[str] = None,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=1000),
 ):
     return await usage_tracker.get_history(provider_id=provider, model=model, limit=limit)
 
 
 @router.get("/summary")
-async def usage_summary(period: str = "day"):
+async def usage_summary(period: Literal["day", "week", "month"] = "day"):
     return await usage_tracker.get_summary(period=period)

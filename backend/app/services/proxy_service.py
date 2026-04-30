@@ -61,9 +61,12 @@ async def set_route_mode(new_mode: str) -> None:
         route_mode = new_mode
         log.info('route_mode_changed', mode=new_mode)
 
+_claude_settings_lock = asyncio.Lock()
+
+
 def _write_claude_settings(updates: dict[str, str | None]) -> None:
     """Atomically apply multiple env var updates to ~/.claude/settings.json."""
-    import json
+    import json, tempfile
     settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
     try:
         with open(settings_path, "r", encoding="utf-8") as f:
@@ -74,8 +77,12 @@ def _write_claude_settings(updates: dict[str, str | None]) -> None:
                 env_section.pop(key, None)
             else:
                 env_section[key] = value
-        with open(settings_path, "w", encoding="utf-8") as f:
-            json.dump(claude_settings, f, indent=2)
+        settings_dir = os.path.dirname(settings_path)
+        with tempfile.NamedTemporaryFile("w", dir=settings_dir, suffix=".tmp",
+                                        delete=False, encoding="utf-8") as tf:
+            json.dump(claude_settings, tf, indent=2)
+            tmp_name = tf.name
+        os.replace(tmp_name, settings_path)
         log.info("claude_settings_env_written", keys=list(updates.keys()))
     except FileNotFoundError:
         log.debug("claude_settings_not_found", path=settings_path)
@@ -135,7 +142,8 @@ async def enable_proxy_routing() -> dict:
         api_key = settings.proxy_api_key or 'sk-litellm'
         _set_registry_env('ANTHROPIC_BASE_URL', fastapi_url)
         _set_registry_env('ANTHROPIC_API_KEY', api_key)
-        _write_claude_settings({'ANTHROPIC_BASE_URL': fastapi_url, 'ANTHROPIC_API_KEY': api_key})
+        async with _claude_settings_lock:
+            _write_claude_settings({'ANTHROPIC_BASE_URL': fastapi_url, 'ANTHROPIC_API_KEY': api_key})
         await set_route_mode('proxy')
         log.info('route_apply_success', mode='proxy')
         return {
@@ -155,9 +163,10 @@ async def enable_direct_routing(stop_litellm: bool = False) -> dict:
     try:
         _set_registry_env('ANTHROPIC_BASE_URL', None)
         _set_registry_env('ANTHROPIC_API_KEY', None)
-        _write_claude_settings({'ANTHROPIC_BASE_URL': None, 'ANTHROPIC_API_KEY': None})
+        async with _claude_settings_lock:
+            _write_claude_settings({'ANTHROPIC_BASE_URL': None, 'ANTHROPIC_API_KEY': None})
         if stop_litellm:
-            providers_service._kill_litellm()
+            await providers_service._kill_litellm()
         await set_route_mode('direct')
         status = await get_proxy_status()
         log.info('route_apply_success', mode='direct')

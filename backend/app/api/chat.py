@@ -26,10 +26,13 @@ class ChatRequest(BaseModel):
 async def chat_completions(body: ChatRequest):
     settings = get_settings()
 
+    _PROXY_ALIASES = set(providers_service.PROXY_ALIASES)
+    provider = providers_service.get_active_provider()
+
     model = body.model
-    if not model:
-        provider = providers_service.get_active_provider()
-        model = (provider.active_model if provider else None) or "claude-sonnet-4-6"
+    if not model or (model not in _PROXY_ALIASES and provider and model == provider.active_model):
+        # Modelo nativo del proveedor → usar alias primario de LiteLLM
+        model = "claude-sonnet-4-6"
 
     messages_raw = [m.model_dump() for m in body.messages]
     payload = {

@@ -3,7 +3,7 @@ import json
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -14,6 +14,15 @@ log = get_logger(__name__)
 router = APIRouter(tags=["messages"])
 
 _background_tasks: set[asyncio.Task] = set()
+
+
+async def _litellm_reachable(proxy_url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{proxy_url}/health")
+            return resp.status_code < 500
+    except Exception:
+        return False
 
 
 @router.post("/v1/messages")
@@ -32,6 +41,12 @@ async def messages_passthrough(request: Request):
         messages = token_service.truncate_messages(messages, ctx_window)
         body["messages"] = messages
         truncated = True
+
+    if not await _litellm_reachable(settings.proxy_url):
+        return JSONResponse(
+            status_code=503,
+            content={"type": "error", "error": {"type": "api_error", "message": "El proxy LiteLLM no está disponible. Inicia el proxy desde el Dashboard."}},
+        )
 
     ctx_pct = int(used / ctx_window * 100) if ctx_window else 0
     extra_headers = {
