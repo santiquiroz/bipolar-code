@@ -73,33 +73,46 @@ async def get_history(
         return [dict(r) for r in await cur.fetchall()]
 
 
-async def get_summary(period: str = "day") -> dict:
-    period_expr = {
-        "day": "strftime('%Y-%m-%d', timestamp)",
-        "week": "strftime('%Y-W%W', timestamp)",
-        "month": "strftime('%Y-%m', timestamp)",
-    }.get(period, "strftime('%Y-%m-%d', timestamp)")
+_PERIOD_EXPRS = {
+    "day": "strftime('%Y-%m-%d', timestamp)",
+    "week": "strftime('%Y-W%W', timestamp)",
+    "month": "strftime('%Y-%m', timestamp)",
+}
 
+
+async def _get_by_provider() -> dict:
     async with aiosqlite.connect(str(_db_path())) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT provider_id, model, SUM(input_tokens) as ti, SUM(output_tokens) as to_, "
-            "SUM(cost_usd) as tc, COUNT(*) as rc FROM requests GROUP BY provider_id, model"
+            "SELECT provider_id, model, SUM(input_tokens) as input_sum, "
+            "SUM(output_tokens) as output_sum, SUM(cost_usd) as cost_sum, "
+            "COUNT(*) as req_count FROM requests GROUP BY provider_id, model"
         )
         by_provider: dict = {}
         for row in await cur.fetchall():
             d = dict(row)
             pid = d["provider_id"]
             by_provider.setdefault(pid, {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
-            by_provider[pid]["requests"] += d["rc"]
-            by_provider[pid]["input_tokens"] += d["ti"] or 0
-            by_provider[pid]["output_tokens"] += d["to_"] or 0
-            by_provider[pid]["cost_usd"] += d["tc"] or 0.0
+            by_provider[pid]["requests"] += d["req_count"]
+            by_provider[pid]["input_tokens"] += d["input_sum"] or 0
+            by_provider[pid]["output_tokens"] += d["output_sum"] or 0
+            by_provider[pid]["cost_usd"] += d["cost_sum"] or 0.0
+    return by_provider
 
-        cur2 = await db.execute(
+
+async def _get_series(period: str) -> list[dict]:
+    period_expr = _PERIOD_EXPRS.get(period, _PERIOD_EXPRS["day"])
+    async with aiosqlite.connect(str(_db_path())) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
             f"SELECT {period_expr} as period, provider_id, SUM(cost_usd) as cost "
             "FROM requests GROUP BY period, provider_id ORDER BY period"
         )
-        series = [dict(r) for r in await cur2.fetchall()]
+        return [dict(r) for r in await cur.fetchall()]
 
-    return {"by_provider": by_provider, "series": series}
+
+async def get_summary(period: str = "day") -> dict:
+    return {
+        "by_provider": await _get_by_provider(),
+        "series": await _get_series(period),
+    }
