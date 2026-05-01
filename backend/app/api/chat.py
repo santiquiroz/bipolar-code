@@ -15,7 +15,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 async def _litellm_reachable(proxy_url: str) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=0.5)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=2.0, read=3.0)) as client:
             resp = await client.get(f"{proxy_url}/health/readiness")
             return resp.status_code < 400
     except Exception:
