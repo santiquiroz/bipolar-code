@@ -81,6 +81,7 @@ export const settingsApi = {
     rate_limit_rpm: number
     allowed_origins: string
   }>('/settings/auth-info').then(r => r.data),
+  getApiKey: () => api.get<{ api_key: string }>('/settings/api-key').then(r => r.data),
 }
 
 export const usageApi = {
