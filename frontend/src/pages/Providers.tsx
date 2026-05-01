@@ -76,6 +76,9 @@ export function Providers() {
                       {p.models_endpoint && (
                         <span className="col-span-2"><span className="text-gray-400">Models endpoint:</span> {p.models_endpoint}</span>
                       )}
+                      {p.rate_limit_rpm > 0 && (
+                        <span><span className="text-gray-400">Rate limit:</span> {p.rate_limit_rpm} req/min</span>
+                      )}
                     </div>
                   </div>
 

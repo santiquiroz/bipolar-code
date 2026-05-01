@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import httpx
@@ -11,6 +12,18 @@ from app.core.config import get_settings
 
 _PROVIDER_ID_RE = re.compile(r'^[a-z0-9_-]{1,64}$')
 _ALLOWED_URL_PREFIXES = ("https://", "http://localhost", "http://127.0.0.1")
+
+# Patrones en el model ID que indican que NO es un LLM de chat compatible con Claude Code
+_NON_CHAT_PATTERNS = re.compile(
+    r'(rerank|embed|encod|classif|safety|moderat|detect|segment|caption|'
+    r'whisper|tts|speech|transcri|ocr|vision-only|image-gen|diffusion|'
+    r'speaker|lip.?sync|religh|rembg|ising|synthetic-video)',
+    re.IGNORECASE,
+)
+
+
+def _is_chat_model(model_id: str) -> bool:
+    return not _NON_CHAT_PATTERNS.search(model_id)
 
 
 def _validate_provider_id(pid: str) -> None:
@@ -188,6 +201,8 @@ async def list_provider_models(provider_id: str):
             model_id = m.get("id", m.get("name", ""))
             if not model_id or model_id in seen_ids:
                 continue
+            if not _is_chat_model(model_id):
+                continue
             seen_ids.add(model_id)
             models.append({
                 "id": model_id,
@@ -209,6 +224,145 @@ async def list_provider_models(provider_id: str):
     except Exception as e:
         log.error("provider_models_error", provider=provider_id, error=str(e))
         raise HTTPException(status_code=502, detail={"message": str(e), "http_status": 502})
+
+
+_PROBE_IMAGE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+
+async def _probe_chat(url: str, payload: dict, headers: dict) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+        return resp.status_code < 400
+    except Exception:
+        return False
+
+
+async def _probe_tool_support(url: str, model: str, headers: dict) -> bool:
+    return await _probe_chat(url, {
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1, "stream": False,
+        "tools": [{"type": "function", "function": {
+            "name": "probe", "description": "probe",
+            "parameters": {"type": "object", "properties": {}},
+        }}],
+    }, headers)
+
+
+async def _probe_vision_support(url: str, model: str, headers: dict) -> bool:
+    return await _probe_chat(url, {
+        "model": model,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PROBE_IMAGE_B64}"}},
+        ]}],
+        "max_tokens": 1, "stream": False,
+    }, headers)
+
+
+async def _probe_system_support(url: str, model: str, headers: dict) -> bool:
+    return await _probe_chat(url, {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ],
+        "max_tokens": 1, "stream": False,
+    }, headers)
+
+
+async def _fetch_model_limits(provider, model: str, api_key: str) -> tuple[int, int]:
+    """Retorna (context_window, max_output_tokens) desde el endpoint de modelos."""
+    import urllib.parse
+    env_var = provider.models_auth_env_var or provider.auth_env_var
+    token = os.environ.get(env_var, "") if env_var else api_key
+    headers: dict = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    headers.update(provider.extra_headers)
+
+    candidates = []
+    if provider.models_endpoint:
+        candidates.append(f"{provider.models_endpoint.rstrip('/')}/{urllib.parse.quote(model, safe='')}")
+    candidates.append(f"{provider.api_base.rstrip('/')}/models/{urllib.parse.quote(model, safe='')}")
+
+    for url in candidates:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                d = resp.json()
+                ctx = d.get("max_model_len") or d.get("context_length") or d.get("context_window") or d.get("max_context_length")
+                out = d.get("max_output_tokens") or d.get("max_completion_tokens") or d.get("max_generated_tokens")
+                if ctx or out:
+                    return int(ctx) if ctx else 0, int(out) if out else 0
+        except Exception:
+            pass
+    return 0, 0
+
+
+@router.get("/{provider_id}/test-model")
+async def test_provider_model(provider_id: str, model: str = Query(...)):
+    """Verifica acceso y detecta capacidades del modelo (tools, vision, system prompt, context window, max output)."""
+    provider = providers_service.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_id}' no encontrado")
+
+    url = f"{provider.api_base.rstrip('/')}/chat/completions"
+    api_key = os.environ.get(provider.auth_env_var, "") if provider.auth_env_var else ""
+    headers = {
+        "Authorization": f"Bearer {api_key or 'no-key'}",
+        "Content-Type": "application/json",
+    }
+    headers.update(provider.extra_headers)
+
+    # 1. Accesibilidad básica
+    log.info("test_provider_model", provider=provider_id, model=model)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1, "stream": False}, headers=headers)
+        if resp.status_code >= 400:
+            if resp.status_code in (401, 403):
+                return {"accessible": False, "reason": "Modelo de pago o sin acceso con tu API key"}
+            try:
+                detail = resp.json().get("error", {}).get("message") or f"HTTP {resp.status_code}"
+            except Exception:
+                detail = f"HTTP {resp.status_code}"
+            return {"accessible": False, "reason": detail[:200]}
+    except Exception as e:
+        return {"accessible": False, "reason": _safe_http_error(e)}
+
+    # 2. Probes en paralelo
+    supports_tools, supports_vision, supports_system, (context_window, max_output_tokens) = await asyncio.gather(
+        _probe_tool_support(url, model, headers),
+        _probe_vision_support(url, model, headers),
+        _probe_system_support(url, model, headers),
+        _fetch_model_limits(provider, model, api_key),
+    )
+
+    # 3. Guardar en model_info
+    model_info = dict(provider.model_info)
+    model_info.update({
+        "supports_tools": supports_tools,
+        "supports_vision": supports_vision,
+        "supports_system_prompt": supports_system,
+    })
+    if context_window:
+        model_info["context_window"] = context_window
+    if max_output_tokens:
+        model_info["max_output_tokens"] = max_output_tokens
+    providers_service.update_provider(provider_id, {"model_info": model_info})
+
+    capabilities = {
+        "supports_tools": supports_tools,
+        "supports_vision": supports_vision,
+        "supports_system_prompt": supports_system,
+        "context_window": context_window,
+        "max_output_tokens": max_output_tokens,
+    }
+    log.info("model_capabilities_detected", provider=provider_id, model=model, **capabilities)
+    return {"accessible": True, "capabilities": capabilities}
 
 
 @router.post("/{provider_id}/verify-key")

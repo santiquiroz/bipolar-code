@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import uuid
 
 import httpx
@@ -27,11 +28,11 @@ _STOP_REASON_MAP = {
 
 
 def _chat_completions_url(api_base: str) -> str:
-    """Build chat completions URL handling api_base with or without /v1 suffix."""
-    base = api_base.rstrip("/")
-    if base.endswith("/v1"):
-        return f"{base}/chat/completions"
-    return f"{base}/v1/chat/completions"
+    return f"{api_base.rstrip('/')}/chat/completions"
+
+
+def _is_claude_model(model_name: str) -> bool:
+    return "claude" in model_name.lower()
 
 
 # ── Anthropic → OpenAI conversion ────────────────────────────────────────────
@@ -50,17 +51,35 @@ def _content_block_to_oai(block: dict) -> dict | None:
     return None
 
 
-def _anthropic_to_oai_messages(body: dict) -> list[dict]:
+_NON_CLAUDE_SYSTEM_PREFIX = (
+    "You are a direct, helpful assistant. "
+    "Respond with text for conversational messages. "
+    "Only use tools when the task explicitly requires reading files, running commands, or modifying code. "
+    "Never use tools to ask clarifying questions or greet the user.\n\n"
+)
+
+
+def _anthropic_to_oai_messages(body: dict, system_prefix: str = "", strip_images: bool = False, system_as_user: bool = False) -> list[dict]:
     oai_messages: list[dict] = []
 
     system = body.get("system")
+    system_text = ""
     if system:
         if isinstance(system, str):
-            oai_messages.append({"role": "system", "content": system})
+            system_text = system_prefix + system
         elif isinstance(system, list):
             text = "\n".join(b.get("text", "") for b in system if b.get("type") == "text")
             if text:
-                oai_messages.append({"role": "system", "content": text})
+                system_text = system_prefix + text
+    elif system_prefix:
+        system_text = system_prefix.strip()
+
+    if system_text:
+        if system_as_user:
+            oai_messages.append({"role": "user", "content": f"<context>\n{system_text}\n</context>"})
+            oai_messages.append({"role": "assistant", "content": "Understood."})
+        else:
+            oai_messages.append({"role": "system", "content": system_text})
 
     for msg in body.get("messages", []):
         role = msg["role"]
@@ -70,7 +89,6 @@ def _anthropic_to_oai_messages(body: dict) -> list[dict]:
             oai_messages.append({"role": role, "content": content})
             continue
 
-        # List of content blocks
         tool_calls = []
         oai_parts = []
         tool_results = []
@@ -98,6 +116,8 @@ def _anthropic_to_oai_messages(body: dict) -> list[dict]:
                     "content": result_content,
                 })
             else:
+                if strip_images and btype == "image":
+                    continue
                 part = _content_block_to_oai(block)
                 if part:
                     oai_parts.append(part)
@@ -116,10 +136,10 @@ def _anthropic_to_oai_messages(body: dict) -> list[dict]:
     return oai_messages
 
 
-def _anthropic_to_oai_request(body: dict, model: str) -> dict:
+def _anthropic_to_oai_request(body: dict, model: str, max_tools: int = 0, blocked_tools: set[str] | None = None, system_prefix: str = "", include_tools: bool = True, strip_images: bool = False, system_as_user: bool = False) -> dict:
     req: dict = {
         "model": model,
-        "messages": _anthropic_to_oai_messages(body),
+        "messages": _anthropic_to_oai_messages(body, system_prefix, strip_images, system_as_user),
         "stream": True,
         "stream_options": {"include_usage": True},
     }
@@ -129,22 +149,27 @@ def _anthropic_to_oai_request(body: dict, model: str) -> dict:
         req["temperature"] = body["temperature"]
     if "stop_sequences" in body:
         req["stop"] = body["stop_sequences"]
-    if tools := body.get("tools"):
-        req["tools"] = [
+    if include_tools and (tools := body.get("tools")):
+        blocked = blocked_tools or set()
+        oai_tools = [
             {"type": "function", "function": {
                 "name": t["name"],
                 "description": t.get("description", ""),
                 "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
             }}
             for t in tools
+            if t.get("name") not in blocked
         ]
-    if tc := body.get("tool_choice"):
-        if isinstance(tc, dict) and tc.get("type") == "auto":
-            req["tool_choice"] = "auto"
-        elif isinstance(tc, dict) and tc.get("type") == "any":
-            req["tool_choice"] = "required"
-        elif isinstance(tc, dict) and tc.get("type") == "tool":
-            req["tool_choice"] = {"type": "function", "function": {"name": tc.get("name", "")}}
+        if max_tools > 0:
+            oai_tools = oai_tools[:max_tools]
+        req["tools"] = oai_tools
+        if tc := body.get("tool_choice"):
+            if isinstance(tc, dict) and tc.get("type") == "auto":
+                req["tool_choice"] = "auto"
+            elif isinstance(tc, dict) and tc.get("type") == "any":
+                req["tool_choice"] = "required"
+            elif isinstance(tc, dict) and tc.get("type") == "tool":
+                req["tool_choice"] = {"type": "function", "function": {"name": tc.get("name", "")}}
     return req
 
 
@@ -152,6 +177,10 @@ def _anthropic_to_oai_request(body: dict, model: str) -> dict:
 
 def _sse(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+def _sse_error(message: str) -> str:
+    return _sse("error", {"type": "error", "error": {"type": "api_error", "message": message}})
 
 
 async def _oai_stream_to_anthropic(resp_iter, message_id: str, model: str, usage_buf: dict):
@@ -175,6 +204,8 @@ async def _oai_stream_to_anthropic(resp_iter, message_id: str, model: str, usage
 
     async for line in resp_iter:
         if not line.startswith("data: "):
+            if line:
+                log.debug("oai_stream_non_data_line", line=line[:200])
             continue
         raw = line[6:].strip()
         if raw == "[DONE]":
@@ -182,6 +213,7 @@ async def _oai_stream_to_anthropic(resp_iter, message_id: str, model: str, usage
         try:
             chunk = json.loads(raw)
         except Exception:
+            log.warning("oai_stream_json_parse_error", raw=raw[:200])
             continue
 
         # usage from stream_options
@@ -339,7 +371,7 @@ async def messages_passthrough(request: Request):
                                 err_msg = json.loads(raw).get("error", {}).get("message") or raw.decode()
                             except Exception:
                                 err_msg = raw.decode(errors="replace")
-                            yield f"data: {json.dumps({'type':'error','error':{'type':'api_error','message':_sanitize_error(err_msg)}})}\n\n"
+                            yield _sse_error(_sanitize_error(err_msg))
                             return
                         async for line in resp.aiter_lines():
                             if line.startswith("data: "):
@@ -360,7 +392,29 @@ async def messages_passthrough(request: Request):
                 else:
                     # Non-Anthropic: call provider directly with OAI format
                     provider_model = (active.active_model or model) if active else model
-                    oai_body = _anthropic_to_oai_request(body, provider_model)
+                    max_tools = active.max_tools if active else 0
+                    model_info = active.model_info if active else {}
+                    is_claude = _is_claude_model(provider_model)
+                    # Capacidades dinámicas detectadas al seleccionar el modelo
+                    include_tools = model_info.get("supports_tools", is_claude)
+                    strip_images = not model_info.get("supports_vision", True)
+                    system_as_user = not model_info.get("supports_system_prompt", True)
+                    blocked_tools = set() if is_claude else {"Agent"}
+                    system_prefix = "" if is_claude else _NON_CLAUDE_SYSTEM_PREFIX
+                    oai_body = _anthropic_to_oai_request(
+                        body, provider_model, max_tools, blocked_tools, system_prefix,
+                        include_tools=include_tools,
+                        strip_images=strip_images,
+                        system_as_user=system_as_user,
+                    )
+
+                    # Cap max_tokens con los límites conocidos del modelo
+                    ctx_limit = model_info.get("context_window", 0)
+                    out_limit = model_info.get("max_output_tokens", 0)
+                    if (ctx_limit > 0 or out_limit > 0) and oai_body.get("max_tokens"):
+                        ctx_cap = max(512, ctx_limit - token_service.count_tokens(body.get("messages", [])) - 256) if ctx_limit > 0 else oai_body["max_tokens"]
+                        out_cap = out_limit if out_limit > 0 else oai_body["max_tokens"]
+                        oai_body["max_tokens"] = min(oai_body["max_tokens"], ctx_cap, out_cap)
 
                     # Build provider URL directly (bypass litellm)
                     if active and active.api_base:
@@ -373,7 +427,7 @@ async def messages_passthrough(request: Request):
                     if active and active.auth_env_var:
                         api_key = os.environ.get(active.auth_env_var, "")
                     if not api_key:
-                        api_key = "no-key"  # some local servers require a non-empty key
+                        api_key = "no-key"
 
                     forward_headers = {
                         "Authorization": f"Bearer {api_key}",
@@ -389,11 +443,17 @@ async def messages_passthrough(request: Request):
                         model=provider_model,
                         msgs=len(oai_body.get("messages", [])),
                         has_tools=bool(oai_body.get("tools")),
+                        num_tools=len(oai_body.get("tools", [])),
+                        ctx_limit=ctx_limit,
+                        max_tokens=oai_body.get("max_tokens"),
                     )
 
+                    # Primera llamada — con retry automático si falla por context window
+                    retry_body: dict | None = None
+                    detected_ctx = 0
+
                     async with client.stream(
-                        "POST", provider_url,
-                        json=oai_body, headers=forward_headers,
+                        "POST", provider_url, json=oai_body, headers=forward_headers,
                     ) as resp:
                         if resp.status_code >= 400:
                             raw = await resp.aread()
@@ -401,27 +461,64 @@ async def messages_passthrough(request: Request):
                                 err_msg = json.loads(raw).get("error", {}).get("message") or raw.decode()
                             except Exception:
                                 err_msg = raw.decode(errors="replace")
-                            log.error(
-                                "provider_error",
-                                status=resp.status_code,
-                                provider=active_provider_id,
-                                error=_sanitize_error(err_msg),
-                            )
-                            yield f"data: {json.dumps({'type':'error','error':{'type':'api_error','message':_sanitize_error(err_msg)}})}\n\n"
-                            return
 
-                        async for chunk in _oai_stream_to_anthropic(
-                            resp.aiter_lines(), message_id, model, usage_buf
-                        ):
-                            yield chunk
+                            ctx_match = re.search(r'maximum context length is (\d+)', err_msg, re.IGNORECASE)
+                            out_match = re.search(r'maximum.*?(?:output|completion|generated).*?(?:tokens?|length).*?(\d+)', err_msg, re.IGNORECASE)
+                            if (ctx_match or out_match) and oai_body.get("max_tokens"):
+                                if ctx_match:
+                                    detected_ctx = int(ctx_match.group(1))
+                                    msg_tok_match = re.search(r'\((\d+) in the messages?', err_msg, re.IGNORECASE)
+                                    msg_tokens = int(msg_tok_match.group(1)) if msg_tok_match else token_service.count_tokens(body.get("messages", []))
+                                    new_max = max(512, detected_ctx - msg_tokens - 256)
+                                    if active:
+                                        _save_model_info(active, "context_window", detected_ctx)
+                                else:
+                                    new_max = int(out_match.group(1))
+                                    if active:
+                                        _save_model_info(active, "max_output_tokens", new_max)
+                                retry_body = {**oai_body, "max_tokens": new_max}
+                                log.info("limit_detected_retrying", new_max_tokens=new_max, error_snippet=err_msg[:120])
+                            else:
+                                log.error("provider_error", status=resp.status_code, provider=active_provider_id, error=_sanitize_error(err_msg))
+                                yield _sse_error(_sanitize_error(err_msg))
+                                return
+                        else:
+                            async for chunk in _oai_stream_to_anthropic(resp.aiter_lines(), message_id, model, usage_buf):
+                                yield chunk
+
+                    # Retry con max_tokens ajustado
+                    if retry_body:
+                        async with client.stream(
+                            "POST", provider_url, json=retry_body, headers=forward_headers,
+                        ) as resp2:
+                            if resp2.status_code >= 400:
+                                raw2 = await resp2.aread()
+                                try:
+                                    err2 = json.loads(raw2).get("error", {}).get("message") or raw2.decode()
+                                except Exception:
+                                    err2 = raw2.decode(errors="replace")
+                                log.error("provider_error_after_retry", status=resp2.status_code, provider=active_provider_id)
+                                yield _sse_error(_sanitize_error(err2))
+                                return
+                            async for chunk in _oai_stream_to_anthropic(resp2.aiter_lines(), message_id, model, usage_buf):
+                                yield chunk
 
                     _record_usage(active_provider_id, model, usage_buf, truncated)
 
         except Exception as e:
             log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
-            yield f"data: {json.dumps({'type':'error','error':{'type':'api_error','message':_sanitize_error(str(e))}})}\n\n"
+            yield _sse_error(_sanitize_error(str(e)))
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers=response_headers)
+
+
+def _save_model_info(provider, key: str, value) -> None:
+    info = dict(provider.model_info)
+    info[key] = value
+    try:
+        providers_service.update_provider(provider.id, {"model_info": info})
+    except Exception:
+        pass
 
 
 def _record_usage(provider_id: str, model: str, usage_buf: dict, truncated: bool) -> None:
