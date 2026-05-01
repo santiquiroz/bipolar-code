@@ -1,7 +1,7 @@
 import json
 import httpx
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 from app.services import providers_service, token_service
@@ -13,18 +13,9 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-async def _litellm_reachable(proxy_url: str) -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=2.0, read=3.0)) as client:
-            resp = await client.get(f"{proxy_url}/health/readiness")
-            return resp.status_code < 400
-    except Exception:
-        return False
-
-
 class ChatMessage(BaseModel):
     role: str
-    content: Any  # str or list of content parts (text / image_url)
+    content: Any
 
 
 class ChatRequest(BaseModel):
@@ -37,16 +28,8 @@ async def chat_completions(body: ChatRequest):
     settings = get_settings()
 
     _PROXY_ALIASES = set(providers_service.PROXY_ALIASES)
-    # Capturar provider al inicio — antes de cualquier await que permita
-    # un switch de proveedor concurrente
     provider = providers_service.get_active_provider()
     active_provider_id = provider.id if provider else "unknown"
-
-    if not await _litellm_reachable(settings.proxy_url):
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": "El proxy LiteLLM no está disponible."}},
-        )
 
     model = body.model
     if not model or (model not in _PROXY_ALIASES and provider and model == provider.active_model):
