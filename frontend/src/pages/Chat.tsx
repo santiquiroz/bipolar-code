@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { modelsApi, providersApi } from '@/services/api'
+import { modelsApi, providersApi, getStoredApiKey } from '@/services/api'
 import { useModelCapabilities } from '@/hooks/useCapabilities'
 import type { ReactNode } from 'react'
 
@@ -51,7 +51,7 @@ async function* streamChat(
 ): AsyncGenerator<string> {
   const resp = await fetch('/api/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': getStoredApiKey() ?? '' },
     body: JSON.stringify({
       model,
       messages: messages.map(m => ({ role: m.role, content: m.content })),
