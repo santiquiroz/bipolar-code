@@ -9,7 +9,7 @@ VALID_KEY = "bc-testkey123"
 
 def make_app():
     app = FastAPI()
-    app.add_middleware(APIKeyMiddleware, api_key=VALID_KEY)
+    app.add_middleware(APIKeyMiddleware, ui_key=VALID_KEY, proxy_key="sk-proxy")
 
     @app.get("/api/health")
     def health():
@@ -59,19 +59,21 @@ def test_wrong_key_returns_401():
     assert resp.status_code == 401
 
 
-def test_messages_endpoint_requires_auth():
+def test_messages_endpoint_is_public():
+    # /v1/* is public — Claude Code authenticates directly with the provider
     resp = client.post("/v1/messages")
-    assert resp.status_code == 401
+    assert resp.status_code == 200
 
 
 def test_messages_endpoint_with_valid_key():
+    # Works with or without key since /v1/* is public
     resp = client.post("/v1/messages", headers={"x-api-key": VALID_KEY})
     assert resp.status_code == 200
 
 
 def make_app_no_key():
     app = FastAPI()
-    app.add_middleware(APIKeyMiddleware, api_key="")
+    app.add_middleware(APIKeyMiddleware, ui_key="", proxy_key="")
 
     @app.get("/api/protected")
     def protected():
