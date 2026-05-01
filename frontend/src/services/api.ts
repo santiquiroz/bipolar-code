@@ -65,6 +65,10 @@ export const providersApi = {
     api.get<{ models: ProviderModel[]; note?: string }>(`/providers/${provider_id}/models`).then(r => r.data),
   refreshToken: (provider_id: string) =>
     api.post<{ refreshed: boolean; note?: string; token_length?: number }>(`/providers/${provider_id}/refresh-token`).then(r => r.data),
+  testModel: (provider_id: string, model_id: string) =>
+    api.get<{ accessible: boolean; reason?: string }>(`/providers/${provider_id}/test-model`, {
+      params: { model: model_id },
+    }).then(r => r.data),
 }
 
 export const modelsApi = {
@@ -81,6 +85,7 @@ export const settingsApi = {
     rate_limit_rpm: number
     allowed_origins: string
   }>('/settings/auth-info').then(r => r.data),
+  getApiKey: () => api.get<{ api_key: string }>('/settings/api-key').then(r => r.data),
 }
 
 export const usageApi = {

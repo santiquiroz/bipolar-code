@@ -37,4 +37,12 @@ async def get_auth_info():
         "api_key_length": len(key),
         "rate_limit_rpm": s.rate_limit_rpm,
         "allowed_origins": s.allowed_origins,
+        "proxy_base_url": "http://<tu-ip>:8000",
     }
+
+
+@router.get("/api-key")
+async def get_full_api_key():
+    """Devuelve el API key completo para configurar Claude Code en PCs remotos."""
+    s = _get_settings()
+    return {"api_key": s.ui_api_key}

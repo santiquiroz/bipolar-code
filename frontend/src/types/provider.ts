@@ -12,6 +12,8 @@ export interface Provider {
   model_info: Record<string, unknown>
   drop_params: boolean
   use_chat_completions_for_anthropic: boolean
+  max_tools: number
+  rate_limit_rpm: number
 }
 
 export interface ProviderRegistry {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Card } from '@/components/Card'
 import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
@@ -66,9 +66,21 @@ export function Settings() {
     rate_limit_rpm: number
     allowed_origins: string
   } | null>(null)
+  const [fullKey, setFullKey] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     settingsApi.getAuthInfo().then(setAuthInfo).catch(() => {})
+  }, [])
+
+  const loadAndCopyKey = useCallback(async () => {
+    try {
+      const data = await settingsApi.getApiKey()
+      setFullKey(data.api_key)
+      await navigator.clipboard.writeText(data.api_key)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {}
   }, [])
 
   // Recolectar todas las variables de autenticación de los proveedores
@@ -137,11 +149,11 @@ export function Settings() {
         </>
       )}
 
-      <div className="mt-6 bg-white rounded-xl border border-gray-200 p-5 space-y-3">
+      <div className="mt-6 bg-white rounded-xl border border-gray-200 p-5 space-y-4">
         <h3 className="text-sm font-semibold text-gray-700">Acceso y Seguridad</h3>
         <div className="space-y-2 text-sm text-gray-600">
           <div className="flex items-center justify-between">
-            <span>API Key (prefix)</span>
+            <span>API Key</span>
             <code className="bg-gray-100 px-2 py-0.5 rounded text-xs font-mono">
               {authInfo?.api_key_prefix ?? '—'}
             </code>
@@ -155,11 +167,24 @@ export function Settings() {
             <span className="text-gray-500 text-xs">{authInfo?.allowed_origins ?? '*'}</span>
           </div>
         </div>
-        <p className="text-xs text-gray-400">
-          La API key completa está en{' '}
-          <code className="bg-gray-100 px-1 rounded">C:\litellm\.env</code>{' '}
-          (variable <code className="bg-gray-100 px-1 rounded">UI_API_KEY</code>)
-        </p>
+
+        {/* Sección para red compartida */}
+        <div className="border-t border-gray-100 pt-4 space-y-2">
+          <p className="text-xs font-medium text-gray-600">Conectar PCs remotas (red compartida)</p>
+          <p className="text-xs text-gray-400">
+            Configura estas variables en <code className="bg-gray-100 px-1 rounded">~/.claude/settings.json</code> de cada PC:
+          </p>
+          <div className="bg-gray-50 rounded-lg p-3 space-y-1 font-mono text-xs text-gray-600">
+            <div><span className="text-gray-400">ANTHROPIC_BASE_URL</span> = http://&lt;ip-servidor&gt;:8000</div>
+            <div className="flex items-center gap-2">
+              <span className="text-gray-400">ANTHROPIC_API_KEY</span> ={' '}
+              <span className="text-gray-500">{fullKey ?? authInfo?.api_key_prefix ?? '…'}</span>
+            </div>
+          </div>
+          <Button variant="secondary" size="sm" onClick={loadAndCopyKey}>
+            {copied ? '¡Copiado!' : 'Copiar API Key completa'}
+          </Button>
+        </div>
       </div>
     </div>
   )

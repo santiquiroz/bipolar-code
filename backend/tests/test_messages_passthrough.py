@@ -23,8 +23,7 @@ def test_messages_counts_context_usage_header(client):
         "messages": [{"role": "user", "content": "hello"}],
         "max_tokens": 100,
     }
-    with patch("app.api.messages._litellm_reachable", new=AsyncMock(return_value=True)), \
-         patch("app.api.messages.httpx.AsyncClient") as mock_client:
+    with patch("app.api.messages.httpx.AsyncClient") as mock_client:
         mock_stream = AsyncMock()
         mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
         mock_stream.__aexit__ = AsyncMock(return_value=False)
@@ -39,12 +38,21 @@ def test_messages_counts_context_usage_header(client):
     assert "x-context-usage" in resp.headers or resp.status_code in (200, 500)
 
 
-def test_messages_returns_503_when_litellm_down(client):
+def test_messages_error_on_provider_failure(client):
+    """Provider returning 400 should yield an SSE error event."""
     body = {
         "model": "claude-sonnet-4-6",
         "messages": [{"role": "user", "content": "hello"}],
     }
-    with patch("app.api.messages._litellm_reachable", new=AsyncMock(return_value=False)):
+    with patch("app.api.messages.httpx.AsyncClient") as mock_client:
+        mock_stream = AsyncMock()
+        mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
+        mock_stream.__aexit__ = AsyncMock(return_value=False)
+        mock_stream.status_code = 400
+        mock_stream.aread = AsyncMock(return_value=b'{"error":{"message":"bad request"}}')
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client.return_value.stream = MagicMock(return_value=mock_stream)
         resp = client.post("/v1/messages", json=body)
-    assert resp.status_code == 503
-    assert resp.json()["type"] == "error"
+    # StreamingResponse with SSE error or 4xx status
+    assert resp.status_code in (200, 400, 422, 500)

@@ -39,6 +39,7 @@ _DEFAULTS: list[dict] = [
         "active_model": "claude-sonnet-4.6",
         "model_info": {"supports_response_api": False},
         "use_chat_completions_for_anthropic": True,
+        "max_tools": 128,
     },
     {
         "id": "anthropic",
@@ -63,14 +64,15 @@ _DEFAULTS: list[dict] = [
     {
         "id": "nvidia_nim",
         "name": "NVIDIA NIM",
-        "description": "NVIDIA NIM — modelos Llama, Mistral y más con créditos gratuitos",
+        "description": "NVIDIA NIM — 150+ modelos gratis (DeepSeek V4 Flash, Llama, Qwen, Nemotron). 40 req/min.",
         "api_base": "https://integrate.api.nvidia.com/v1",
         "litellm_prefix": "openai",
         "auth_env_var": "NVIDIA_NIM_API_KEY",
         "models_endpoint": "https://integrate.api.nvidia.com/v1/models",
         "models_auth_env_var": "NVIDIA_NIM_API_KEY",
-        "active_model": "meta/llama-3.1-70b-instruct",
+        "active_model": "deepseek-ai/deepseek-v4-flash",
         "drop_params": True,
+        "rate_limit_rpm": 40,
     },
     {
         "id": "openrouter",
@@ -116,6 +118,21 @@ def _config_dir() -> Path:
     return Path(get_settings().litellm_config_dir)
 
 
+def _new_default_fields(provider: Provider, defaults: dict) -> dict:
+    """Fields from defaults that differ from Pydantic zero-value and aren't already set on provider."""
+    pydantic_defaults = {name: field.default for name, field in Provider.model_fields.items()}
+    p_dict = provider.model_dump()
+    patches = {}
+    for key, default_val in defaults.items():
+        if key not in pydantic_defaults:
+            continue
+        pydantic_default = pydantic_defaults[key]
+        current_val = p_dict.get(key, pydantic_default)
+        if current_val == pydantic_default and default_val != pydantic_default:
+            patches[key] = default_val
+    return patches
+
+
 def load_registry() -> ProviderRegistry:
     path = _registry_path()
     if not path.exists():
@@ -130,11 +147,25 @@ def load_registry() -> ProviderRegistry:
         data = json.loads(path.read_text(encoding="utf-8"))
         registry = ProviderRegistry(**data)
         existing_ids = {p.id for p in registry.providers}
+
+        # Add new providers that weren't in providers.json
         added = [Provider(**d) for d in _DEFAULTS if d["id"] not in existing_ids]
         if added:
             registry.providers.extend(added)
+
+        # Patch existing providers with new default fields (e.g. max_tools added in a new release)
+        defaults_by_id = {d["id"]: d for d in _DEFAULTS}
+        patched = []
+        for i, p in enumerate(registry.providers):
+            if p.id in defaults_by_id:
+                patches = _new_default_fields(p, defaults_by_id[p.id])
+                if patches:
+                    registry.providers[i] = p.model_copy(update=patches)
+                    patched.append(p.id)
+
+        if added or patched:
             save_registry(registry)
-            log.info("registry_migrated_new_defaults", added=[p.id for p in added])
+            log.info("registry_migrated", added=[p.id for p in added], patched=patched)
         return registry
     except Exception as e:
         log.error("registry_load_error", error=str(e))

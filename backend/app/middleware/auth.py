@@ -5,10 +5,13 @@ from starlette.responses import JSONResponse
 
 
 def _is_public(path: str) -> bool:
+    # /v1/* = passthrough Anthropic API (Claude Code usa su propio token)
+    if path.startswith("/v1"):
+        return True
     if path in {"/api/health"}:
         return True
-    # archivos estáticos: cualquier cosa sin prefijo /api o /v1
-    if not path.startswith("/api") and not path.startswith("/v1"):
+    # archivos estáticos
+    if not path.startswith("/api"):
         return True
     return False
 
@@ -21,22 +24,22 @@ def _extract_key(request: Request) -> str:
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, api_key: str):
+    def __init__(self, app, ui_key: str, proxy_key: str):
         super().__init__(app)
-        self._key = api_key
+        self._ui_key = ui_key
 
     async def dispatch(self, request: Request, call_next):
         if _is_public(request.url.path):
             return await call_next(request)
 
-        if not self._key:
+        if not self._ui_key:
             return JSONResponse(
                 status_code=503,
                 content={"detail": "Autenticación no configurada en el servidor"},
             )
 
         provided = _extract_key(request)
-        if secrets.compare_digest(provided, self._key):
+        if provided and secrets.compare_digest(provided, self._ui_key):
             return await call_next(request)
 
         return JSONResponse(

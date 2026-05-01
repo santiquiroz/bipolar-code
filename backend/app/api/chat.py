@@ -1,7 +1,8 @@
 import json
+import os
 import httpx
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 from app.services import providers_service, token_service
@@ -13,18 +14,9 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-async def _litellm_reachable(proxy_url: str) -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=0.5)) as client:
-            resp = await client.get(f"{proxy_url}/health/readiness")
-            return resp.status_code < 400
-    except Exception:
-        return False
-
-
 class ChatMessage(BaseModel):
     role: str
-    content: Any  # str or list of content parts (text / image_url)
+    content: Any
 
 
 class ChatRequest(BaseModel):
@@ -36,30 +28,34 @@ class ChatRequest(BaseModel):
 async def chat_completions(body: ChatRequest):
     settings = get_settings()
 
-    _PROXY_ALIASES = set(providers_service.PROXY_ALIASES)
-    # Capturar provider al inicio — antes de cualquier await que permita
-    # un switch de proveedor concurrente
     provider = providers_service.get_active_provider()
     active_provider_id = provider.id if provider else "unknown"
-
-    if not await _litellm_reachable(settings.proxy_url):
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": "El proxy LiteLLM no está disponible."}},
-        )
-
-    model = body.model
-    if not model or (model not in _PROXY_ALIASES and provider and model == provider.active_model):
-        # Modelo nativo del proveedor → usar alias primario de LiteLLM
-        model = "claude-sonnet-4-6"
+    is_anthropic = provider and provider.litellm_prefix == "anthropic"
 
     messages_raw = [m.model_dump() for m in body.messages]
-    payload = {
-        "model": model,
-        "messages": messages_raw,
-        "stream": True,
-    }
-    log.info("chat_request", model=model, n_messages=len(body.messages))
+
+    if is_anthropic:
+        # Anthropic: pasar por litellm que ya maneja el formato
+        model = "claude-sonnet-4-6"
+        url = f"{settings.proxy_url}/v1/chat/completions"
+        forward_headers = {"Authorization": f"Bearer {settings.proxy_api_key}"}
+    else:
+        # No-Anthropic: llamar al proveedor directamente, igual que /v1/messages
+        model = provider.active_model if provider and provider.active_model else "gpt-4o"
+        api_base = provider.api_base if provider else settings.proxy_url
+        url = f"{api_base.rstrip('/')}/chat/completions"
+        api_key = ""
+        if provider and provider.auth_env_var:
+            api_key = os.environ.get(provider.auth_env_var, "")
+        forward_headers = {
+            "Authorization": f"Bearer {api_key or 'no-key'}",
+            "Content-Type": "application/json",
+        }
+        if provider and provider.extra_headers:
+            forward_headers.update(provider.extra_headers)
+
+    payload = {"model": model, "messages": messages_raw, "stream": True}
+    log.info("chat_request", provider=active_provider_id, model=model, n_messages=len(messages_raw))
 
     ctx_window = token_service.get_context_window(model)
     used = token_service.count_tokens(messages_raw)
@@ -69,21 +65,14 @@ async def chat_completions(body: ChatRequest):
         try:
             timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream(
-                    "POST",
-                    f"{settings.proxy_url}/v1/chat/completions",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {settings.proxy_api_key}"},
-                ) as resp:
+                async with client.stream("POST", url, json=payload, headers=forward_headers) as resp:
                     if resp.status_code >= 400:
                         raw = await resp.aread()
-                        err_msg = _sanitize_error(raw.decode(errors="replace"))
-                        err = json.dumps({
-                            "error": {
-                                "message": err_msg,
-                                "status": resp.status_code,
-                            }
-                        })
+                        try:
+                            err_msg = json.loads(raw).get("error", {}).get("message") or raw.decode()
+                        except Exception:
+                            err_msg = raw.decode(errors="replace")
+                        err = json.dumps({"error": {"message": _sanitize_error(err_msg), "status": resp.status_code}})
                         log.warning("chat_upstream_error", status=resp.status_code, provider=active_provider_id)
                         yield f"data: {err}\n\ndata: [DONE]\n\n"
                         return
@@ -93,8 +82,7 @@ async def chat_completions(body: ChatRequest):
         except Exception as e:
             sanitized = _sanitize_error(str(e))
             log.error("chat_stream_error", error=sanitized, provider=active_provider_id)
-            err = json.dumps({"error": {"message": sanitized}})
-            yield f"data: {err}\n\ndata: [DONE]\n\n"
+            yield f"data: {json.dumps({'error': {'message': sanitized}})}\n\ndata: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),

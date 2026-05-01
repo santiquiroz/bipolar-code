@@ -1,9 +1,34 @@
 import { useState, useRef } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/Button'
 import { useProviderModels, useSetProviderModel, useRefreshToken } from '@/hooks/useProviders'
 import { usePricing } from '@/hooks/usePricing'
+import { providersApi } from '@/services/api'
 import type { Provider } from '@/types/provider'
+
+function CapBadge({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border font-medium ${
+      ok
+        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+        : 'bg-gray-50 text-gray-400 border-gray-200'
+    }`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+      {label}
+    </span>
+  )
+}
+
+function LimitBadge({ value, label }: { value: number; label: string }) {
+  if (!value) return null
+  const display = value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1000 ? `${Math.round(value / 1000)}K` : `${value}`
+  return (
+    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-blue-50 text-blue-600 border-blue-200 font-medium">
+      {display} {label}
+    </span>
+  )
+}
 
 interface ModelPickerProps {
   provider: Provider
@@ -22,11 +47,49 @@ function errorMessage(error: unknown): { msg: string; isAuth: boolean } {
 
 export function ModelPicker({ provider }: ModelPickerProps) {
   const [search, setSearch] = useState('')
+  const [verifyingModel, setVerifyingModel] = useState<string | null>(null)
+  const [accessError, setAccessError] = useState<{ modelId: string; reason: string } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { data, isLoading, error, refetch } = useProviderModels(provider.id, !!provider.models_endpoint)
   const setModel = useSetProviderModel()
   const refreshToken = useRefreshToken()
   const { data: pricing } = usePricing()
+  const queryClient = useQueryClient()
+
+  const caps = provider.model_info as Record<string, unknown>
+  const hasCapData = 'supports_tools' in caps
+  const isRedetecting = verifyingModel === '__redetect__'
+
+  async function handleRedetect() {
+    if (!provider.active_model || verifyingModel) return
+    setVerifyingModel('__redetect__')
+    try {
+      await providersApi.testModel(provider.id, provider.active_model)
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+    } catch {
+      // silent — provider still works, just no cap data
+    } finally {
+      setVerifyingModel(null)
+    }
+  }
+
+  async function handleModelSelect(modelId: string) {
+    if (setModel.isPending || verifyingModel) return
+    setAccessError(null)
+    setVerifyingModel(modelId)
+    try {
+      const result = await providersApi.testModel(provider.id, modelId)
+      if (result.accessible) {
+        setModel.mutate({ provider_id: provider.id, model_id: modelId })
+      } else {
+        setAccessError({ modelId, reason: result.reason ?? 'Modelo no accesible' })
+      }
+    } catch {
+      setModel.mutate({ provider_id: provider.id, model_id: modelId })
+    } finally {
+      setVerifyingModel(null)
+    }
+  }
 
   const getPriceLabel = (modelId: string): string => {
     if (!pricing) return ''
@@ -146,33 +209,70 @@ export function ModelPicker({ provider }: ModelPickerProps) {
         </button>
       </div>
 
+      {/* Capacidades del modelo activo */}
+      {provider.active_model && (
+        <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Capacidades</p>
+            <button
+              onClick={handleRedetect}
+              disabled={!!verifyingModel}
+              className="flex items-center gap-1 text-xs text-gray-400 hover:text-brand-500 transition-colors disabled:opacity-40"
+            >
+              {isRedetecting ? <Spinner className="h-3 w-3 text-brand-500" /> : <span>↺</span>}
+              Re-detectar
+            </button>
+          </div>
+          {hasCapData ? (
+            <div className="flex flex-wrap gap-1">
+              <CapBadge ok={!!caps.supports_tools} label="Tools" />
+              <CapBadge ok={!!caps.supports_vision} label="Visión" />
+              <CapBadge ok={!!caps.supports_system_prompt} label="System" />
+              <LimitBadge value={caps.context_window as number} label="contexto" />
+              <LimitBadge value={caps.max_output_tokens as number} label="output" />
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400 italic">
+              Sin datos — seleccioná un modelo para detectar automáticamente.
+            </p>
+          )}
+        </div>
+      )}
+
       {filteredModels.length === 0 ? (
         <p className="text-xs text-gray-400 py-2 text-center">No hay modelos que coincidan con tu búsqueda.</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-56 overflow-y-auto pr-1">
           {filteredModels.map((m) => {
             const isActive = provider.active_model === m.id
+            const isVerifying = verifyingModel === m.id
             const isChanging = setModel.isPending && setModel.variables?.model_id === m.id
+            const hasError = accessError?.modelId === m.id
             return (
               <button
                 key={`${m.id}-${m.vendor || ''}`}
-                onClick={() => !isActive && setModel.mutate({ provider_id: provider.id, model_id: m.id })}
-                disabled={isActive || setModel.isPending}
+                onClick={() => !isActive && handleModelSelect(m.id)}
+                disabled={isActive || setModel.isPending || !!verifyingModel}
                 className={`relative flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all
                   ${isActive
                     ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-400'
-                    : 'border-gray-200 hover:border-brand-300 bg-white hover:bg-gray-50'
+                    : hasError
+                      ? 'border-red-300 bg-red-50'
+                      : 'border-gray-200 hover:border-brand-300 bg-white hover:bg-gray-50'
                   } disabled:cursor-not-allowed`}
               >
-                {isChanging && <Spinner className="absolute right-2 top-2 h-3 w-3 text-brand-500" />}
+                {(isVerifying || isChanging) && <Spinner className="absolute right-2 top-2 h-3 w-3 text-brand-500" />}
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-gray-800 truncate">{m.name || m.id}</p>
                   {m.vendor && <p className="text-xs text-gray-400">{m.vendor}</p>}
-                  {getPriceLabel(m.id) && (
-                    <p className={`text-xs mt-0.5 ${getPriceLabel(m.id) === 'GRATIS' ? 'text-emerald-600 font-medium' : 'text-gray-400'}`}>
-                      {getPriceLabel(m.id)}
-                    </p>
-                  )}
+                  {hasError
+                    ? <p className="text-xs mt-0.5 text-red-500">{accessError.reason}</p>
+                    : getPriceLabel(m.id) && (
+                      <p className={`text-xs mt-0.5 ${getPriceLabel(m.id) === 'GRATIS' ? 'text-emerald-600 font-medium' : 'text-gray-400'}`}>
+                        {getPriceLabel(m.id)}
+                      </p>
+                    )
+                  }
                 </div>
                 {isActive && <span className="shrink-0 w-2 h-2 rounded-full bg-brand-500" />}
               </button>
