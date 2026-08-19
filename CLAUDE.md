@@ -53,12 +53,13 @@ pyinstaller bipolar-code.spec   # run from repo root
 | Config | `core/config.py` | Reads `.env` from config dir via pydantic-settings; config dir is `C:\litellm` (Win) / `~/.litellm` (other) |
 | Services | `services/providers_service.py` | Provider CRUD, litellm config YAML generation, kill/start litellm subprocess |
 | Services | `services/proxy_service.py` | Proxy health checks; Claude Code routing (writes `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` to `~/.claude/settings.json` and Windows registry) |
+| Services | `services/llamacpp_service.py` | llama-server local gestionado: detección de GPUs, tensor-split auto por VRAM libre, start/stop con PID file |
 | API | `api/` | Thin FastAPI routers — each delegates to the matching `*_service.py` |
 | Models | `models/` | Pydantic schemas (`schemas.py`) and provider entity (`provider.py`) |
 | Startup | `main.py` | Mounts `frontend/dist/` as SPA fallback; spawns Copilot token auto-refresh background loop |
 | Logging | `core/logging.py` | structlog setup; use `get_logger(__name__)` throughout |
 
-**Provider registry** persists in `{config_dir}/providers.json`. Three built-in providers: `copilot`, `anthropic`, `lmstudio`. litellm always exposes the aliases `claude-sonnet-4-6`, `claude-opus-4-6`, `gpt-4o` regardless of the active backend.
+**Provider registry** persists in `{config_dir}/providers.json`. Built-in providers include `copilot`, `anthropic`, `lmstudio`, `nvidia_nim`, `openrouter`, `deepseek`, `ollama` and `llamacpp`. litellm always exposes the aliases `claude-sonnet-4-6`, `claude-opus-4-6`, `gpt-4o` regardless of the active backend. Providers with `anthropic_native: true` (llama-server, LM Studio ≥0.4.1, Ollama 2026+) receive `/v1/messages` verbatim — no litellm, no OAI translation. The `llamacpp` provider spawns a managed local `llama-server` (Vulkan multi-GPU, port 4002) via `/api/llamacpp/*`.
 
 **Platform guards**: `providers_service._start_litellm` uses PowerShell on Windows and `subprocess.Popen(start_new_session=True)` on Linux/macOS. `proxy_service._set_user_env` writes the Windows registry only on `sys.platform == "win32"`; it always writes `~/.claude/settings.json`.
 

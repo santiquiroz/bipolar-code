@@ -11,6 +11,7 @@ from app.api import settings as settings_router
 from app.api import providers as providers_router
 from app.api import messages as messages_router
 from app.api import pricing as pricing_router
+from app.api import llamacpp as llamacpp_router
 from app.core.logging import setup_logging, get_logger
 from app.core.config import get_settings
 
@@ -62,7 +63,9 @@ async def _copilot_token_refresh_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.services import usage_tracker
+    from app.services.llamacpp_service import autostart_if_configured
     await usage_tracker.init_db()
+    asyncio.create_task(autostart_if_configured())
     task = asyncio.create_task(_copilot_token_refresh_loop())
     try:
         yield
@@ -120,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router.router, prefix="/api")
     app.include_router(messages_router.router)
     app.include_router(pricing_router.router, prefix="/api")
+    app.include_router(llamacpp_router.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():

@@ -68,9 +68,13 @@ export function Settings() {
   } | null>(null)
   const [fullKey, setFullKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [lanUrl, setLanUrl] = useState<string | null>(null)
 
   useEffect(() => {
     settingsApi.getAuthInfo().then(setAuthInfo).catch(() => {})
+    settingsApi.getConnectionInfo()
+      .then(info => setLanUrl(info.anthropic_base_url || null))
+      .catch(() => {})
   }, [])
 
   const loadAndCopyKey = useCallback(async () => {
@@ -175,7 +179,7 @@ export function Settings() {
             Configura estas variables en <code className="bg-gray-100 px-1 rounded">~/.claude/settings.json</code> de cada PC:
           </p>
           <div className="bg-gray-50 rounded-lg p-3 space-y-1 font-mono text-xs text-gray-600">
-            <div><span className="text-gray-400">ANTHROPIC_BASE_URL</span> = http://&lt;ip-servidor&gt;:8000</div>
+            <div><span className="text-gray-400">ANTHROPIC_BASE_URL</span> = {lanUrl ?? 'http://<ip-servidor>:8000'}</div>
             <div className="flex items-center gap-2">
               <span className="text-gray-400">ANTHROPIC_API_KEY</span> ={' '}
               <span className="text-gray-500">{fullKey ?? authInfo?.api_key_prefix ?? '…'}</span>

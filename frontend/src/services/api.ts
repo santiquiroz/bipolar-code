@@ -1,6 +1,9 @@
 import axios from 'axios'
 import type { ModelEntry, UsageStats } from '@/types'
-import type { Provider, ProviderRegistry, ProviderModel } from '@/types/provider'
+import type {
+  Provider, ProviderRegistry, ProviderModel, LlamaDevicesResponse, LlamaStatus,
+  HFRepo, HFFile, HFDownload, LocalModel,
+} from '@/types/provider'
 
 const STORAGE_KEY = 'bipolar_api_key'
 
@@ -86,6 +89,27 @@ export const settingsApi = {
     allowed_origins: string
   }>('/settings/auth-info').then(r => r.data),
   getApiKey: () => api.get<{ api_key: string }>('/settings/api-key').then(r => r.data),
+  getConnectionInfo: () => api.get<{
+    lan_ip: string
+    port: number
+    anthropic_base_url: string
+  }>('/settings/connection-info').then(r => r.data),
+}
+
+export const llamacppApi = {
+  getDevices: () => api.get<LlamaDevicesResponse>('/llamacpp/devices').then(r => r.data),
+  getStatus: () => api.get<LlamaStatus>('/llamacpp/status').then(r => r.data),
+  start: () => api.post('/llamacpp/start').then(r => r.data),
+  stop: (force = false) => api.post('/llamacpp/stop', null, { params: { force } }).then(r => r.data),
+  getLogs: (lines = 80) => api.get<{ logs: string[] }>('/llamacpp/logs', { params: { lines } }).then(r => r.data),
+  searchHF: (q: string) => api.get<{ results: HFRepo[] }>('/llamacpp/hf/search', { params: { q } }).then(r => r.data),
+  listHFFiles: (repoId: string) => api.get<{ files: HFFile[] }>('/llamacpp/hf/files', { params: { repo_id: repoId } }).then(r => r.data),
+  download: (repoId: string, filename: string) =>
+    api.post<HFDownload>('/llamacpp/hf/download', { repo_id: repoId, filename }).then(r => r.data),
+  getDownloads: () => api.get<{ downloads: HFDownload[] }>('/llamacpp/hf/downloads').then(r => r.data),
+  cancelDownload: (id: string) => api.delete(`/llamacpp/hf/download/${encodeURIComponent(id)}`).then(r => r.data),
+  getLocalModels: () => api.get<{ models: LocalModel[] }>('/llamacpp/models').then(r => r.data),
+  useModel: (path: string) => api.post('/llamacpp/use-model', { path }).then(r => r.data),
 }
 
 export const usageApi = {

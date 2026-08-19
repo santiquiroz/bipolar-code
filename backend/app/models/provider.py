@@ -33,6 +33,14 @@ class Provider(BaseModel):
     max_tools: int = 0               # 0 = sin límite; >0 trunca el array de tools al enviarlo
     rate_limit_rpm: int = 0          # límite externo del proveedor en req/min (0 = desconocido)
 
+    # Providers con Anthropic Messages API nativa (/v1/messages): llama-server,
+    # LM Studio >=0.4.1, Ollama 2026+. El body se reenvía verbatim sin traducción.
+    anthropic_native: bool = False
+
+    # Config de lanzamiento para providers locales gestionados (llama.cpp):
+    # {exe_path, model_path, ctx_size, split_mode, tensor_split, ngl, extra_args}
+    local_launch: dict = {}
+
 
 class ProviderRegistry(BaseModel):
     active_provider_id: str = "copilot"

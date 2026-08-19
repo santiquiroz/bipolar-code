@@ -326,6 +326,7 @@ async def messages_passthrough(request: Request):
     active = providers_service.get_active_provider()
     active_provider_id = active.id if active else "unknown"
     is_anthropic = active and active.litellm_prefix == "anthropic"
+    is_native = bool(active and active.anthropic_native)
 
     ctx_window = token_service.get_context_window(model)
     used = token_service.count_tokens(messages)
@@ -351,18 +352,30 @@ async def messages_passthrough(request: Request):
             timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
 
-                if is_anthropic:
-                    # Anthropic provider: passthrough to litellm /v1/messages
-                    forward_headers = {
-                        "Authorization": f"Bearer {settings.proxy_api_key}",
-                        "Content-Type": "application/json",
-                    }
+                if is_anthropic or is_native:
+                    if is_native:
+                        # Provider con /v1/messages nativo (llama-server, LM Studio >=0.4.1,
+                        # Ollama 2026+): reenvío verbatim, solo se reescribe el model
+                        body["model"] = active.active_model or model
+                        native_base = active.api_base.rstrip("/").removesuffix("/v1")
+                        target_url = f"{native_base}/v1/messages"
+                        forward_headers = {"Content-Type": "application/json"}
+                        native_key = os.environ.get(active.auth_env_var, "") if active.auth_env_var else ""
+                        if native_key:
+                            forward_headers["x-api-key"] = native_key
+                    else:
+                        # Anthropic provider: passthrough to litellm /v1/messages
+                        target_url = f"{settings.proxy_url}/v1/messages"
+                        forward_headers = {
+                            "Authorization": f"Bearer {settings.proxy_api_key}",
+                            "Content-Type": "application/json",
+                        }
                     for h in ("anthropic-version", "anthropic-beta"):
                         if h in request.headers:
                             forward_headers[h] = request.headers[h]
 
                     async with client.stream(
-                        "POST", f"{settings.proxy_url}/v1/messages",
+                        "POST", target_url,
                         json=body, headers=forward_headers,
                     ) as resp:
                         if resp.status_code >= 400:
@@ -505,6 +518,16 @@ async def messages_passthrough(request: Request):
 
                     _record_usage(active_provider_id, model, usage_buf, truncated)
 
+        except httpx.ConnectError as e:
+            if is_native and active:
+                log.error("native_provider_unreachable", api_base=active.api_base)
+                yield _sse_error(
+                    f"Servidor local no responde en {active.api_base}. "
+                    "Inícialo desde Providers → llama.cpp (Start)."
+                )
+            else:
+                log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
+                yield _sse_error(_sanitize_error(str(e)))
         except Exception as e:
             log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
             yield _sse_error(_sanitize_error(str(e)))
