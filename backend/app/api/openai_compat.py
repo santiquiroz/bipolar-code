@@ -63,9 +63,17 @@ async def chat_completions(request: Request):
     settings = get_settings()
     body = await request.json()
     active = providers_service.get_active_provider()
+    routed_model = None
+    route = providers_service.resolve_route(str(body.get("model", "")))
+    # Routing en la superficie OAI: solo destinos OpenAI-compat (un destino
+    # anthropic requeriría traducir el formato, cosa que esta ruta no hace)
+    if route and route[0].litellm_prefix != "anthropic":
+        active, routed_model = route
     provider_id = active.id if active else "unknown"
 
     url, headers, model = resolve_target(active, settings)
+    if routed_model:
+        model = routed_model
     if model:
         body["model"] = model
     headers["Content-Type"] = "application/json"

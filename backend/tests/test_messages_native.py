@@ -95,3 +95,37 @@ def test_native_no_auth_header_without_env_var(client):
     _, _, kwargs = stream_mock.mock_calls[0]
     assert "Authorization" not in kwargs["headers"]
     assert "x-api-key" not in kwargs["headers"]
+
+
+def test_routing_overrides_active_provider(client):
+    routed = Provider(
+        id="llamacpp-small",
+        name="small",
+        api_base="http://127.0.0.1:4003",
+        litellm_prefix="openai",
+        active_model="qwen3-4b",
+        anthropic_native=True,
+    )
+    body = {
+        "model": "claude-3-5-haiku-latest",
+        "messages": [{"role": "user", "content": "hola"}],
+        "max_tokens": 10,
+    }
+    lines = ['data: {"type": "message_stop"}']
+    with patch(
+        "app.api.messages.providers_service.get_active_provider",
+        return_value=_native_provider(),
+    ), patch(
+        "app.api.messages.providers_service.resolve_route",
+        return_value=(routed, "qwen3-4b"),
+    ), patch("app.api.messages.httpx.AsyncClient") as mock_client:
+        instance = mock_client.return_value
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        instance.stream = MagicMock(return_value=_mock_stream(lines))
+        resp = client.post("/v1/messages", json=body)
+
+    assert resp.status_code == 200
+    _, args, kwargs = instance.stream.mock_calls[0]
+    assert args[1] == "http://127.0.0.1:4003/v1/messages"
+    assert kwargs["json"]["model"] == "qwen3-4b"

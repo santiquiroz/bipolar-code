@@ -107,9 +107,15 @@ def build_cmdline(provider: Provider, devices: list[dict]) -> list[str]:
     ngl = int(launch.get("ngl", 999))
     split_mode = str(launch.get("split_mode", "layer"))
 
-    cmd = [
-        exe,
-        "--model", str(launch.get("model_path", "")),
+    cmd = [exe]
+    if launch.get("router_mode"):
+        # Router mode: sin --model, sirve todos los GGUF del dir con
+        # load/unload dinámico; los requests eligen modelo por nombre
+        from app.services.hf_models_service import models_dir
+        cmd += ["--models-dir", str(launch.get("models_dir") or models_dir())]
+    else:
+        cmd += ["--model", str(launch.get("model_path", ""))]
+    cmd += [
         "--ctx-size", str(ctx_size),
         "--n-gpu-layers", str(ngl),
         "--host", str(launch.get("host", "127.0.0.1")),
@@ -174,8 +180,9 @@ async def start_llamacpp(provider: Provider) -> dict:
             "llama-server no encontrado. Instala un release Vulkan de llama.cpp "
             "y configura exe_path en el provider."
         )
+    router_mode = bool(provider.local_launch.get("router_mode"))
     model_path = str(provider.local_launch.get("model_path", "")).strip()
-    if not model_path or not Path(model_path).exists():
+    if not router_mode and (not model_path or not Path(model_path).exists()):
         raise ValueError(f"Modelo GGUF no encontrado: '{model_path}'")
 
     current = await get_status(provider)
@@ -183,9 +190,11 @@ async def start_llamacpp(provider: Provider) -> dict:
         return {**current, "already_running": True}
 
     devices = list_devices(exe)
-    fit = estimate_fit(model_path, int(provider.local_launch.get("ctx_size", 32768)), devices)
-    if devices and not fit["fits"]:
-        log.warning("model_may_not_fit", **fit)
+    fit = None
+    if not router_mode:
+        fit = estimate_fit(model_path, int(provider.local_launch.get("ctx_size", 32768)), devices)
+        if devices and not fit["fits"]:
+            log.warning("model_may_not_fit", **fit)
 
     cmd = build_cmdline(provider, devices)
     out_log = _config_dir() / "llamacpp-out.log"

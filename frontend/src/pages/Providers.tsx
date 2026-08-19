@@ -6,6 +6,7 @@ import { Spinner } from '@/components/Spinner'
 import { AddProviderModal } from '@/components/AddProviderModal'
 import { NvidiaWizard } from '@/components/NvidiaWizard'
 import { LlamaCppPanel } from '@/components/LlamaCppPanel'
+import { RoutingPanel } from '@/components/RoutingPanel'
 import { useProviders, useSwitchProvider, useDeleteProvider } from '@/hooks/useProviders'
 import { useQuery } from '@tanstack/react-query'
 import { settingsApi } from '@/services/api'
@@ -123,6 +124,8 @@ export function Providers() {
           })}
         </div>
       )}
+
+      {registry && <RoutingPanel providers={registry.providers} />}
 
       {showAdd && <AddProviderModal onClose={() => setShowAdd(false)} />}
       {showNvidiaWizard && (

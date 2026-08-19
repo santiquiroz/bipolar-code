@@ -42,6 +42,18 @@ class Provider(BaseModel):
     local_launch: dict = {}
 
 
+class RoutingRule(BaseModel):
+    """Regla de routing por escenario: primer match gana (orden de la lista).
+    pattern: substring case-insensitive sobre el model pedido ("" = cualquiera).
+    min_tokens: umbral longContext — solo aplica si el prompt >= umbral (0 = sin umbral)."""
+    pattern: str = ""
+    min_tokens: int = 0
+    provider_id: str
+    model: str = ""              # "" = active_model del provider destino
+
+
 class ProviderRegistry(BaseModel):
     active_provider_id: str = "copilot"
     providers: list[Provider] = []
+    routing_enabled: bool = False
+    routing_rules: list[RoutingRule] = []

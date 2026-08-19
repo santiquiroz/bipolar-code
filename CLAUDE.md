@@ -61,6 +61,8 @@ pyinstaller bipolar-code.spec   # run from repo root
 
 **Provider registry** persists in `{config_dir}/providers.json`. Built-in providers include `copilot`, `anthropic`, `lmstudio`, `nvidia_nim`, `openrouter`, `deepseek`, `ollama` and `llamacpp`. litellm always exposes the aliases `claude-sonnet-4-6`, `claude-opus-4-6`, `gpt-4o` regardless of the active backend. Providers with `anthropic_native: true` (llama-server, LM Studio ≥0.4.1, Ollama 2026+) receive `/v1/messages` verbatim — no litellm, no OAI translation. The `llamacpp` provider spawns a managed local `llama-server` (Vulkan multi-GPU, port 4002) via `/api/llamacpp/*`. `/v1/chat/completions` on :8000 exposes the active provider as an OpenAI-compatible BYOK endpoint (VS Code Copilot Chat, Cursor, Cline). All `/v1/*` routes require auth (`ui_api_key`, or legacy `proxy_api_key`).
 
+**Scenario routing**: `ProviderRegistry.routing_rules` (UI: Providers → "Routing por escenario") route each request by requested model name — first match wins; `pattern` = case-insensitive substring, `min_tokens` = longContext threshold. E.g. `haiku` → small local model, `opus` → real Anthropic (routed anthropic goes DIRECT to api.anthropic.com, not through litellm), 60k+ tokens → long-context provider. `local_launch.router_mode` runs llama-server without `--model` serving every GGUF in the models dir with dynamic load/unload (`--models-dir`).
+
 **Platform guards**: `providers_service._start_litellm` uses PowerShell on Windows and `subprocess.Popen(start_new_session=True)` on Linux/macOS. `proxy_service._set_user_env` writes the Windows registry only on `sys.platform == "win32"`; it always writes `~/.claude/settings.json`.
 
 ### Frontend layout (`frontend/src/`)

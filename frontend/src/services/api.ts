@@ -2,7 +2,7 @@ import axios from 'axios'
 import type { ModelEntry, UsageStats } from '@/types'
 import type {
   Provider, ProviderRegistry, ProviderModel, LlamaDevicesResponse, LlamaStatus,
-  HFRepo, HFFile, HFDownload, LocalModel,
+  HFRepo, HFFile, HFDownload, LocalModel, RoutingConfig,
 } from '@/types/provider'
 
 const STORAGE_KEY = 'bipolar_api_key'
@@ -139,4 +139,9 @@ export const usageHistoryApi = {
 export const verifyKeyApi = {
   verify: (providerId: string, apiKey: string) =>
     api.post(`/providers/${providerId}/verify-key`, { api_key: apiKey }).then(r => r.data),
+}
+
+export const routingApi = {
+  get: () => api.get<RoutingConfig>('/providers/routing').then(r => r.data),
+  set: (config: RoutingConfig) => api.put<RoutingConfig>('/providers/routing', config).then(r => r.data),
 }

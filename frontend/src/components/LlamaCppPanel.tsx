@@ -152,6 +152,15 @@ export function LlamaCppPanel({ provider }: LlamaCppPanelProps) {
           />
           Iniciar automáticamente al arrancar bipolar-code
         </label>
+        <label className="flex items-center gap-2 text-xs text-gray-500">
+          <input
+            type="checkbox"
+            checked={!!launch.router_mode}
+            onChange={(e) => saveLaunch.mutate({ router_mode: e.target.checked })}
+          />
+          Router mode — sirve todos los GGUF descargados con carga/descarga dinámica
+          (los requests eligen modelo por nombre; ideal con routing por escenario)
+        </label>
       </div>
 
       <div className="flex gap-4 text-xs">
