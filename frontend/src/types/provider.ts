@@ -27,6 +27,8 @@ export interface LocalLaunchConfig {
   ngl?: number
   extra_args?: string[]
   autostart?: boolean
+  router_mode?: boolean
+  models_dir?: string
 }
 
 export interface LlamaDevice {
@@ -81,6 +83,18 @@ export interface LocalModel {
   filename: string
   path: string
   size: number
+}
+
+export interface RoutingRule {
+  pattern: string
+  min_tokens: number
+  provider_id: string
+  model: string
+}
+
+export interface RoutingConfig {
+  enabled: boolean
+  rules: RoutingRule[]
 }
 
 export interface ProviderRegistry {

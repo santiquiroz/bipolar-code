@@ -323,13 +323,19 @@ async def messages_passthrough(request: Request):
     messages = body.get("messages", [])
     model = body.get("model", "__default__")
 
-    active = providers_service.get_active_provider()
-    active_provider_id = active.id if active else "unknown"
-    is_anthropic = active and active.litellm_prefix == "anthropic"
-    is_native = bool(active and active.anthropic_native)
-
     ctx_window = token_service.get_context_window(model)
     used = token_service.count_tokens(messages)
+
+    active = providers_service.get_active_provider()
+    routed_model: str | None = None
+    route = providers_service.resolve_route(model, used)
+    if route:
+        active, routed_model = route
+    active_provider_id = active.id if active else "unknown"
+    # Provider anthropic RUTEADO va directo a api.anthropic.com: litellm corre
+    # con el config del provider activo, no del destino de la regla
+    is_native = bool(active and (active.anthropic_native or (route and active.litellm_prefix == "anthropic")))
+    is_anthropic = bool(active and active.litellm_prefix == "anthropic" and not is_native)
     truncated = False
 
     if ctx_window > 0 and used >= int(ctx_window * 0.9):
@@ -355,12 +361,17 @@ async def messages_passthrough(request: Request):
                 if is_anthropic or is_native:
                     if is_native:
                         # Provider con /v1/messages nativo (llama-server, LM Studio >=0.4.1,
-                        # Ollama 2026+): reenvío verbatim, solo se reescribe el model
-                        body["model"] = active.active_model or model
+                        # Ollama 2026+, api.anthropic.com): reenvío verbatim, solo se reescribe el model
+                        body["model"] = routed_model or active.active_model or model
                         native_base = active.api_base.rstrip("/").removesuffix("/v1")
                         target_url = f"{native_base}/v1/messages"
                         forward_headers = {"Content-Type": "application/json"}
-                        native_key = os.environ.get(active.auth_env_var, "") if active.auth_env_var else ""
+                        native_key = ""
+                        if active.auth_env_var:
+                            # settings fallback: el .env del config dir no siempre está en os.environ
+                            native_key = os.environ.get(active.auth_env_var, "") or str(
+                                getattr(settings, active.auth_env_var.lower(), "") or ""
+                            )
                         if native_key:
                             forward_headers["x-api-key"] = native_key
                     else:
@@ -404,7 +415,7 @@ async def messages_passthrough(request: Request):
 
                 else:
                     # Non-Anthropic: call provider directly with OAI format
-                    provider_model = (active.active_model or model) if active else model
+                    provider_model = routed_model or ((active.active_model or model) if active else model)
                     max_tools = active.max_tools if active else 0
                     model_info = active.model_info if active else {}
                     is_claude = _is_claude_model(provider_model)

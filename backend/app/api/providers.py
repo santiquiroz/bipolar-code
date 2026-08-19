@@ -5,7 +5,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Literal, Optional
-from app.models.provider import Provider
+from app.models.provider import Provider, RoutingRule
 from app.services import providers_service
 from app.core.logging import get_logger
 from app.core.config import get_settings
@@ -96,6 +96,28 @@ def list_providers():
         "active_provider_id": registry.active_provider_id,
         "providers": registry.providers,
     }
+
+
+# Declarado ANTES de /{provider_id} — si no, "routing" matchea como provider_id
+@router.get("/routing")
+def get_routing():
+    registry = providers_service.load_registry()
+    return {"enabled": registry.routing_enabled, "rules": registry.routing_rules}
+
+
+class RoutingUpdate(BaseModel):
+    enabled: bool
+    rules: list[RoutingRule] = []
+
+
+@router.put("/routing")
+def set_routing(body: RoutingUpdate):
+    unknown = [r.provider_id for r in body.rules if not providers_service.get_provider(r.provider_id)]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Providers no registrados: {unknown}")
+    result = providers_service.set_routing(body.enabled, body.rules)
+    log.info("routing_updated", enabled=body.enabled, rules=len(body.rules))
+    return result
 
 
 @router.get("/{provider_id}")

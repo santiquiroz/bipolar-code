@@ -205,6 +205,32 @@ def get_provider(provider_id: str) -> Optional[Provider]:
     return next((p for p in registry.providers if p.id == provider_id), None)
 
 
+def set_routing(enabled: bool, rules: list) -> dict:
+    with _registry_lock:
+        registry = load_registry()
+        registry.routing_enabled = enabled
+        registry.routing_rules = rules
+        save_registry(registry)
+    return {"enabled": enabled, "rules": rules}
+
+
+def resolve_route(model_name: str, prompt_tokens: int = 0) -> Optional[tuple[Provider, str]]:
+    """Primer RoutingRule que matchea → (provider destino, model destino).
+    None = sin routing (usar provider activo)."""
+    registry = load_registry()
+    if not registry.routing_enabled:
+        return None
+    for rule in registry.routing_rules:
+        if rule.min_tokens and prompt_tokens < rule.min_tokens:
+            continue
+        if rule.pattern and rule.pattern.lower() not in model_name.lower():
+            continue
+        provider = next((p for p in registry.providers if p.id == rule.provider_id), None)
+        if provider:
+            return provider, (rule.model or provider.active_model or model_name)
+    return None
+
+
 def get_active_provider() -> Optional[Provider]:
     registry = load_registry()
     return get_provider(registry.active_provider_id)

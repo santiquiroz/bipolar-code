@@ -246,3 +246,16 @@ async def test_stop_llamacpp_force_kills_busy_server(
     process_mock.return_value.kill.assert_called_once_with()
     process_iter_mock.assert_called_once_with(["pid", "name", "cmdline"])
     assert not pid_file.exists()
+
+
+def test_build_cmdline_router_mode_serves_models_dir(provider_factory, tmp_path, monkeypatch):
+    from app.services import hf_models_service
+
+    monkeypatch.setattr(hf_models_service, "models_dir", lambda: tmp_path)
+    provider = provider_factory(local_launch={"router_mode": True})
+
+    cmd = llamacpp_service.build_cmdline(provider, [])
+
+    assert "--model" not in cmd
+    assert "--models-dir" in cmd
+    assert cmd[cmd.index("--models-dir") + 1] == str(tmp_path)
