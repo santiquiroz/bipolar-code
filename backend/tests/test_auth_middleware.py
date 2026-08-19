@@ -59,16 +59,26 @@ def test_wrong_key_returns_401():
     assert resp.status_code == 401
 
 
-def test_messages_endpoint_is_public():
-    # /v1/* is public — Claude Code authenticates directly with the provider
+def test_messages_endpoint_without_key_returns_401():
+    # /v1/* requiere auth: expuesto en LAN, sin key cualquiera lo usaría
     resp = client.post("/v1/messages")
-    assert resp.status_code == 200
+    assert resp.status_code == 401
 
 
-def test_messages_endpoint_with_valid_key():
-    # Works with or without key since /v1/* is public
+def test_messages_endpoint_with_ui_key():
     resp = client.post("/v1/messages", headers={"x-api-key": VALID_KEY})
     assert resp.status_code == 200
+
+
+def test_messages_endpoint_with_proxy_key():
+    # Compat: clientes configurados antes del cierre tienen el proxy_key escrito
+    resp = client.post("/v1/messages", headers={"Authorization": "Bearer sk-proxy"})
+    assert resp.status_code == 200
+
+
+def test_api_does_not_accept_proxy_key():
+    resp = client.get("/api/protected", headers={"Authorization": "Bearer sk-proxy"})
+    assert resp.status_code == 401
 
 
 def make_app_no_key():
