@@ -5,6 +5,7 @@ import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
 import { AddProviderModal } from '@/components/AddProviderModal'
 import { NvidiaWizard } from '@/components/NvidiaWizard'
+import { LlamaCppPanel } from '@/components/LlamaCppPanel'
 import { useProviders, useSwitchProvider, useDeleteProvider } from '@/hooks/useProviders'
 import { useQuery } from '@tanstack/react-query'
 import { settingsApi } from '@/services/api'
@@ -116,6 +117,7 @@ export function Providers() {
                     )}
                   </div>
                 </div>
+                {p.id === 'llamacpp' && <LlamaCppPanel provider={p} />}
               </Card>
             )
           })}

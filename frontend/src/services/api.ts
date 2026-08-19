@@ -1,6 +1,6 @@
 import axios from 'axios'
 import type { ModelEntry, UsageStats } from '@/types'
-import type { Provider, ProviderRegistry, ProviderModel } from '@/types/provider'
+import type { Provider, ProviderRegistry, ProviderModel, LlamaDevicesResponse, LlamaStatus } from '@/types/provider'
 
 const STORAGE_KEY = 'bipolar_api_key'
 
@@ -86,6 +86,18 @@ export const settingsApi = {
     allowed_origins: string
   }>('/settings/auth-info').then(r => r.data),
   getApiKey: () => api.get<{ api_key: string }>('/settings/api-key').then(r => r.data),
+  getConnectionInfo: () => api.get<{
+    lan_ip: string
+    port: number
+    anthropic_base_url: string
+  }>('/settings/connection-info').then(r => r.data),
+}
+
+export const llamacppApi = {
+  getDevices: () => api.get<LlamaDevicesResponse>('/llamacpp/devices').then(r => r.data),
+  getStatus: () => api.get<LlamaStatus>('/llamacpp/status').then(r => r.data),
+  start: () => api.post('/llamacpp/start').then(r => r.data),
+  stop: (force = false) => api.post('/llamacpp/stop', null, { params: { force } }).then(r => r.data),
 }
 
 export const usageApi = {

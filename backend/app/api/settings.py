@@ -46,3 +46,22 @@ async def get_full_api_key():
     """Devuelve el API key completo para configurar Claude Code en PCs remotos."""
     s = _get_settings()
     return {"api_key": s.ui_api_key}
+
+
+@router.get("/connection-info")
+async def get_connection_info():
+    """IP LAN + puerto para configurar Claude Code desde otros PCs."""
+    import socket
+    lan_ip = ""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            # No envía tráfico: connect en UDP solo resuelve la interfaz de salida
+            sock.connect(("8.8.8.8", 80))
+            lan_ip = sock.getsockname()[0]
+    except OSError as e:
+        log.warning("lan_ip_detection_failed", error=str(e))
+    return {
+        "lan_ip": lan_ip,
+        "port": 8000,
+        "anthropic_base_url": f"http://{lan_ip}:8000" if lan_ip else "",
+    }

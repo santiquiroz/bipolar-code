@@ -14,6 +14,41 @@ export interface Provider {
   use_chat_completions_for_anthropic: boolean
   max_tools: number
   rate_limit_rpm: number
+  anthropic_native?: boolean
+  local_launch?: LocalLaunchConfig
+}
+
+export interface LocalLaunchConfig {
+  exe_path?: string
+  model_path?: string
+  ctx_size?: number
+  split_mode?: string
+  tensor_split?: 'auto' | number[]
+  ngl?: number
+  extra_args?: string[]
+}
+
+export interface LlamaDevice {
+  index: number
+  backend: string
+  name: string
+  vram_total_mib: number
+  vram_free_mib: number
+}
+
+export interface LlamaDevicesResponse {
+  exe_found: boolean
+  exe_path: string
+  devices: LlamaDevice[]
+}
+
+export interface LlamaStatus {
+  running: boolean
+  pid: number | null
+  port: number | null
+  model_path: string | null
+  healthy: boolean
+  busy_slots: number
 }
 
 export interface ProviderRegistry {
