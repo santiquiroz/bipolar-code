@@ -26,6 +26,7 @@ export interface LocalLaunchConfig {
   tensor_split?: 'auto' | number[]
   ngl?: number
   extra_args?: string[]
+  autostart?: boolean
 }
 
 export interface LlamaDevice {
@@ -49,6 +50,37 @@ export interface LlamaStatus {
   model_path: string | null
   healthy: boolean
   busy_slots: number
+}
+
+export interface HFRepo {
+  id: string
+  downloads: number
+  likes: number
+  updated: string
+}
+
+export interface HFFile {
+  filename: string
+  size: number
+  parts: string[]
+}
+
+export interface HFDownload {
+  id: string
+  repo_id: string
+  filename: string
+  parts: string[]
+  status: 'queued' | 'downloading' | 'done' | 'error' | 'cancelled'
+  total_bytes: number
+  downloaded_bytes: number
+  speed_bps: number
+  error: string
+}
+
+export interface LocalModel {
+  filename: string
+  path: string
+  size: number
 }
 
 export interface ProviderRegistry {

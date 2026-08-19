@@ -63,7 +63,9 @@ async def _copilot_token_refresh_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.services import usage_tracker
+    from app.services.llamacpp_service import autostart_if_configured
     await usage_tracker.init_db()
+    asyncio.create_task(autostart_if_configured())
     task = asyncio.create_task(_copilot_token_refresh_loop())
     try:
         yield

@@ -247,3 +247,37 @@ def _read_pid() -> int | None:
         return int(_pid_file().read_text().strip())
     except (FileNotFoundError, ValueError):
         return None
+
+
+def _tail_file(path: Path, lines: int) -> list[str]:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            data = f.read().decode("utf-8", errors="replace")
+        return data.splitlines()[-lines:]
+    except OSError:
+        return []
+
+
+def tail_logs(lines: int = 80) -> list[str]:
+    merged = []
+    for name, tag in (("llamacpp-out.log", "out"), ("llamacpp-err.log", "err")):
+        merged += [f"[{tag}] {line}" for line in _tail_file(_config_dir() / name, lines)]
+    return merged[-lines:]
+
+
+async def autostart_if_configured() -> None:
+    """Arranque al boot del backend: solo si el provider llamacpp lo pide explícitamente."""
+    from app.services import providers_service
+    provider = providers_service.get_provider("llamacpp")
+    if not provider or not provider.local_launch.get("autostart"):
+        return
+    if not str(provider.local_launch.get("model_path", "")).strip():
+        return
+    try:
+        await start_llamacpp(provider)
+        log.info("llamacpp_autostarted")
+    except Exception as e:
+        log.warning("llamacpp_autostart_failed", error=str(e))

@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Badge } from '@/components/Badge'
 import { Button } from '@/components/Button'
+import { ModelDownloader } from '@/components/ModelDownloader'
 import { providersApi } from '@/services/api'
-import { useLlamaDevices, useLlamaStatus, useStartLlama, useStopLlama } from '@/hooks/useLlamaCpp'
+import { useLlamaDevices, useLlamaLogs, useLlamaStatus, useStartLlama, useStopLlama } from '@/hooks/useLlamaCpp'
 import type { Provider, LocalLaunchConfig } from '@/types/provider'
 
 interface LlamaCppPanelProps {
@@ -21,6 +22,9 @@ export function LlamaCppPanel({ provider }: LlamaCppPanelProps) {
   const startLlama = useStartLlama()
   const stopLlama = useStopLlama()
   const [confirmForce, setConfirmForce] = useState(false)
+  const [showModels, setShowModels] = useState(false)
+  const [showLogs, setShowLogs] = useState(false)
+  const { data: logsData } = useLlamaLogs(showLogs)
 
   const launch: LocalLaunchConfig = provider.local_launch ?? {}
   const [modelPath, setModelPath] = useState(launch.model_path ?? '')
@@ -140,7 +144,32 @@ export function LlamaCppPanel({ provider }: LlamaCppPanelProps) {
             />
           </label>
         </div>
+        <label className="flex items-center gap-2 text-xs text-gray-500">
+          <input
+            type="checkbox"
+            checked={!!launch.autostart}
+            onChange={(e) => saveLaunch.mutate({ autostart: e.target.checked })}
+          />
+          Iniciar automáticamente al arrancar bipolar-code
+        </label>
       </div>
+
+      <div className="flex gap-4 text-xs">
+        <button onClick={() => setShowModels(!showModels)} className="text-brand-600 hover:underline">
+          {showModels ? '▾' : '▸'} Modelos (buscar / descargar)
+        </button>
+        <button onClick={() => setShowLogs(!showLogs)} className="text-brand-600 hover:underline">
+          {showLogs ? '▾' : '▸'} Logs del servidor
+        </button>
+      </div>
+
+      {showModels && <ModelDownloader activeModelPath={launch.model_path ?? ''} />}
+
+      {showLogs && (
+        <pre className="max-h-48 overflow-y-auto bg-gray-900 text-gray-200 rounded-lg p-2 text-[10px] leading-relaxed whitespace-pre-wrap">
+          {(logsData?.logs ?? []).join('\n') || 'Sin logs todavía'}
+        </pre>
+      )}
     </div>
   )
 }
