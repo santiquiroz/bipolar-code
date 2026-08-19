@@ -5,13 +5,10 @@ from starlette.responses import JSONResponse
 
 
 def _is_public(path: str) -> bool:
-    # /v1/* = passthrough Anthropic API (Claude Code usa su propio token)
-    if path.startswith("/v1"):
-        return True
     if path in {"/api/health"}:
         return True
-    # archivos estáticos
-    if not path.startswith("/api"):
+    # archivos estáticos y SPA
+    if not path.startswith("/api") and not path.startswith("/v1"):
         return True
     return False
 
@@ -23,13 +20,21 @@ def _extract_key(request: Request) -> str:
     return request.headers.get("x-api-key", "")
 
 
+def _matches(provided: str, expected: str) -> bool:
+    return bool(expected) and secrets.compare_digest(provided, expected)
+
+
 class APIKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, ui_key: str, proxy_key: str):
         super().__init__(app)
         self._ui_key = ui_key
+        # /v1/* también acepta proxy_key: clientes Claude Code configurados antes
+        # del cierre de /v1 tienen ANTHROPIC_API_KEY=proxy_key escrito
+        self._proxy_key = proxy_key
 
     async def dispatch(self, request: Request, call_next):
-        if _is_public(request.url.path):
+        path = request.url.path
+        if _is_public(path):
             return await call_next(request)
 
         if not self._ui_key:
@@ -39,7 +44,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             )
 
         provided = _extract_key(request)
-        if provided and secrets.compare_digest(provided, self._ui_key):
+        if provided and _matches(provided, self._ui_key):
+            return await call_next(request)
+        if path.startswith("/v1") and provided and _matches(provided, self._proxy_key):
             return await call_next(request)
 
         return JSONResponse(

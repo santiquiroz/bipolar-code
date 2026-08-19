@@ -155,7 +155,8 @@ async def enable_proxy_routing() -> dict:
                     break
 
         fastapi_url = 'http://127.0.0.1:8000'
-        api_key = settings.proxy_api_key or 'sk-litellm'
+        # ui_api_key: /v1/* ahora exige auth; el key fuerte generado es el correcto
+        api_key = settings.ui_api_key or settings.proxy_api_key or 'sk-litellm'
         _set_registry_env('ANTHROPIC_BASE_URL', fastapi_url)
         _set_registry_env('ANTHROPIC_API_KEY', api_key)
         async with _claude_settings_lock:
