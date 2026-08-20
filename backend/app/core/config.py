@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Rate limiting: máx requests por minuto por IP (0 = desactivado)
     rate_limit_rpm: int = 120
 
+    # Compresión semántica: resumir historial viejo con el provider activo
+    # al acercarse al límite de contexto, en vez de solo truncar
+    semantic_compression: bool = False
+
     # Anthropic
     anthropic_api_key: str = ""
     anthropic_real_api_key: str = ""

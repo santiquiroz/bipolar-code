@@ -131,6 +131,12 @@ def build_cmdline(provider: Provider, devices: list[dict]) -> list[str]:
         if ratios:
             cmd += ["--tensor-split", ",".join(str(r) for r in ratios)]
 
+    rpc_servers = launch.get("rpc_servers") or []
+    if isinstance(rpc_servers, list) and rpc_servers:
+        # llama.cpp RPC: workers remotos (ggml-rpc-server) se suman como
+        # devices — la granja multi-PC del backlog v3
+        cmd += ["--rpc", ",".join(str(s) for s in rpc_servers)]
+
     extra = launch.get("extra_args", [])
     if isinstance(extra, list):
         cmd += [str(a) for a in extra]
@@ -258,22 +264,11 @@ def _read_pid() -> int | None:
         return None
 
 
-def _tail_file(path: Path, lines: int) -> list[str]:
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            f.seek(max(0, size - 65536))
-            data = f.read().decode("utf-8", errors="replace")
-        return data.splitlines()[-lines:]
-    except OSError:
-        return []
-
-
 def tail_logs(lines: int = 80) -> list[str]:
+    from app.core.utils import tail_file
     merged = []
     for name, tag in (("llamacpp-out.log", "out"), ("llamacpp-err.log", "err")):
-        merged += [f"[{tag}] {line}" for line in _tail_file(_config_dir() / name, lines)]
+        merged += [f"[{tag}] {line}" for line in tail_file(_config_dir() / name, lines)]
     return merged[-lines:]
 
 

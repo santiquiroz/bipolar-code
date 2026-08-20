@@ -29,6 +29,18 @@ Web UI para gestionar un proxy [LiteLLM](https://github.com/BerriAI/litellm) —
 
 ---
 
+## Deploy con Docker (servidor remoto / headless)
+
+```bash
+docker compose up -d --build
+```
+
+- Gateway + UI en `:8000`; config persistida en el volumen `bipolar-data`.
+- `llama-server` NO va dentro del contenedor (necesita las GPUs del host): córrelo en el host y apunta el provider `llamacpp` a `http://host.docker.internal:4002`.
+- Fuera de tu LAN usa una VPN (Tailscale/WireGuard) — no expongas el puerto a internet.
+
+---
+
 ## Dev Setup (código fuente)
 
 ### Requisitos

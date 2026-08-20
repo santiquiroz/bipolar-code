@@ -16,17 +16,23 @@ export function RoutingPanel({ providers }: RoutingPanelProps) {
   const { data } = useQuery({ queryKey: ['routing'], queryFn: routingApi.get })
   const [enabled, setEnabled] = useState(false)
   const [rules, setRules] = useState<RoutingRule[]>([])
+  const [fallbackCsv, setFallbackCsv] = useState('')
   const [dirty, setDirty] = useState(false)
 
   useEffect(() => {
     if (data && !dirty) {
       setEnabled(data.enabled)
       setRules(data.rules)
+      setFallbackCsv((data.fallback_provider_ids ?? []).join(', '))
     }
   }, [data, dirty])
 
   const save = useMutation({
-    mutationFn: () => routingApi.set({ enabled, rules: rules.filter(r => r.provider_id) }),
+    mutationFn: () => routingApi.set({
+      enabled,
+      rules: rules.filter(r => r.provider_id),
+      fallback_provider_ids: fallbackCsv.split(',').map(s => s.trim()).filter(Boolean),
+    }),
     onSuccess: () => {
       setDirty(false)
       qc.invalidateQueries({ queryKey: ['routing'] })
@@ -97,6 +103,18 @@ export function RoutingPanel({ providers }: RoutingPanelProps) {
             </button>
           </div>
         ))}
+      </div>
+
+      <div className="mt-3">
+        <label className="text-xs text-gray-500">
+          Failover — si el provider efectivo (local) no responde, probar estos en orden (ids separados por coma)
+          <input
+            value={fallbackCsv}
+            onChange={(e) => { setFallbackCsv(e.target.value); setDirty(true) }}
+            placeholder="copilot, anthropic"
+            className="mt-1 w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-brand-400"
+          />
+        </label>
       </div>
 
       <div className="flex gap-2 mt-3">

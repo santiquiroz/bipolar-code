@@ -65,8 +65,10 @@ async def _copilot_token_refresh_loop():
 async def lifespan(app: FastAPI):
     from app.services import usage_tracker
     from app.services.llamacpp_service import autostart_if_configured
+    from app.services.telegram_bot import run_telegram_bot
     await usage_tracker.init_db()
     asyncio.create_task(autostart_if_configured())
+    asyncio.create_task(run_telegram_bot())
     task = asyncio.create_task(_copilot_token_refresh_loop())
     try:
         yield

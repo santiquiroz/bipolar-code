@@ -53,6 +53,7 @@ export const proxyApi = {
   start: () => api.post<{ started: boolean; provider: string }>('/proxy/start').then(r => r.data),
   getRoute: () => api.get<{ mode: string; litellm_running: boolean; proxy_status: any }>('/proxy/route').then(r => r.data),
   setRoute: (mode: 'direct' | 'proxy') => api.post('/proxy/route', { mode }).then(r => r.data),
+  getLogs: (lines = 80) => api.get<{ logs: string[] }>('/proxy/logs', { params: { lines } }).then(r => r.data),
 }
 
 export const providersApi = {

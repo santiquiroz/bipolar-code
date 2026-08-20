@@ -38,6 +38,7 @@ async def get_auth_info():
         "rate_limit_rpm": s.rate_limit_rpm,
         "allowed_origins": s.allowed_origins,
         "proxy_base_url": "http://<tu-ip>:8000",
+        "semantic_compression": s.semantic_compression,
     }
 
 

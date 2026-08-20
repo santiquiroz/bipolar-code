@@ -53,8 +53,8 @@ def _post_messages(client, provider):
         'data: {"type": "message_stop"}',
     ]
     with patch(
-        "app.api.messages.providers_service.get_active_provider",
-        return_value=provider,
+        "app.api.messages.providers_service.pick_provider",
+        new=AsyncMock(return_value=(provider, None, False)),
     ), patch("app.api.messages.httpx.AsyncClient") as mock_client:
         instance = mock_client.return_value
         instance.__aenter__ = AsyncMock(return_value=instance)
@@ -113,11 +113,8 @@ def test_routing_overrides_active_provider(client):
     }
     lines = ['data: {"type": "message_stop"}']
     with patch(
-        "app.api.messages.providers_service.get_active_provider",
-        return_value=_native_provider(),
-    ), patch(
-        "app.api.messages.providers_service.resolve_route",
-        return_value=(routed, "qwen3-4b"),
+        "app.api.messages.providers_service.pick_provider",
+        new=AsyncMock(return_value=(routed, "qwen3-4b", False)),
     ), patch("app.api.messages.httpx.AsyncClient") as mock_client:
         instance = mock_client.return_value
         instance.__aenter__ = AsyncMock(return_value=instance)

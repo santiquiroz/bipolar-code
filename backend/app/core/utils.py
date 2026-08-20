@@ -1,4 +1,18 @@
 import re
+from pathlib import Path
+
+
+def tail_file(path: Path, lines: int) -> list[str]:
+    """Últimas N líneas leyendo solo el bloque final (64KB) del archivo."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            data = f.read().decode("utf-8", errors="replace")
+        return data.splitlines()[-lines:]
+    except OSError:
+        return []
 
 
 def sanitize_error(msg: str) -> str:

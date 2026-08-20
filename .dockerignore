@@ -1,0 +1,13 @@
+.git
+build
+dist
+frontend/node_modules
+frontend/dist
+backend/__pycache__
+**/__pycache__
+**/*.pyc
+.playwright-mcp
+docs
+*.png
+*.jar
+*.html

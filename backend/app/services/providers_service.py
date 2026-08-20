@@ -205,13 +205,19 @@ def get_provider(provider_id: str) -> Optional[Provider]:
     return next((p for p in registry.providers if p.id == provider_id), None)
 
 
-def set_routing(enabled: bool, rules: list) -> dict:
+def set_routing(enabled: bool, rules: list, fallback_provider_ids: Optional[list[str]] = None) -> dict:
     with _registry_lock:
         registry = load_registry()
         registry.routing_enabled = enabled
         registry.routing_rules = rules
+        if fallback_provider_ids is not None:
+            registry.fallback_provider_ids = fallback_provider_ids
         save_registry(registry)
-    return {"enabled": enabled, "rules": rules}
+        return {
+            "enabled": enabled,
+            "rules": rules,
+            "fallback_provider_ids": registry.fallback_provider_ids,
+        }
 
 
 def resolve_route(model_name: str, prompt_tokens: int = 0) -> Optional[tuple[Provider, str]]:
@@ -229,6 +235,60 @@ def resolve_route(model_name: str, prompt_tokens: int = 0) -> Optional[tuple[Pro
         if provider:
             return provider, (rule.model or provider.active_model or model_name)
     return None
+
+
+def _base_host_port(api_base: str) -> tuple[str, int]:
+    host_port = api_base.split("//")[-1].split("/")[0]
+    host, _, port = host_port.partition(":")
+    return host, int(port) if port.isdigit() else (443 if api_base.startswith("https") else 80)
+
+
+def _is_local_base(api_base: str) -> bool:
+    host, _ = _base_host_port(api_base)
+    return host in ("127.0.0.1", "localhost") or host.startswith("192.168.") or host.startswith("10.")
+
+
+async def _is_reachable(api_base: str, timeout: float = 0.4) -> bool:
+    host, port = _base_host_port(api_base)
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except (OSError, asyncio.TimeoutError, ValueError):
+        return False
+
+
+async def pick_provider(model_name: str, prompt_tokens: int = 0) -> tuple[Optional[Provider], Optional[str], bool]:
+    """Provider efectivo para un request: routing → failover si el destino local
+    no responde. Retorna (provider, model_override, es_el_provider_activo) —
+    el flag decide si un provider anthropic puede ir vía litellm (solo el activo:
+    litellm corre con SU config)."""
+    registry = load_registry()
+    route = resolve_route(model_name, prompt_tokens)
+    primary = route[0] if route else get_provider(registry.active_provider_id)
+    routed_model = route[1] if route else None
+
+    if not registry.fallback_provider_ids or not primary:
+        return primary, routed_model, bool(primary and primary.id == registry.active_provider_id)
+
+    candidates: list[Provider] = [primary]
+    for pid in registry.fallback_provider_ids:
+        if pid != primary.id:
+            fallback = next((p for p in registry.providers if p.id == pid), None)
+            if fallback:
+                candidates.append(fallback)
+
+    for candidate in candidates:
+        # Solo se chequea reachability de bases locales/LAN; las cloud se asumen arriba
+        if not _is_local_base(candidate.api_base) or await _is_reachable(candidate.api_base):
+            is_active = candidate.id == registry.active_provider_id
+            if candidate.id != primary.id:
+                log.warning("provider_failover", primary=primary.id, fallback=candidate.id)
+                return candidate, None, is_active
+            return candidate, routed_model, is_active
+
+    return primary, routed_model, primary.id == registry.active_provider_id
 
 
 def get_active_provider() -> Optional[Provider]:
