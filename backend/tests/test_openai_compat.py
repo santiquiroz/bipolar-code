@@ -62,8 +62,8 @@ def test_chat_completions_rewrites_model_and_forwards(client):
     upstream.status_code = 200
     upstream.json = lambda: {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 5}}
     with patch(
-        "app.api.openai_compat.providers_service.get_active_provider",
-        return_value=_provider(),
+        "app.api.openai_compat.providers_service.pick_provider",
+        new=AsyncMock(return_value=(_provider(), None, True)),
     ), patch("app.api.openai_compat.httpx.AsyncClient") as mock_client:
         instance = mock_client.return_value
         instance.__aenter__ = AsyncMock(return_value=instance)
@@ -83,8 +83,8 @@ def test_chat_completions_upstream_error_relayed(client):
     upstream.status_code = 400
     upstream.json = lambda: {"error": {"message": "bad"}}
     with patch(
-        "app.api.openai_compat.providers_service.get_active_provider",
-        return_value=_provider(),
+        "app.api.openai_compat.providers_service.pick_provider",
+        new=AsyncMock(return_value=(_provider(), None, True)),
     ), patch("app.api.openai_compat.httpx.AsyncClient") as mock_client:
         instance = mock_client.return_value
         instance.__aenter__ = AsyncMock(return_value=instance)

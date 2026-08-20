@@ -62,13 +62,14 @@ def _record_usage(provider_id: str, model: str, usage: dict) -> None:
 async def chat_completions(request: Request):
     settings = get_settings()
     body = await request.json()
-    active = providers_service.get_active_provider()
-    routed_model = None
-    route = providers_service.resolve_route(str(body.get("model", "")))
-    # Routing en la superficie OAI: solo destinos OpenAI-compat (un destino
-    # anthropic requeriría traducir el formato, cosa que esta ruta no hace)
-    if route and route[0].litellm_prefix != "anthropic":
-        active, routed_model = route
+    active, routed_model, is_active_provider = await providers_service.pick_provider(
+        str(body.get("model", ""))
+    )
+    # Un destino anthropic NO activo requeriría traducir el formato OAI→Anthropic
+    # (litellm corre con el config del activo): en ese caso se ignora la ruta
+    if active and active.litellm_prefix == "anthropic" and not is_active_provider:
+        active = providers_service.get_active_provider()
+        routed_model = None
     provider_id = active.id if active else "unknown"
 
     url, headers, model = resolve_target(active, settings)

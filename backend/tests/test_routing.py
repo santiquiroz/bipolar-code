@@ -182,6 +182,7 @@ def test_get_routing_returns_enabled_and_rules(client, monkeypatch):
     assert response.json() == {
         "enabled": True,
         "rules": [rule.model_dump()],
+        "fallback_provider_ids": [],
     }
     mock_load_registry.assert_called_once_with()
     mock_set_routing.assert_not_called()
@@ -245,6 +246,6 @@ def test_put_routing_calls_set_routing_and_returns_result(client, monkeypatch):
     assert response.json() == service_result
     mock_get_provider.assert_called_once_with(target.id)
     mock_set_routing.assert_called_once_with(
-        True, [RoutingRule(**rule_payload)]
+        True, [RoutingRule(**rule_payload)], None
     )
     mock_load_registry.assert_not_called()

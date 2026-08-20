@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
-from app.services import providers_service, token_service, usage_tracker
+from app.services import compression_service, providers_service, token_service, usage_tracker
 from app.services.pricing_service import estimate_cost
 
 log = get_logger(__name__)
@@ -326,20 +326,27 @@ async def messages_passthrough(request: Request):
     ctx_window = token_service.get_context_window(model)
     used = token_service.count_tokens(messages)
 
-    active = providers_service.get_active_provider()
-    routed_model: str | None = None
-    route = providers_service.resolve_route(model, used)
-    if route:
-        active, routed_model = route
+    active, routed_model, is_active_provider = await providers_service.pick_provider(model, used)
     active_provider_id = active.id if active else "unknown"
-    # Provider anthropic RUTEADO va directo a api.anthropic.com: litellm corre
-    # con el config del provider activo, no del destino de la regla
-    is_native = bool(active and (active.anthropic_native or (route and active.litellm_prefix == "anthropic")))
+    # anthropic vía litellm SOLO si es el provider activo configurado (litellm
+    # corre con SU config); ruteado o failover → directo a api.anthropic.com
+    is_native = bool(active and (active.anthropic_native or (active.litellm_prefix == "anthropic" and not is_active_provider)))
     is_anthropic = bool(active and active.litellm_prefix == "anthropic" and not is_native)
     truncated = False
 
     if ctx_window > 0 and used >= int(ctx_window * 0.9):
-        messages = token_service.truncate_messages(messages, ctx_window)
+        compressed = None
+        if settings.semantic_compression and active:
+            compressed = await compression_service.compress_messages(messages, active, model)
+        if compressed:
+            messages = compressed
+            log.info(
+                "semantic_compression_applied",
+                before_tokens=used,
+                after_tokens=token_service.count_tokens(messages),
+            )
+        else:
+            messages = token_service.truncate_messages(messages, ctx_window)
         body["messages"] = messages
         truncated = True
 

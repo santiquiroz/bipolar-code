@@ -57,3 +57,5 @@ class ProviderRegistry(BaseModel):
     providers: list[Provider] = []
     routing_enabled: bool = False
     routing_rules: list[RoutingRule] = []
+    # Failover: si el provider efectivo (local) no responde, probar estos en orden
+    fallback_provider_ids: list[str] = []

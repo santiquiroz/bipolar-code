@@ -95,6 +95,7 @@ export interface RoutingRule {
 export interface RoutingConfig {
   enabled: boolean
   rules: RoutingRule[]
+  fallback_provider_ids?: string[]
 }
 
 export interface ProviderRegistry {

@@ -65,3 +65,16 @@ async def set_proxy_route(body: RouteRequest):
     except Exception as e:
         log.error('proxy_set_route_error', error=str(e), requested=body.mode)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/logs')
+async def litellm_logs(lines: int = 80):
+    from pathlib import Path
+    from app.core.config import get_settings
+    from app.core.utils import tail_file
+
+    config_dir = Path(get_settings().litellm_config_dir)
+    merged = []
+    for name, tag in (('litellm-out.log', 'out'), ('litellm-err.log', 'err')):
+        merged += [f'[{tag}] {line}' for line in tail_file(config_dir / name, lines)]
+    return {'logs': merged[-lines:]}

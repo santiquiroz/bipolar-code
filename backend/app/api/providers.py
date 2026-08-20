@@ -102,20 +102,27 @@ def list_providers():
 @router.get("/routing")
 def get_routing():
     registry = providers_service.load_registry()
-    return {"enabled": registry.routing_enabled, "rules": registry.routing_rules}
+    return {
+        "enabled": registry.routing_enabled,
+        "rules": registry.routing_rules,
+        "fallback_provider_ids": registry.fallback_provider_ids,
+    }
 
 
 class RoutingUpdate(BaseModel):
     enabled: bool
     rules: list[RoutingRule] = []
+    fallback_provider_ids: Optional[list[str]] = None  # None = no tocar
 
 
 @router.put("/routing")
 def set_routing(body: RoutingUpdate):
     unknown = [r.provider_id for r in body.rules if not providers_service.get_provider(r.provider_id)]
+    if body.fallback_provider_ids:
+        unknown += [pid for pid in body.fallback_provider_ids if not providers_service.get_provider(pid)]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Providers no registrados: {unknown}")
-    result = providers_service.set_routing(body.enabled, body.rules)
+    result = providers_service.set_routing(body.enabled, body.rules, body.fallback_provider_ids)
     log.info("routing_updated", enabled=body.enabled, rules=len(body.rules))
     return result
 

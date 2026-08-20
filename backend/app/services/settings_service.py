@@ -48,3 +48,9 @@ def write_env_key(key: str, value: str) -> None:
         content = content.rstrip("\n") + f"\n{key}={value}\n"
         log.info("env_key_added", key=key)
     env_path.write_text(content, encoding="utf-8")
+
+    # Aplicar en caliente: settings está lru_cache'd y pydantic no relee el .env
+    import os
+    from app.core.config import get_settings
+    os.environ[key] = value
+    get_settings.cache_clear()

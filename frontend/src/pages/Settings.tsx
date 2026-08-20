@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { Card } from '@/components/Card'
 import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
+import { useQuery } from '@tanstack/react-query'
 import { useEnvVars, useSetEnvKey } from '@/hooks/useSettings'
 import { useProviders } from '@/hooks/useProviders'
-import { settingsApi } from '@/services/api'
+import { proxyApi, settingsApi } from '@/services/api'
 
 function EnvField({ envKey, label, hint, masked }: {
   envKey: string; label: string; hint: string; masked: string
@@ -65,7 +66,17 @@ export function Settings() {
     api_key_length: number
     rate_limit_rpm: number
     allowed_origins: string
+    semantic_compression?: boolean
   } | null>(null)
+  const [semanticOn, setSemanticOn] = useState<boolean | null>(null)
+  const setEnvKey = useSetEnvKey()
+  const [showLitellmLogs, setShowLitellmLogs] = useState(false)
+  const { data: litellmLogs } = useQuery({
+    queryKey: ['litellm-logs'],
+    queryFn: () => proxyApi.getLogs(120),
+    enabled: showLitellmLogs,
+    refetchInterval: 3_000,
+  })
   const [fullKey, setFullKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [lanUrl, setLanUrl] = useState<string | null>(null)
@@ -188,6 +199,37 @@ export function Settings() {
           <Button variant="secondary" size="sm" onClick={loadAndCopyKey}>
             {copied ? '¡Copiado!' : 'Copiar API Key completa'}
           </Button>
+        </div>
+
+        {/* Compresión semántica */}
+        <div className="border-t border-gray-100 pt-4">
+          <label className="flex items-center gap-2 text-sm text-gray-600">
+            <input
+              type="checkbox"
+              checked={semanticOn ?? authInfo?.semantic_compression ?? false}
+              onChange={(e) => {
+                setSemanticOn(e.target.checked)
+                setEnvKey.mutate({ key: 'SEMANTIC_COMPRESSION', value: e.target.checked ? 'true' : 'false' })
+              }}
+            />
+            Compresión semántica de contexto — al acercarse al límite, resume el historial
+            viejo con el provider activo en vez de truncarlo
+          </label>
+        </div>
+
+        {/* Logs de litellm */}
+        <div className="border-t border-gray-100 pt-4">
+          <button
+            onClick={() => setShowLitellmLogs(!showLitellmLogs)}
+            className="text-xs text-brand-600 hover:underline"
+          >
+            {showLitellmLogs ? '▾' : '▸'} Logs de litellm
+          </button>
+          {showLitellmLogs && (
+            <pre className="mt-2 max-h-48 overflow-y-auto bg-gray-900 text-gray-200 rounded-lg p-2 text-[10px] leading-relaxed whitespace-pre-wrap">
+              {(litellmLogs?.logs ?? []).join('\n') || 'Sin logs todavía'}
+            </pre>
+          )}
         </div>
       </div>
     </div>
