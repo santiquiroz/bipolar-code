@@ -32,8 +32,7 @@ def resolve_target(active, settings) -> tuple[str, dict, str]:
         headers = {"Authorization": f"Bearer {settings.proxy_api_key}"}
         return url, headers, providers_service.PROXY_ALIASES[0]
 
-    api_base = active.api_base.rstrip("/") if active and active.api_base else ""
-    url = f"{api_base}/chat/completions" if api_base else f"{settings.proxy_url}/v1/chat/completions"
+    url = providers_service.oai_chat_completions_url(active) if active and active.api_base else f"{settings.proxy_url}/v1/chat/completions"
 
     api_key = ""
     if active and active.auth_env_var:

@@ -121,12 +121,13 @@ _DEFAULTS: list[dict] = [
     {
         "id": "ollama",
         "name": "Ollama (Local)",
-        "description": "Modelos locales via Ollama",
+        "description": "Modelos locales via Ollama — Anthropic Messages API nativa (Ollama >= 0.33)",
         "api_base": "http://127.0.0.1:11434",
         "litellm_prefix": "openai",
         "auth_env_var": "",
         "models_endpoint": "http://127.0.0.1:11434/api/tags",
         "active_model": "llama3.2",
+        "anthropic_native": True,
         "drop_params": True,
     },
 ]
@@ -286,6 +287,15 @@ def _skips_cooling(registry: ProviderRegistry) -> bool:
 def _is_cooling(provider_id: str) -> bool:
     from app.services import health_service
     return not health_service.is_available(f"provider:{provider_id}")
+
+
+def oai_chat_completions_url(provider: Provider) -> str:
+    """URL OpenAI-compatible del provider. Ollama expone chat/completions bajo /v1
+    aunque su api_base por defecto no lo lleve."""
+    base = provider.api_base.rstrip("/")
+    if provider.id == "ollama" and not base.endswith("/v1"):
+        base += "/v1"
+    return f"{base}/chat/completions"
 
 
 def _base_host_port(api_base: str) -> tuple[str, int]:

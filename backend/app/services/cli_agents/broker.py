@@ -391,14 +391,19 @@ async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: i
     return AttemptOutcome(ok=ok, returncode=rc, signal=signal, result=result, error="" if ok else (result.text[-300:] or f"exit {rc}"))
 
 
-def _files_touched(workspace: Path) -> list[str]:
+def _status_lines(workspace: Path) -> list[str]:
     if not (workspace / ".git").exists():
         return []
     try:
         out = subprocess.run(["git", "-C", str(workspace), "status", "--porcelain"], capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return []
-    return [line[3:].strip() for line in out.stdout.splitlines() if line.strip() and not line[3:].startswith(".bipolar/")]
+    return [line for line in out.stdout.splitlines() if line.strip() and not line[3:].startswith(".bipolar/")]
+
+
+def _files_touched(workspace: Path, before: set[str]) -> list[str]:
+    """Solo lo que cambió durante el job: líneas de `git status` que no existían antes."""
+    return [line[3:].strip() for line in _status_lines(workspace) if line not in before]
 
 
 def _write_log(rt: JobRuntime) -> str:
@@ -437,6 +442,7 @@ async def _run_job(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[st
     tried: list[str] = []
     alt_pool_tried = False
     global_sem, _ = _sems(registry, agent.id if agent else "")
+    status_before = set(_status_lines(rt.workspace)) if rt.request.mode == "task" else set()
     async with global_sem:
         job.status = "running"
         job.started_at = _now()
@@ -488,7 +494,7 @@ async def _run_job(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[st
             job.status, job.error = "failed", job.error or "max_attempts"
     job.finished_at = _now()
     if rt.request.mode == "task":
-        job.files_touched = _files_touched(rt.workspace)
+        job.files_touched = _files_touched(rt.workspace, status_before)
     job.log_path = _write_log(rt)
     if job.agent_id:
         await _record(job)

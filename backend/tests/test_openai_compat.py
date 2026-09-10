@@ -92,3 +92,16 @@ def test_chat_completions_upstream_error_relayed(client):
         instance.post = AsyncMock(return_value=upstream)
         resp = client.post("/v1/chat/completions", json=body)
     assert resp.status_code == 400
+
+
+def test_resolve_target_adds_v1_for_ollama_default_base():
+    from app.api.openai_compat import resolve_target
+    from app.core.config import get_settings
+    from app.models.provider import Provider
+    ollama = Provider(id="ollama", name="Ollama", api_base="http://127.0.0.1:11434", active_model="llama3.2")
+    url, _, model = resolve_target(ollama, get_settings())
+    assert url == "http://127.0.0.1:11434/v1/chat/completions" and model == "llama3.2"
+    lmstudio = Provider(id="lmstudio", name="LM", api_base="http://127.0.0.1:1234/v1", active_model="m")
+    assert resolve_target(lmstudio, get_settings())[0] == "http://127.0.0.1:1234/v1/chat/completions"
+    copilot = Provider(id="copilot", name="C", api_base="https://api.business.githubcopilot.com", active_model="m")
+    assert resolve_target(copilot, get_settings())[0] == "https://api.business.githubcopilot.com/chat/completions"

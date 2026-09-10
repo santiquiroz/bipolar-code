@@ -362,8 +362,12 @@ async def messages_passthrough(request: Request):
         "X-Accel-Buffering": "no",
     }
     started = time.monotonic()
+    reported = {"done": False}
 
     def _outcome(ok: bool, status: int | None = None, error: str = "") -> None:
+        if reported["done"]:
+            return
+        reported["done"] = True
         smart_router.report_outcome_sync(decision, target_key, ok, latency_ms=(time.monotonic() - started) * 1000, status=status, error=error)
 
     usage_buf: dict = {"input_tokens": 0, "output_tokens": 0}
@@ -430,6 +434,8 @@ async def messages_passthrough(request: Request):
                                     log.warning("event_parse_failed", error=str(e))
                             # Yield ALL lines including empty ones — empty lines are SSE event separators
                             yield f"{line}\n"
+                        # Respuesta no-SSE (cliente sin stream): el upstream respondió sin message_stop
+                        _outcome(True)
 
                 else:
                     # Non-Anthropic: call provider directly with OAI format
@@ -460,7 +466,7 @@ async def messages_passthrough(request: Request):
 
                     # Build provider URL directly (bypass litellm)
                     if active and active.api_base:
-                        provider_url = _chat_completions_url(active.api_base)
+                        provider_url = providers_service.oai_chat_completions_url(active)
                     else:
                         provider_url = f"{settings.proxy_url}/v1/chat/completions"
 
