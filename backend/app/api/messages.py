@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import uuid
 
 import httpx
@@ -11,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
-from app.services import compression_service, providers_service, token_service, usage_tracker
+from app.services import compression_service, providers_service, smart_router, token_service, usage_tracker
 from app.services.pricing_service import estimate_cost
 
 log = get_logger(__name__)
@@ -326,8 +327,10 @@ async def messages_passthrough(request: Request):
     ctx_window = token_service.get_context_window(model)
     used = token_service.count_tokens(messages)
 
-    active, routed_model, is_active_provider = await providers_service.pick_provider(model, used)
+    decision = await smart_router.decide(body, model, used, request.headers, surface="messages")
+    active, routed_model, is_active_provider = decision.as_pick()
     active_provider_id = active.id if active else "unknown"
+    target_key = f"provider:{active_provider_id}" if active else ""
     # anthropic vía litellm SOLO si es el provider activo configurado (litellm
     # corre con SU config); ruteado o failover → directo a api.anthropic.com
     is_native = bool(active and (active.anthropic_native or (active.litellm_prefix == "anthropic" and not is_active_provider)))
@@ -353,9 +356,15 @@ async def messages_passthrough(request: Request):
     ctx_pct = int(used / ctx_window * 100) if ctx_window else 0
     response_headers = {
         "X-Context-Usage": f"{used}/{ctx_window} tokens ({ctx_pct}%)",
+        "X-Bipolar-Route": decision.to_header(),
+        "X-Bipolar-Decision-Id": decision.decision_id,
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
     }
+    started = time.monotonic()
+
+    def _outcome(ok: bool, status: int | None = None, error: str = "") -> None:
+        smart_router.report_outcome_sync(decision, target_key, ok, latency_ms=(time.monotonic() - started) * 1000, status=status, error=error)
 
     usage_buf: dict = {"input_tokens": 0, "output_tokens": 0}
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
@@ -402,6 +411,7 @@ async def messages_passthrough(request: Request):
                                 err_msg = json.loads(raw).get("error", {}).get("message") or raw.decode()
                             except Exception:
                                 err_msg = raw.decode(errors="replace")
+                            _outcome(False, resp.status_code, err_msg)
                             yield _sse_error(_sanitize_error(err_msg))
                             return
                         async for line in resp.aiter_lines():
@@ -415,6 +425,7 @@ async def messages_passthrough(request: Request):
                                         usage_buf["output_tokens"] = ev.get("usage", {}).get("output_tokens", 0)
                                     elif etype == "message_stop":
                                         _record_usage(active_provider_id, model, usage_buf, truncated)
+                                        _outcome(True)
                                 except Exception as e:
                                     log.warning("event_parse_failed", error=str(e))
                             # Yield ALL lines including empty ones — empty lines are SSE event separators
@@ -511,6 +522,7 @@ async def messages_passthrough(request: Request):
                                 log.info("limit_detected_retrying", new_max_tokens=new_max, error_snippet=err_msg[:120])
                             else:
                                 log.error("provider_error", status=resp.status_code, provider=active_provider_id, error=_sanitize_error(err_msg))
+                                _outcome(False, resp.status_code, err_msg)
                                 yield _sse_error(_sanitize_error(err_msg))
                                 return
                         else:
@@ -529,14 +541,17 @@ async def messages_passthrough(request: Request):
                                 except Exception:
                                     err2 = raw2.decode(errors="replace")
                                 log.error("provider_error_after_retry", status=resp2.status_code, provider=active_provider_id)
+                                _outcome(False, resp2.status_code, err2)
                                 yield _sse_error(_sanitize_error(err2))
                                 return
                             async for chunk in _oai_stream_to_anthropic(resp2.aiter_lines(), message_id, model, usage_buf):
                                 yield chunk
 
                     _record_usage(active_provider_id, model, usage_buf, truncated)
+                    _outcome(True)
 
         except httpx.ConnectError as e:
+            _outcome(False, None, f"connect error: {e}")
             if is_native and active:
                 log.error("native_provider_unreachable", api_base=active.api_base)
                 yield _sse_error(
@@ -547,6 +562,7 @@ async def messages_passthrough(request: Request):
                 log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
                 yield _sse_error(_sanitize_error(str(e)))
         except Exception as e:
+            _outcome(False, None, str(e))
             log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
             yield _sse_error(_sanitize_error(str(e)))
 

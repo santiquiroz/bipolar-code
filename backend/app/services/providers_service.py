@@ -11,6 +11,7 @@ import psutil
 from pathlib import Path
 from typing import Optional
 from app.models.provider import Provider, ProviderRegistry
+from app.models.smart import DEFAULT_CLI_AGENTS, CliAgent, default_tier_table
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -184,13 +185,29 @@ def load_registry() -> ProviderRegistry:
                     registry.providers[i] = p.model_copy(update=patches)
                     patched.append(p.id)
 
-        if added or patched:
+        seeded = _seed_smart_defaults(registry)
+        if added or patched or seeded:
             save_registry(registry)
-            log.info("registry_migrated", added=[p.id for p in added], patched=patched)
+            log.info("registry_migrated", added=[p.id for p in added], patched=patched, seeded=seeded)
         return registry
     except Exception as e:
         log.error("registry_load_error", error=str(e))
         return ProviderRegistry(providers=[Provider(**d) for d in _DEFAULTS])
+
+
+def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
+    """Agrega agentes CLI faltantes (deshabilitados) y una tabla de tiers inicial
+    cuando no hay ninguna. Nunca toca lo que el usuario ya configuró."""
+    seeded: list[str] = []
+    existing = {a.id for a in registry.cli_agents}
+    for defaults in DEFAULT_CLI_AGENTS:
+        if defaults["id"] not in existing:
+            registry.cli_agents.append(CliAgent(**defaults))
+            seeded.append(f"cli:{defaults['id']}")
+    if not registry.smart.tiers and registry.providers:
+        registry.smart.tiers = default_tier_table({p.id for p in registry.providers})
+        seeded.append("smart.tiers")
+    return seeded
 
 
 def save_registry(registry: ProviderRegistry) -> None:
@@ -220,21 +237,55 @@ def set_routing(enabled: bool, rules: list, fallback_provider_ids: Optional[list
         }
 
 
-def resolve_route(model_name: str, prompt_tokens: int = 0) -> Optional[tuple[Provider, str]]:
+def update_smart_config(smart=None, cli_agents=None, delegation=None) -> ProviderRegistry:
+    """Actualización parcial de la gestión inteligente (None = no tocar)."""
+    with _registry_lock:
+        registry = load_registry()
+        if smart is not None:
+            registry.smart = smart
+        if cli_agents is not None:
+            registry.cli_agents = cli_agents
+        if delegation is not None:
+            registry.delegation = delegation
+        save_registry(registry)
+        return registry
+
+
+def _rule_matches(rule, model_name: str, prompt_tokens: int, tier: str) -> bool:
+    if rule.min_tokens and prompt_tokens < rule.min_tokens:
+        return False
+    if rule.max_tokens and prompt_tokens > rule.max_tokens:
+        return False
+    if rule.pattern and rule.pattern.lower() not in model_name.lower():
+        return False
+    if rule.tier and rule.tier != tier:
+        return False
+    return True
+
+
+def resolve_route(model_name: str, prompt_tokens: int = 0, tier: str = "") -> Optional[tuple[Provider, str]]:
     """Primer RoutingRule que matchea → (provider destino, model destino).
-    None = sin routing (usar provider activo)."""
+    None = sin routing (usar provider activo). Una regla con `tier` solo matchea
+    cuando el clasificador entregó ese tier."""
     registry = load_registry()
     if not registry.routing_enabled:
         return None
     for rule in registry.routing_rules:
-        if rule.min_tokens and prompt_tokens < rule.min_tokens:
-            continue
-        if rule.pattern and rule.pattern.lower() not in model_name.lower():
+        if not _rule_matches(rule, model_name, prompt_tokens, tier):
             continue
         provider = next((p for p in registry.providers if p.id == rule.provider_id), None)
         if provider:
             return provider, (rule.model or provider.active_model or model_name)
     return None
+
+
+def _skips_cooling(registry: ProviderRegistry) -> bool:
+    return registry.smart.enabled and registry.smart.skip_cooling_providers
+
+
+def _is_cooling(provider_id: str) -> bool:
+    from app.services import health_service
+    return not health_service.is_available(f"provider:{provider_id}")
 
 
 def _base_host_port(api_base: str) -> tuple[str, int]:
@@ -279,7 +330,11 @@ async def pick_provider(model_name: str, prompt_tokens: int = 0) -> tuple[Option
             if fallback:
                 candidates.append(fallback)
 
+    skip_cooling = _skips_cooling(registry)
     for candidate in candidates:
+        if skip_cooling and _is_cooling(candidate.id):
+            log.info("provider_skipped_cooling", provider=candidate.id)
+            continue
         # Solo se chequea reachability de bases locales/LAN; las cloud se asumen arriba
         if not _is_local_base(candidate.api_base) or await _is_reachable(candidate.api_base):
             is_active = candidate.id == registry.active_provider_id

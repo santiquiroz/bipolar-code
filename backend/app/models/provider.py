@@ -2,8 +2,10 @@
 Modelo genérico de proveedor de LLM.
 Cada proveedor define cómo conectarse, autenticarse y listar sus modelos.
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
+
+from app.models.smart import CliAgent, DelegationConfig, SmartRoutingConfig
 
 
 class Provider(BaseModel):
@@ -45,11 +47,16 @@ class Provider(BaseModel):
 class RoutingRule(BaseModel):
     """Regla de routing por escenario: primer match gana (orden de la lista).
     pattern: substring case-insensitive sobre el model pedido ("" = cualquiera).
-    min_tokens: umbral longContext — solo aplica si el prompt >= umbral (0 = sin umbral)."""
+    min_tokens: umbral longContext — solo aplica si el prompt >= umbral (0 = sin umbral).
+    tier: tier del clasificador que debe coincidir ("" = cualquiera).
+    max_tokens: techo de tokens del prompt (0 = sin techo)."""
     pattern: str = ""
     min_tokens: int = 0
     provider_id: str
     model: str = ""              # "" = active_model del provider destino
+    tier: str = ""
+    max_tokens: int = 0
+    label: str = ""
 
 
 class ProviderRegistry(BaseModel):
@@ -59,3 +66,7 @@ class ProviderRegistry(BaseModel):
     routing_rules: list[RoutingRule] = []
     # Failover: si el provider efectivo (local) no responde, probar estos en orden
     fallback_provider_ids: list[str] = []
+    # Gestión inteligente (2.13): routing por complejidad y agentes CLI delegables
+    smart: SmartRoutingConfig = Field(default_factory=SmartRoutingConfig)
+    cli_agents: list[CliAgent] = Field(default_factory=list)
+    delegation: DelegationConfig = Field(default_factory=DelegationConfig)

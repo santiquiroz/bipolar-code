@@ -3,6 +3,7 @@
 Tu gateway personal de LLMs, self-hosted. Una sola app que:
 
 - **Sirve modelos locales grandes** con llama.cpp gestionado (multi-GPU AMD/NVIDIA vía Vulkan, tensor-split automático, descarga de modelos desde Hugging Face en la UI).
+- **Gestión inteligente** (2.13): clasifica cada request por complejidad y lo enruta al destino con cuota y capacidad (modo shadow para probar sin riesgo), y delega tareas de código a los CLIs instalados (Claude Code, Codex, Copilot, Antigravity, Ollama) según tier y cuota.
 - **Habla los dos idiomas**: Anthropic Messages API (`/v1/messages`) y OpenAI (`/v1/chat/completions`) — cualquier herramienta que use Claude o un endpoint OpenAI-compatible puede apuntar aquí.
 - **Enruta por escenario**: tareas background → modelo chico, código → modelo grande local, razonamiento pesado → Anthropic real. Con failover automático si un provider local está caído.
 - Gestiona providers cloud (Copilot, Anthropic, NVIDIA NIM, OpenRouter, DeepSeek…) con cambio de un clic, chat con streaming, tracking de uso/costos.
@@ -124,6 +125,28 @@ Allowlist vacía = bot inerte (default seguro). El bot responde con el provider 
 /plugin install bipolar@bipolar-plugin-cc
 /bipolar:setup http://<ip>:8000 <api-key>
 ```
+
+---
+
+## Caso de uso 8 — Gestión inteligente: routing por complejidad y delegación a agentes CLI
+
+Providers → **Routing inteligente**. Cada request a `/v1/messages` o `/v1/chat/completions` se clasifica en un tier (`trivial`, `simple`, `standard`, `complex`) con señales deterministas (tokens, tools, `tool_result` en curso, intención del último mensaje, hint del modelo pedido, thinking) y va al primer destino elegible de la tabla tier → providers: se descartan los que estén en cooldown por 429/cuota, sin capacidad (tools, visión, contexto), fuera de presupuesto o inalcanzables. Las reglas explícitas del caso 5 siguen ganando.
+
+- **Shadow primero**: en modo shadow no cambia ningún destino, solo registra qué habría elegido. Cada respuesta lleva la cabecera `X-Bipolar-Route` y la decisión queda en Usage → *Decisiones de routing* (acuerdo legacy↔smart, motivos, rechazos). Cuando te convenza, pásalo a *Activo*.
+- **Explicable**: `POST /api/smart/explain` con un body de ejemplo devuelve tier, puntaje, motivos y destino sin llamar a nadie; `X-Bipolar-Tier: complex` fuerza el tier desde el cliente.
+- **Presupuestos** por destino y ventana (día, semana, mes) sobre `usage.db`.
+
+Pestaña **Agentes**: bipolar-code detecta los CLIs instalados en el host (`claude`, `codex`, `copilot`, `agy` de Antigravity, `ollama`), muestra versión, auth y estado de cuota (Antigravity expone sus dos pools con `agy -p "/usage"`, gratis) y delega tareas de código al mejor disponible:
+
+```bash
+curl -sS -H "x-api-key: $KEY" -H "content-type: application/json" -d '{"task":"Genera tests para src/pagos.py (firmas abajo) ...","workspace":"C:/repos/miapp"}' http://localhost:8000/api/delegate/jobs
+```
+
+- El broker clasifica la tarea, recorre el orden de agentes de ese tier y salta los agotados, no instalados u ocupados. Si un intento muere por cuota (`429`, `out of credits`, `RESOURCE_EXHAUSTED`, el `stream was interrupted` de agy) marca al agente como `exhausted` hasta su reset (5 h, diario o semanal) y reintenta en el siguiente; Antigravity prueba primero su otro pool.
+- Cada job corre como subproceso acotado (timeout, kill del árbol de procesos) dentro de un workspace de la lista blanca, vacía por defecto, así que nada corre hasta que la configures. Los flags de seguridad de cada CLI son fijos: claude `acceptEdits` sin `Task/Agent`, codex `workspace-write`, copilot con deny list de `rm`, `git push`, `reset`, `clean` y `checkout`, agy solo si existe tu deny list global. El log se sigue por SSE en `GET /api/delegate/jobs/{id}/stream`; al terminar, el job trae `files_touched`.
+- Los CLIs autentican con sus propias sesiones: el hijo recibe un entorno mínimo sin claves del gateway ni `ANTHROPIC_BASE_URL`, para que un `claude` hijo no vuelva a entrar por bipolar.
+
+`/v1` enruta solo entre providers HTTP; los agentes CLI reciben tareas por la API de jobs (un CLI trae su propio loop de herramientas y no puede devolver `tool_use` a Claude Code a mitad de turno).
 
 ---
 

@@ -13,11 +13,15 @@ from app.api import messages as messages_router
 from app.api import pricing as pricing_router
 from app.api import llamacpp as llamacpp_router
 from app.api import openai_compat as openai_compat_router
+from app.api import smart as smart_router_api
+from app.api import delegate as delegate_router
 from app.core.logging import setup_logging, get_logger
 from app.core.config import get_settings
 
 setup_logging()
 log = get_logger(__name__)
+
+APP_VERSION = "2.13.0"
 
 _REFRESH_MARGIN = 120   # refresh when less than 2 min remain
 _RETRY_ON_ERROR = 60    # retry after 1 min on failure
@@ -66,7 +70,13 @@ async def lifespan(app: FastAPI):
     from app.services import usage_tracker
     from app.services.llamacpp_service import autostart_if_configured
     from app.services.telegram_bot import run_telegram_bot
+    from app.services import decisions_log
+    from app.services.cli_agents import broker
     await usage_tracker.init_db()
+    try:
+        await decisions_log.init_tables()
+    except Exception as e:
+        log.warning("decisions_log_init_failed", error=str(e))
     asyncio.create_task(autostart_if_configured())
     asyncio.create_task(run_telegram_bot())
     task = asyncio.create_task(_copilot_token_refresh_loop())
@@ -74,6 +84,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         task.cancel()
+        try:
+            await broker.shutdown()
+        except Exception as e:
+            log.warning("broker_shutdown_failed", error=str(e))
         try:
             await task
         except asyncio.CancelledError:
@@ -86,7 +100,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Bipolar Code",
         description="LiteLLM Proxy Manager API",
-        version="0.2.0",
+        version=APP_VERSION,
         lifespan=lifespan,
     )
 
@@ -108,8 +122,9 @@ def create_app() -> FastAPI:
         allow_credentials=cors_credentials,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-API-Key", "x-api-key",
-                       "anthropic-version", "anthropic-beta", "x-context-usage"],
-        expose_headers=["X-Context-Usage"],
+                       "anthropic-version", "anthropic-beta", "x-context-usage",
+                       "X-Bipolar-Tier", "X-Bipolar-Depth"],
+        expose_headers=["X-Context-Usage", "X-Bipolar-Route", "X-Bipolar-Decision-Id"],
     )
 
     from app.middleware.auth import APIKeyMiddleware
@@ -128,15 +143,21 @@ def create_app() -> FastAPI:
     app.include_router(pricing_router.router, prefix="/api")
     app.include_router(llamacpp_router.router, prefix="/api")
     app.include_router(openai_compat_router.router)
+    app.include_router(smart_router_api.router, prefix="/api")
+    app.include_router(delegate_router.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():
         s = get_settings()
         log.info("health_check")
+        from app.services import providers_service
+        registry = providers_service.load_registry()
         return {
             "status": "ok",
-            "version": "0.2.0",
+            "version": APP_VERSION,
             "api_key_configured": bool(s.ui_api_key),
+            "smart_routing": {"enabled": registry.smart.enabled, "mode": registry.smart.mode},
+            "delegation_enabled": registry.delegation.enabled,
         }
 
     import sys
