@@ -90,6 +90,9 @@ export interface RoutingRule {
   min_tokens: number
   provider_id: string
   model: string
+  tier?: string
+  max_tokens?: number
+  label?: string
 }
 
 export interface RoutingConfig {

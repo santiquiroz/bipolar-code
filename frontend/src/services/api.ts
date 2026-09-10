@@ -4,6 +4,10 @@ import type {
   Provider, ProviderRegistry, ProviderModel, LlamaDevicesResponse, LlamaStatus,
   HFRepo, HFFile, HFDownload, LocalModel, RoutingConfig,
 } from '@/types/provider'
+import type {
+  AgentStatus, Classification, DecisionsSummary, DecisionRow, DelegationConfig, Job, JobRequest,
+  RouteDecision, SseEvent, SmartConfigResponse, SmartRoutingConfig, CliAgent,
+} from '@/types/smart'
 
 const STORAGE_KEY = 'bipolar_api_key'
 
@@ -145,4 +149,54 @@ export const verifyKeyApi = {
 export const routingApi = {
   get: () => api.get<RoutingConfig>('/providers/routing').then(r => r.data),
   set: (config: RoutingConfig) => api.put<RoutingConfig>('/providers/routing', config).then(r => r.data),
+}
+
+export const smartApi = {
+  getConfig: (refresh = false) => api.get<SmartConfigResponse>('/smart/config', { params: { refresh } }).then(r => r.data),
+  saveConfig: (body: { smart?: SmartRoutingConfig; cli_agents?: CliAgent[]; delegation?: DelegationConfig }) =>
+    api.put('/smart/config', body).then(r => r.data),
+  presetDefault: (save = false) => api.post<{ tiers: SmartRoutingConfig['tiers']; saved: boolean }>('/smart/presets/default', null, { params: { save } }).then(r => r.data),
+  classify: (body: { task?: string; body?: Record<string, unknown>; prompt_tokens?: number; surface?: string }) =>
+    api.post<Classification>('/smart/classify', body).then(r => r.data),
+  explain: (body: { body: Record<string, unknown>; prompt_tokens?: number; surface?: string; headers?: Record<string, string> }) =>
+    api.post<RouteDecision>('/smart/explain', body).then(r => r.data),
+  getHealth: () => api.get<{ targets: SmartConfigResponse['health'] }>('/smart/health').then(r => r.data),
+  resetHealth: (target?: string) => api.post<{ reset: string[] }>('/smart/health/reset', null, { params: { target } }).then(r => r.data),
+  getDecisions: (params?: { limit?: number; tier?: string; target?: string; source?: string; since?: string }) =>
+    api.get<{ decisions: DecisionRow[] }>('/smart/decisions', { params }).then(r => r.data),
+  getDecisionsSummary: (period: 'day' | 'week' | 'month') =>
+    api.get<DecisionsSummary>('/smart/decisions/summary', { params: { period } }).then(r => r.data),
+  getAgents: (refresh = false) => api.get<{ agents: AgentStatus[] }>('/smart/agents', { params: { refresh } }).then(r => r.data),
+  probeAgent: (id: string) => api.post<AgentStatus>(`/smart/agents/${encodeURIComponent(id)}/probe`).then(r => r.data),
+}
+
+export const delegateApi = {
+  listJobs: (params?: { limit?: number; status?: string }) => api.get<{ jobs: Job[] }>('/delegate/jobs', { params }).then(r => r.data),
+  submitJob: (body: JobRequest) => api.post<Job>('/delegate/jobs', body).then(r => r.data),
+  getJob: (id: string) => api.get<Job>(`/delegate/jobs/${encodeURIComponent(id)}`).then(r => r.data),
+  output: (id: string) => api.get<string>(`/delegate/jobs/${encodeURIComponent(id)}/output`).then(r => r.data),
+  cancelJob: (id: string) => api.delete<Job>(`/delegate/jobs/${encodeURIComponent(id)}`).then(r => r.data),
+  streamJob: async (id: string, onEvent: (event: SseEvent) => void, signal?: AbortSignal) => {
+    const response = await fetch(`/api/delegate/jobs/${encodeURIComponent(id)}/stream`, {
+      headers: { Accept: 'text/event-stream', ...(getStoredApiKey() ? { 'X-API-Key': getStoredApiKey() } : {}) },
+      signal,
+    })
+    if (!response.ok) throw new Error(`stream: ${response.status}`)
+    if (!response.body) throw new Error('El stream no está disponible')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+      const chunks = buffer.split(/\r?\n\r?\n/)
+      buffer = chunks.pop() || ''
+      for (const chunk of chunks) {
+        const event = chunk.match(/^event:\s*(.+)$/m)?.[1] || 'line'
+        const data = chunk.match(/^data:\s*(.+)$/m)?.[1]
+        if (data) onEvent({ ...JSON.parse(data), event } as SseEvent)
+      }
+      if (done) break
+    }
+  },
 }

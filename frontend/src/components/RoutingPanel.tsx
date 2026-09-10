@@ -9,7 +9,7 @@ interface RoutingPanelProps {
   providers: Provider[]
 }
 
-const EMPTY_RULE: RoutingRule = { pattern: '', min_tokens: 0, provider_id: '', model: '' }
+const EMPTY_RULE: RoutingRule = { pattern: '', min_tokens: 0, provider_id: '', model: '', tier: '', max_tokens: 0, label: '' }
 
 export function RoutingPanel({ providers }: RoutingPanelProps) {
   const qc = useQueryClient()
@@ -64,13 +64,21 @@ export function RoutingPanel({ providers }: RoutingPanelProps) {
 
       <div className="space-y-2">
         {rules.map((rule, i) => (
-          <div key={i} className="grid grid-cols-[1fr_90px_1fr_1fr_28px] gap-2 items-center">
+          <div key={i} className="grid grid-cols-[1fr_90px_90px_90px_1fr_1fr_1fr_28px] gap-2 items-center">
             <input
               value={rule.pattern}
               onChange={(e) => updateRule(i, { pattern: e.target.value })}
               placeholder="patrón (ej: haiku)"
               className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-brand-400"
             />
+            <select value={rule.tier || ''} onChange={(e) => updateRule(i, { tier: e.target.value })} title="Tier"
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1.5">
+              <option value="">Cualquiera</option><option value="trivial">trivial</option><option value="simple">simple</option>
+              <option value="standard">standard</option><option value="complex">complex</option>
+            </select>
+            <input type="number" value={rule.max_tokens || 0} onChange={(e) => updateRule(i, { max_tokens: Number(e.target.value) })}
+              title="Máximo tokens; 0 = sin límite" placeholder="max tokens"
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1.5" />
             <input
               type="number"
               value={rule.min_tokens}
@@ -78,6 +86,8 @@ export function RoutingPanel({ providers }: RoutingPanelProps) {
               title="Min tokens (longContext); 0 = sin umbral"
               className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 font-mono focus:outline-none focus:ring-2 focus:ring-brand-400"
             />
+            <input value={rule.label || ''} onChange={(e) => updateRule(i, { label: e.target.value })}
+              placeholder="etiqueta" className="text-xs border border-gray-300 rounded-lg px-2 py-1.5" />
             <select
               value={rule.provider_id}
               onChange={(e) => updateRule(i, { provider_id: e.target.value })}

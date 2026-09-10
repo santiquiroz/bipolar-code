@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { useUsageSummary, useUsageHistory } from '@/hooks/useUsage'
+import { useDecisions, useDecisionsSummary, useSmartHealth, useResetHealth } from '@/hooks/useSmart'
+import { Card } from '@/components/Card'
+import { Button } from '@/components/Button'
+import { Badge } from '@/components/Badge'
 
 const PERIOD_LABELS = { day: 'Hoy', week: 'Esta semana', month: 'Este mes' } as const
 type Period = keyof typeof PERIOD_LABELS
@@ -25,6 +29,10 @@ export function Usage() {
   const [period, setPeriod] = useState<Period>('day')
   const { data: summary, isLoading: summaryLoading } = useUsageSummary(period)
   const { data: history, isLoading: historyLoading } = useUsageHistory({ limit: 50 })
+  const { data: decisionSummary } = useDecisionsSummary(period)
+  const { data: decisions } = useDecisions({ limit: 100 })
+  const { data: health } = useSmartHealth()
+  const resetHealth = useResetHealth()
 
   const byProvider = summary?.by_provider || {}
   const series = summary?.series || []
@@ -61,6 +69,21 @@ export function Usage() {
             </button>
           ))}
         </div>
+
+        <Card title="Decisiones de routing">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            {[
+              ['Decisiones', decisionSummary?.count ?? 0],
+              ['Acuerdo legacy ↔ smart', `${((decisionSummary?.agreement_rate ?? 0) * 100).toFixed(1)}%`],
+              ['Ms promedio', `${(decisionSummary?.avg_decision_ms ?? 0).toFixed(1)} ms`],
+              ['Resultados ok/error', `${decisionSummary?.outcomes.ok ?? 0} / ${decisionSummary?.outcomes.error ?? 0}`],
+            ].map(([label, value]) => <div key={String(label)} className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500">{label}</p><p className="font-bold text-gray-800 mt-1">{value}</p></div>)}
+          </div>
+          <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-gray-400 text-left border-b"><th>Hora</th><th>Superficie</th><th>Tier / score</th><th>Intent</th><th>Destino</th><th>Shadow</th><th>Origen</th><th>Resultado</th></tr></thead><tbody>{(decisions?.decisions || []).map(row => <tr key={row.id} className="border-b border-gray-50"><td className="py-2">{row.timestamp.slice(11, 16)}</td><td>{row.surface}</td><td><Badge label={`${row.tier} / ${row.score}`} /></td><td>{row.intent}</td><td>{row.chosen_key}</td><td>{row.would_key}</td><td>{row.source}</td><td>{row.outcome}</td></tr>)}</tbody></table></div>
+        </Card>
+        <Card title="Salud de destinos">
+          <table className="w-full text-sm"><thead><tr className="text-gray-400 text-xs text-left border-b"><th>Destino</th><th>Estado</th><th>Fallos</th><th /></tr></thead><tbody>{Object.entries(health?.targets || {}).map(([target, item]) => <tr key={target} className="border-b border-gray-50"><td className="py-2">{target}</td><td><Badge label={item.state} variant={item.state === 'available' ? 'success' : 'warning'} /></td><td>{item.consecutive_failures ?? 0}</td><td><Button size="sm" variant="secondary" onClick={() => resetHealth.mutate(target)}>Reset</Button></td></tr>)}</tbody></table>
+        </Card>
       </div>
 
       {/* Summary cards */}

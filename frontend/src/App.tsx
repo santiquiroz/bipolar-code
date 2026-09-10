@@ -8,6 +8,7 @@ import { Models } from '@/pages/Models'
 import { Usage } from '@/pages/Usage'
 import { Providers } from '@/pages/Providers'
 import { Settings } from '@/pages/Settings'
+import { Agents } from '@/pages/Agents'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,6 +29,7 @@ export function App() {
               <Route path="usage" element={<Usage />} />
               <Route path="providers" element={<Providers />} />
               <Route path="settings" element={<Settings />} />
+              <Route path="agents" element={<Agents />} />
             </Route>
           </Routes>
         </BrowserRouter>

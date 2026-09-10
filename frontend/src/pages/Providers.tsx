@@ -7,6 +7,7 @@ import { AddProviderModal } from '@/components/AddProviderModal'
 import { NvidiaWizard } from '@/components/NvidiaWizard'
 import { LlamaCppPanel } from '@/components/LlamaCppPanel'
 import { RoutingPanel } from '@/components/RoutingPanel'
+import { SmartRoutingPanel } from '@/components/SmartRoutingPanel'
 import { useProviders, useSwitchProvider, useDeleteProvider } from '@/hooks/useProviders'
 import { useQuery } from '@tanstack/react-query'
 import { settingsApi } from '@/services/api'
@@ -126,6 +127,7 @@ export function Providers() {
       )}
 
       {registry && <RoutingPanel providers={registry.providers} />}
+      {registry && <SmartRoutingPanel providers={registry.providers} />}
 
       {showAdd && <AddProviderModal onClose={() => setShowAdd(false)} />}
       {showNvidiaWizard && (
