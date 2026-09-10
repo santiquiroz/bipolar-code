@@ -31,6 +31,7 @@ TASK_CONSTRAINTS = (
     "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
     "Deja los cambios en el working tree y termina con la lista de archivos tocados."
 )
+TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 POINTER_PROMPT = "Read the file {rel} in this workspace and do exactly what it says. Do not modify or delete that file."
 POINTER_DIR = ".bipolar/jobs"
 

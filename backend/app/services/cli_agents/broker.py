@@ -26,7 +26,7 @@ from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import health_service, providers_service, usage_tracker
 from app.services.cli_agents import registry as agents_registry
-from app.services.cli_agents.adapters import TASK_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, adapter_for
+from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, adapter_for
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -344,7 +344,7 @@ async def _run_ollama(rt: JobRuntime, agent: CliAgent, model: str, task: str, ti
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=timeout_s, write=10.0, pool=5.0)) as client:
             async with client.stream("POST", f"{api_base}/api/generate",
-                                     json={"model": model, "prompt": task + TASK_CONSTRAINTS, "stream": True,
+                                     json={"model": model, "prompt": task + TEXT_CONSTRAINTS, "stream": True,
                                            "options": {"num_predict": 4096}}) as resp:
                 if resp.status_code >= 400:
                     body = (await resp.aread()).decode("utf-8", "replace")
