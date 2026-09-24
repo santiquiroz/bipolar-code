@@ -14,6 +14,7 @@ from app.models.provider import Provider, ProviderRegistry
 from app.models.smart import DEFAULT_CLI_AGENTS, CliAgent, default_tier_table
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.settings_service import is_valid_env_key
 
 log = get_logger(__name__)
 
@@ -644,6 +645,8 @@ def _start_litellm(config_path: Path) -> None:
         _CRED_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
         _ALWAYS_PASS = ("PYTHONIOENCODING", "PYTHONUTF8")
         for k, v in child_env.items():
+            if not is_valid_env_key(k):
+                continue
             if k in _ALWAYS_PASS or any(k.endswith(s) for s in _CRED_SUFFIXES):
                 escaped = v.replace("'", "''")
                 lines.append(f"$env:{k} = '{escaped}'")

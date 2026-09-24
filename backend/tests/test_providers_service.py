@@ -77,3 +77,28 @@ def test_detect_active_provider_empty_health_returns_active():
     with patch("app.services.providers_service.load_registry", return_value=registry):
         result = detect_active_provider_from_health({})
     assert result == "copilot"
+
+
+def test_start_litellm_ps1_skips_env_names_that_are_not_valid_identifiers(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+    from app.services import providers_service
+
+    (tmp_path / ".env").write_text(
+        "GOOD_API_KEY=ok\nX; Start-Process calc; $y_TOKEN=evil\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        providers_service, "get_settings", lambda: SimpleNamespace(litellm_config_dir=str(tmp_path))
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    popen = MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    providers_service._start_litellm(tmp_path / "config.yaml")
+
+    script = (tmp_path / "_start_litellm.ps1").read_text(encoding="utf-8")
+    assert "$env:GOOD_API_KEY = 'ok'" in script
+    assert "start-process calc" not in script.lower()
+    popen.assert_called_once()

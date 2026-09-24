@@ -24,7 +24,10 @@ async def set_env_key(body: WriteKeyRequest):
     if not body.key or not body.value:
         raise HTTPException(status_code=400, detail="key y value son requeridos")
     log.info("request_set_env_key", key=body.key)
-    settings_service.write_env_key(body.key, body.value)
+    try:
+        settings_service.write_env_key(body.key, body.value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"updated": body.key}
 
 
