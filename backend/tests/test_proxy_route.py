@@ -1,7 +1,11 @@
-import asyncio
-import os
 import pytest
 from app.services import proxy_service
+
+CLEARED_USER_ENV = [
+    ("registry", "ANTHROPIC_BASE_URL", None),
+    ("registry", "ANTHROPIC_API_KEY", None),
+    ("claude_settings", {"ANTHROPIC_BASE_URL": None, "ANTHROPIC_API_KEY": None}),
+]
 
 @pytest.mark.asyncio
 async def test_set_get_route_mode():
@@ -11,8 +15,7 @@ async def test_set_get_route_mode():
     assert proxy_service.get_route_mode() == 'proxy'
 
 @pytest.mark.asyncio
-async def test_enable_direct_routing_does_not_crash(monkeypatch):
-    """_set_user_env no debe lanzar excepción en ninguna plataforma."""
+async def test_enable_direct_routing_clears_user_env(monkeypatch, user_env_calls):
     async def fake_status():
         return {"running": False}
     monkeypatch.setattr("app.services.proxy_service.get_proxy_status", fake_status)
@@ -20,9 +23,10 @@ async def test_enable_direct_routing_does_not_crash(monkeypatch):
     result = await proxy_service.enable_direct_routing()
     assert result["mode"] == "direct"
     assert result["applied"] is True
+    assert user_env_calls == CLEARED_USER_ENV
 
 @pytest.mark.asyncio
-async def test_check_and_fallback(monkeypatch):
+async def test_check_and_fallback(monkeypatch, user_env_calls):
     # _check_and_fallback_once llama get_proxy_health directamente (no get_proxy_status)
     async def fake_get_proxy_health():
         return {}  # vacío = litellm no corriendo
@@ -35,3 +39,4 @@ async def test_check_and_fallback(monkeypatch):
     await proxy_service.set_route_mode('proxy')
     await proxy_service._check_and_fallback_once()
     assert proxy_service.get_route_mode() == 'direct'
+    assert user_env_calls == CLEARED_USER_ENV
