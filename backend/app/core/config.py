@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Rate limiting: máx requests por minuto por IP (0 = desactivado)
     rate_limit_rpm: int = 120
 
+    # Proxies inversos de confianza (IPs, CIDR o hostnames separados por coma).
+    # X-Forwarded-For solo se usa para el rate limit si la conexión viene de uno de ellos.
+    trusted_proxies: str = ""
+
     # Compresión semántica: resumir historial viejo con el provider activo
     # al acercarse al límite de contexto, en vez de solo truncar
     semantic_compression: bool = False

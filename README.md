@@ -168,7 +168,7 @@ Gateway + UI en `:8000`, config en el volumen `bipolar-data`. `llama-server` NO 
 ## Seguridad
 
 - Todo (`/api/*` y `/v1/*`) exige tu API key — nada queda anónimo en la LAN.
-- Rate limiting por IP configurable (`RATE_LIMIT_RPM`).
+- Rate limiting por IP configurable (`RATE_LIMIT_RPM`). `X-Forwarded-For` se ignora salvo que la conexión venga de un proxy listado en `TRUSTED_PROXIES`.
 - Fuera de la LAN: VPN. No abras el puerto al internet público.
 
 ---
@@ -207,6 +207,7 @@ El backend lee `.env` del directorio de configuración (`C:\litellm\` / `~/.lite
 | `SEMANTIC_COMPRESSION` | `true` activa la compresión de contexto |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS` | Bot de Telegram |
 | `RATE_LIMIT_RPM`, `ALLOWED_ORIGINS` | Endurecimiento de red |
+| `TRUSTED_PROXIES` | Proxies inversos (IPs o CIDR, separados por coma) cuyo `X-Forwarded-For` se respeta en el rate limit; vacío = ninguno |
 
 Ver [`backend/.env.example`](backend/.env.example) para la lista completa.
 

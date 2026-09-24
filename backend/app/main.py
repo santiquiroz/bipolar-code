@@ -131,7 +131,8 @@ def create_app() -> FastAPI:
     from app.middleware.rate_limit import RateLimitMiddleware
     app.add_middleware(APIKeyMiddleware, ui_key=settings.ui_api_key, proxy_key=settings.proxy_api_key)
     if settings.rate_limit_rpm > 0:
-        app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm)
+        app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm,
+                           trusted_proxies=settings.trusted_proxies)
 
     app.include_router(proxy.router, prefix="/api")
     app.include_router(models.router, prefix="/api")
