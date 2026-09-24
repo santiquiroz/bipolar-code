@@ -1,12 +1,11 @@
 import json
-import os
 import httpx
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 from app.services import providers_service, token_service
-from app.core.config import get_settings
+from app.core.config import env_value, get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
 
@@ -46,7 +45,7 @@ async def chat_completions(body: ChatRequest):
         url = f"{api_base.rstrip('/')}/chat/completions"
         api_key = ""
         if provider and provider.auth_env_var:
-            api_key = os.environ.get(provider.auth_env_var, "")
+            api_key = env_value(provider.auth_env_var)
         forward_headers = {
             "Authorization": f"Bearer {api_key or 'no-key'}",
             "Content-Type": "application/json",

@@ -8,6 +8,7 @@ os.environ["LITELLM_CONFIG_DIR"] = _TEST_CONFIG_DIR
 
 import pytest  # noqa: E402
 
+from app.core.config import get_settings  # noqa: E402
 from app.services import proxy_service  # noqa: E402
 
 
@@ -30,6 +31,14 @@ def _claude_settings_recorder(calls: list):
 @pytest.fixture
 def test_config_dir() -> str:
     return _TEST_CONFIG_DIR
+
+
+@pytest.fixture
+def dotenv_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITELLM_CONFIG_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    yield tmp_path
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

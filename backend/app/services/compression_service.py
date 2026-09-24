@@ -3,10 +3,10 @@ Compresión semántica de conversaciones: resume la parte vieja del historial
 con el provider activo en vez de solo truncar. Opt-in (SEMANTIC_COMPRESSION=true).
 Cualquier fallo devuelve None y el caller cae al truncado clásico.
 """
-import os
 
 import httpx
 
+from app.core.config import env_value
 from app.core.logging import get_logger
 from app.models.provider import Provider
 
@@ -72,7 +72,7 @@ async def compress_messages(messages: list[dict], provider: Provider, model: str
         return None
 
     url = f"{provider.api_base.rstrip('/')}/chat/completions"
-    api_key = os.environ.get(provider.auth_env_var, "") if provider.auth_env_var else ""
+    api_key = env_value(provider.auth_env_var) if provider.auth_env_var else ""
     headers = {"Authorization": f"Bearer {api_key or 'no-key'}", "Content-Type": "application/json"}
     if provider.extra_headers:
         headers.update(provider.extra_headers)

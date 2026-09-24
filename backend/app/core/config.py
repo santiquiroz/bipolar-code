@@ -1,3 +1,4 @@
+from dotenv import dotenv_values
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 import os
@@ -85,3 +86,27 @@ def get_settings() -> Settings:
         key = _generate_api_key()
         object.__setattr__(s, "ui_api_key", key)
     return s
+
+
+def env_value(name: str) -> str:
+    if name in os.environ:
+        return os.environ[name]
+    return _dotenv_file_values(_config_env_file()).get(name) or ""
+
+
+def _config_env_file() -> Path:
+    return Path(get_settings().litellm_config_dir) / ".env"
+
+
+def _dotenv_file_values(path: Path) -> dict[str, str | None]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    return _parse_dotenv(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+# mtime and size are part of the cache key so edits to the .env are picked up without a restart
+@lru_cache(maxsize=8)
+def _parse_dotenv(path: str, mtime_ns: int, size: int) -> dict[str, str | None]:
+    return dotenv_values(path, interpolate=False, encoding="utf-8")

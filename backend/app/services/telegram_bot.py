@@ -1,9 +1,8 @@
 import asyncio
-import os
 
 import httpx
 
-from app.core.config import get_settings
+from app.core.config import env_value, get_settings
 from app.core.logging import get_logger
 
 
@@ -185,13 +184,13 @@ async def _handle_update(
 
 async def run_telegram_bot() -> None:
     """Ejecuta el bot opt-in de Telegram mediante long polling."""
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    token = env_value("TELEGRAM_BOT_TOKEN").strip()
     if not token:
         log.info("telegram_bot_disabled_no_token")
         return
 
     allowed_chat_ids = parse_allowed_chat_ids(
-        os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
+        env_value("TELEGRAM_ALLOWED_CHAT_IDS")
     )
     if not allowed_chat_ids:
         _log_empty_allowlist_once()

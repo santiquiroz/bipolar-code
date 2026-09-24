@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import re
 import time
 import uuid
@@ -9,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.core.config import get_settings
+from app.core.config import env_value, get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
 from app.services import compression_service, providers_service, smart_router, token_service, usage_tracker
@@ -388,10 +387,7 @@ async def messages_passthrough(request: Request):
                         forward_headers = {"Content-Type": "application/json"}
                         native_key = ""
                         if active.auth_env_var:
-                            # settings fallback: el .env del config dir no siempre está en os.environ
-                            native_key = os.environ.get(active.auth_env_var, "") or str(
-                                getattr(settings, active.auth_env_var.lower(), "") or ""
-                            )
+                            native_key = env_value(active.auth_env_var)
                         if native_key:
                             forward_headers["x-api-key"] = native_key
                     else:
@@ -473,7 +469,7 @@ async def messages_passthrough(request: Request):
                     # Auth
                     api_key = ""
                     if active and active.auth_env_var:
-                        api_key = os.environ.get(active.auth_env_var, "")
+                        api_key = env_value(active.auth_env_var)
                     if not api_key:
                         api_key = "no-key"
 

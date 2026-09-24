@@ -105,3 +105,14 @@ def test_resolve_target_adds_v1_for_ollama_default_base():
     assert resolve_target(lmstudio, get_settings())[0] == "http://127.0.0.1:1234/v1/chat/completions"
     copilot = Provider(id="copilot", name="C", api_base="https://api.business.githubcopilot.com", active_model="m")
     assert resolve_target(copilot, get_settings())[0] == "https://api.business.githubcopilot.com/chat/completions"
+
+
+def test_resolve_target_reads_auth_key_from_config_dotenv(dotenv_config_dir, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    (dotenv_config_dir / ".env").write_text("OPENROUTER_API_KEY=sk-x\n", encoding="utf-8")
+    provider = _provider(id="openrouter", api_base="https://openrouter.ai/api/v1",
+                         auth_env_var="OPENROUTER_API_KEY")
+
+    _, headers, _ = resolve_target(provider, get_settings())
+
+    assert headers["Authorization"] == "Bearer sk-x"

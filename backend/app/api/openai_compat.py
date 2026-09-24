@@ -5,14 +5,13 @@ sin transformar el formato (ambos lados hablan OpenAI chat completions).
 """
 import asyncio
 import json
-import os
 import time
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.config import get_settings
+from app.core.config import env_value, get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error
 from app.services import providers_service, smart_router, token_service, usage_tracker
@@ -36,7 +35,7 @@ def resolve_target(active, settings) -> tuple[str, dict, str]:
 
     api_key = ""
     if active and active.auth_env_var:
-        api_key = os.environ.get(active.auth_env_var, "")
+        api_key = env_value(active.auth_env_var)
     headers = {"Authorization": f"Bearer {api_key or 'no-key'}"}
     if active and active.extra_headers:
         headers.update(active.extra_headers)

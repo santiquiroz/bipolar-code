@@ -1,5 +1,4 @@
 import asyncio
-import os
 import re
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -8,7 +7,7 @@ from typing import Literal, Optional
 from app.models.provider import Provider, RoutingRule
 from app.services import providers_service
 from app.core.logging import get_logger
-from app.core.config import get_settings
+from app.core.config import env_value, get_settings
 
 _PROVIDER_ID_RE = re.compile(r'^[a-z0-9_-]{1,64}$')
 _ALLOWED_URL_PREFIXES = ("https://", "http://localhost", "http://127.0.0.1")
@@ -206,7 +205,7 @@ async def list_provider_models(provider_id: str):
 
     settings = get_settings()
     env_var = provider.models_auth_env_var or provider.auth_env_var
-    token = os.environ.get(env_var, "") if env_var else ""
+    token = env_value(env_var) if env_var else ""
 
     headers = {}
     if token:
@@ -305,7 +304,7 @@ async def _fetch_model_limits(provider, model: str, api_key: str) -> tuple[int, 
     """Retorna (context_window, max_output_tokens) desde el endpoint de modelos."""
     import urllib.parse
     env_var = provider.models_auth_env_var or provider.auth_env_var
-    token = os.environ.get(env_var, "") if env_var else api_key
+    token = env_value(env_var) if env_var else api_key
     headers: dict = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -339,7 +338,7 @@ async def test_provider_model(provider_id: str, model: str = Query(...)):
         raise HTTPException(status_code=404, detail=f"Provider '{provider_id}' no encontrado")
 
     url = f"{provider.api_base.rstrip('/')}/chat/completions"
-    api_key = os.environ.get(provider.auth_env_var, "") if provider.auth_env_var else ""
+    api_key = env_value(provider.auth_env_var) if provider.auth_env_var else ""
     headers = {
         "Authorization": f"Bearer {api_key or 'no-key'}",
         "Content-Type": "application/json",

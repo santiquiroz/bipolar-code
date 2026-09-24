@@ -3,14 +3,13 @@ Búsqueda y descarga de modelos GGUF desde Hugging Face al dir local de modelos.
 Descargas en background con progreso en memoria y resume por Range sobre .part.
 """
 import asyncio
-import os
 import re
 import time
 from pathlib import Path
 
 import httpx
 
-from app.core.config import get_settings
+from app.core.config import env_value, get_settings
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -30,7 +29,7 @@ def models_dir() -> Path:
 
 
 def _hf_headers() -> dict:
-    token = os.environ.get("HF_TOKEN", "")
+    token = env_value("HF_TOKEN")
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 

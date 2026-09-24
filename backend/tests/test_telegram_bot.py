@@ -1,3 +1,7 @@
+import asyncio
+
+import pytest
+
 from app.services import telegram_bot
 
 
@@ -77,3 +81,23 @@ def test_trim_history_over_limit_keeps_most_recent_turns():
     result = telegram_bot.trim_history(history, max_turns=2)
 
     assert result == history[-4:]
+
+
+async def test_run_telegram_bot_reads_token_and_allowlist_from_config_dotenv(dotenv_config_dir, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
+    (dotenv_config_dir / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=123:abc\nTELEGRAM_ALLOWED_CHAT_IDS=42\n", encoding="utf-8"
+    )
+    polled_urls: list[str] = []
+
+    async def stop_after_first_poll(client, telegram_url, offset):
+        polled_urls.append(telegram_url)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(telegram_bot, "_get_updates", stop_after_first_poll)
+
+    with pytest.raises(asyncio.CancelledError):
+        await telegram_bot.run_telegram_bot()
+
+    assert polled_urls == ["https://api.telegram.org/bot123:abc"]
