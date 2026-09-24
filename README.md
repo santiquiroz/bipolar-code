@@ -169,6 +169,7 @@ Gateway + UI en `:8000`, config en el volumen `bipolar-data`. `llama-server` NO 
 
 - Todo (`/api/*` y `/v1/*`) exige tu API key — nada queda anónimo en la LAN.
 - Rate limiting por IP configurable (`RATE_LIMIT_RPM`). `X-Forwarded-For` se ignora salvo que la conexión venga de un proxy listado en `TRUSTED_PROXIES`.
+- El plano de control (`/api/*`) responde 403 a cualquier IP que no sea loopback, LAN privada (RFC1918/ULA), link-local o Tailscale (`100.64.0.0/10`), aunque traiga la key. Se mira solo la IP de la conexión, nunca `X-Forwarded-For`. `/v1/*` no se filtra. En Docker, si el reenvío de puertos no conserva la IP de origen (Docker Desktop, `userland-proxy`), las conexiones llegan con la IP privada del gateway y el filtro no distingue el tráfico público.
 - Fuera de la LAN: VPN. No abras el puerto al internet público.
 
 ---
@@ -208,6 +209,7 @@ El backend lee `.env` del directorio de configuración (`C:\litellm\` / `~/.lite
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS` | Bot de Telegram |
 | `RATE_LIMIT_RPM`, `ALLOWED_ORIGINS` | Endurecimiento de red |
 | `TRUSTED_PROXIES` | Proxies inversos (IPs o CIDR, separados por coma) cuyo `X-Forwarded-For` se respeta en el rate limit; vacío = ninguno |
+| `CONTROL_PLANE_ALLOWED_CIDRS` | Redes CIDR (separadas por coma) que pueden usar `/api/*`; reemplaza al default (loopback, LAN privada, link-local y Tailscale) |
 
 Ver [`backend/.env.example`](backend/.env.example) para la lista completa.
 

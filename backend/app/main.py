@@ -129,10 +129,13 @@ def create_app() -> FastAPI:
 
     from app.middleware.auth import APIKeyMiddleware
     from app.middleware.rate_limit import RateLimitMiddleware
+    from app.middleware.network_guard import ControlPlaneGuardMiddleware
     app.add_middleware(APIKeyMiddleware, ui_key=settings.ui_api_key, proxy_key=settings.proxy_api_key)
     if settings.rate_limit_rpm > 0:
         app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm,
                            trusted_proxies=settings.trusted_proxies)
+    # Última en agregarse = la más externa: una IP pública no llega ni al rate limit ni a la key
+    app.add_middleware(ControlPlaneGuardMiddleware, allowed_cidrs=settings.control_plane_allowed_cidrs)
 
     app.include_router(proxy.router, prefix="/api")
     app.include_router(models.router, prefix="/api")

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # X-Forwarded-For solo se usa para el rate limit si la conexión viene de uno de ellos.
     trusted_proxies: str = ""
 
+    # Redes (CIDR separados por coma) que pueden usar /api/*. Vacío = loopback,
+    # LAN privada, link-local y Tailscale (100.64.0.0/10). /v1/* no se filtra.
+    control_plane_allowed_cidrs: str = ""
+
     # Compresión semántica: resumir historial viejo con el provider activo
     # al acercarse al límite de contexto, en vez de solo truncar
     semantic_compression: bool = False

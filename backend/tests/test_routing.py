@@ -8,6 +8,9 @@ from app.api import providers as providers_api
 from app.models.provider import Provider, ProviderRegistry, RoutingRule
 from app.services import providers_service
 
+# /api/* solo acepta clientes de loopback/LAN/Tailscale; el host por defecto "testclient" no es una IP
+LOCAL_CLIENT = ("127.0.0.1", 50000)
+
 
 @pytest.fixture
 def client():
@@ -15,7 +18,7 @@ def client():
     from app.core.config import get_settings
 
     api_key = get_settings().ui_api_key
-    return TestClient(app, headers={"x-api-key": api_key})
+    return TestClient(app, client=LOCAL_CLIENT, headers={"x-api-key": api_key})
 
 
 def _provider(provider_id: str, active_model: str = "active-model") -> Provider:

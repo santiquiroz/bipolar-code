@@ -11,6 +11,9 @@ from app.services import decisions_log, health_service, providers_service
 from app.services.cli_agents import broker
 from app.services.cli_agents import registry as agents_registry
 
+# /api/* solo acepta clientes de loopback/LAN/Tailscale; el host por defecto "testclient" no es una IP
+LOCAL_CLIENT = ("127.0.0.1", 50000)
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -51,7 +54,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(providers_service, "update_smart_config", fake_update)
     monkeypatch.setattr(providers_service, "_is_reachable", AsyncMock(return_value=True))
     monkeypatch.setattr(agents_registry, "probe", AsyncMock(side_effect=lambda a, force=False: AgentStatus(id=a.id, installed=a.id != "codex", auth="ok" if a.id == "ollama" else "unknown")))
-    client = TestClient(app, headers={"x-api-key": real_settings.ui_api_key})
+    client = TestClient(app, client=LOCAL_CLIENT, headers={"x-api-key": real_settings.ui_api_key})
     yield client, registry
     broker.reset_for_tests()
     health_service.reload_for_tests()
@@ -59,8 +62,8 @@ def env(tmp_path, monkeypatch):
 
 def test_smart_routes_require_auth(env):
     client, _ = env
-    assert TestClient(client.app).get("/api/smart/config").status_code == 401
-    assert TestClient(client.app).get("/api/delegate/jobs").status_code == 401
+    assert TestClient(client.app, client=LOCAL_CLIENT).get("/api/smart/config").status_code == 401
+    assert TestClient(client.app, client=LOCAL_CLIENT).get("/api/delegate/jobs").status_code == 401
 
 
 def test_get_config_returns_agents_and_recommendations(env):
