@@ -198,3 +198,78 @@ async def test_pick_provider_sets_is_active_from_returned_candidate_id(
     assert model_override is None
     assert is_active is expected_is_active
     is_reachable.assert_awaited_once_with(primary.api_base)
+
+
+@pytest.mark.parametrize(
+    "api_base",
+    [
+        "http://127.0.0.1:4000/v1",
+        "http://localhost:4000",
+        "http://host.docker.internal:4002",
+        "http://172.20.0.5:4002",
+        "http://192.168.1.10:4002",
+        "http://10.0.0.7:4002",
+        "http://100.90.1.2:4002",
+        "http://server1:4002",
+        "http://[::1]:4002",
+        "http://nas.local:11434",
+        "http://router.lan:8080",
+        "http://box.home.arpa:4002",
+    ],
+)
+def test_is_local_base_recognizes_local_and_lan_hosts(api_base):
+    assert providers_service._is_local_base(api_base) is True
+
+
+@pytest.mark.parametrize(
+    "api_base",
+    [
+        "https://api.anthropic.com",
+        "https://openrouter.ai/api/v1",
+        "http://8.8.8.8:4002",
+        "http://100.128.0.1:4002",
+    ],
+)
+def test_is_local_base_rejects_public_hosts(api_base):
+    assert providers_service._is_local_base(api_base) is False
+
+
+@pytest.mark.parametrize(
+    ("api_base", "expected"),
+    [
+        ("http://[::1]:4002", ("::1", 4002)),
+        ("http://localhost:4000/v1", ("localhost", 4000)),
+        ("https://api.anthropic.com", ("api.anthropic.com", 443)),
+        ("http://host.docker.internal", ("host.docker.internal", 80)),
+        ("localhost:4000", ("localhost", 4000)),
+        ("http://server1:abc/v1", ("server1", 80)),
+        ("http://[::1", ("", 80)),
+    ],
+)
+def test_base_host_port_parses_host_and_port(api_base, expected):
+    assert providers_service._base_host_port(api_base) == expected
+
+
+@pytest.mark.asyncio
+async def test_pick_provider_fails_over_when_docker_host_primary_is_unreachable(
+    monkeypatch,
+):
+    primary = _provider("primary", "http://host.docker.internal:4002")
+    fallback = _provider("fallback", "https://openrouter.ai/api/v1")
+    registry = ProviderRegistry(
+        active_provider_id=primary.id,
+        providers=[primary, fallback],
+        fallback_provider_ids=[fallback.id],
+    )
+    _patch_registry(monkeypatch, registry)
+    is_reachable = AsyncMock(return_value=False)
+    monkeypatch.setattr(providers_service, "_is_reachable", is_reachable)
+
+    provider, model_override, is_active = await providers_service.pick_provider(
+        "requested-model"
+    )
+
+    assert provider is fallback
+    assert model_override is None
+    assert is_active is False
+    is_reachable.assert_awaited_once_with(primary.api_base)

@@ -3,6 +3,7 @@ Gestión del registro de proveedores: CRUD, generación de configs litellm, swit
 El estado persiste en providers.json. Los configs YAML se generan dinámicamente.
 """
 import asyncio
+import ipaddress
 import json
 import threading
 import yaml
@@ -10,6 +11,7 @@ import subprocess
 import psutil
 from pathlib import Path
 from typing import Optional
+from urllib.parse import SplitResult, urlsplit
 from app.models.provider import Provider, ProviderRegistry
 from app.models.smart import DEFAULT_CLI_AGENTS, CliAgent, default_tier_table
 from app.core.config import get_settings
@@ -299,15 +301,53 @@ def oai_chat_completions_url(provider: Provider) -> str:
     return f"{base}/chat/completions"
 
 
+_TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_LOCAL_HOSTNAMES = frozenset({"localhost", "host.docker.internal"})
+_LOCAL_HOST_SUFFIXES = (".local", ".lan", ".home.arpa")
+
+
+def _default_port(api_base: str) -> int:
+    return 443 if api_base.startswith("https") else 80
+
+
+def _explicit_port(parts: SplitResult) -> Optional[int]:
+    try:
+        return parts.port
+    except ValueError:
+        return None
+
+
+def _split_base(api_base: str) -> Optional[SplitResult]:
+    # Sin "//" urlsplit toma "host:puerto" como esquema y ruta
+    try:
+        return urlsplit(api_base if "//" in api_base else f"//{api_base}")
+    except ValueError:
+        return None
+
+
 def _base_host_port(api_base: str) -> tuple[str, int]:
-    host_port = api_base.split("//")[-1].split("/")[0]
-    host, _, port = host_port.partition(":")
-    return host, int(port) if port.isdigit() else (443 if api_base.startswith("https") else 80)
+    parts = _split_base(api_base)
+    if parts is None:
+        return "", _default_port(api_base)
+    return parts.hostname or "", _explicit_port(parts) or _default_port(api_base)
+
+
+def _is_local_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip in _TAILSCALE_CGNAT
+
+
+def _is_local_hostname(host: str) -> bool:
+    return host in _LOCAL_HOSTNAMES or "." not in host or host.endswith(_LOCAL_HOST_SUFFIXES)
 
 
 def _is_local_base(api_base: str) -> bool:
     host, _ = _base_host_port(api_base)
-    return host in ("127.0.0.1", "localhost") or host.startswith("192.168.") or host.startswith("10.")
+    if not host:
+        return False
+    try:
+        return _is_local_ip(ipaddress.ip_address(host))
+    except ValueError:
+        return _is_local_hostname(host)
 
 
 async def _is_reachable(api_base: str, timeout: float = 0.4) -> bool:
