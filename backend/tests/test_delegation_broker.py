@@ -1,6 +1,8 @@
 """Tests del broker: workspace, elección de agente, failover por cuota y ciclo de vida del job."""
 import asyncio
 import json
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -229,3 +231,81 @@ async def test_cancel_marks_cancelled(env, monkeypatch):
     cancelled = await broker.cancel(job.id)
     assert cancelled.status == "cancelled"
     assert broker.list_jobs()[0].id == job.id
+
+
+@pytest.mark.asyncio
+async def test_cancel_does_not_overwrite_terminal_status(env, monkeypatch):
+    run, _ = _fake_subprocess([_codex_ok()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    job = await broker.submit(JobRequest(task="implementa el endpoint de facturas", workspace=str(env["workspace"])))
+    await _wait(job.id)
+    result = await broker.cancel(job.id)
+    assert result.status == "succeeded"
+    done_events = [e for e in broker._jobs[job.id].lines if e["event"] == "done"]
+    assert len(done_events) == 1 and done_events[0]["status"] == "succeeded"
+
+
+# ── robustez ─────────────────────────────────────────────────────────────────
+
+def _runtime(env) -> broker.JobRuntime:
+    job = broker.Job(id="longline", created_at=broker._now())
+    return broker.JobRuntime(job=job, request=JobRequest(task="x", workspace=str(env["workspace"])), workspace=env["workspace"])
+
+
+def _python_spec(code: str):
+    return SimpleNamespace(argv=[sys.executable, "-c", code], cwd=None, env=None, stdin_payload=None, timeout_s=30)
+
+
+@pytest.mark.asyncio
+async def test_run_subprocess_tolerates_long_single_line(env):
+    rt = _runtime(env)
+    rc, stdout, _, timed_out = await broker._run_subprocess(rt, _python_spec("print('x'*200000)"))
+    assert rc == 0 and not timed_out
+    assert stdout == "x" * 200000
+    emitted = [e for e in rt.lines if e["event"] == "line" and e["stream"] == "stdout"]
+    assert len(emitted) == 1 and len(emitted[0]["text"]) == 4000
+
+
+@pytest.mark.asyncio
+async def test_run_subprocess_skips_line_over_stream_limit_and_keeps_reading(env, monkeypatch):
+    monkeypatch.setattr(broker, "STREAM_LIMIT", 1024)
+    rt = _runtime(env)
+    rc, stdout, _, timed_out = await broker._run_subprocess(rt, _python_spec("print('x'*5000); print('fin')"))
+    assert rc == 0 and not timed_out
+    assert stdout.splitlines()[-1] == "fin"
+    assert "x" * 5000 not in stdout
+    assert any(e.get("text") == broker.OVERSIZED_LINE_MARK for e in rt.lines)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_marks_failed_and_emits_done(env, monkeypatch):
+    async def boom(rt, spec):
+        raise OSError(r"no se pudo lanzar C:\Users\alguien\bin\codex.exe")
+
+    monkeypatch.setattr(broker, "_run_subprocess", boom)
+    job = await broker.submit(JobRequest(task="implementa el endpoint de facturas", workspace=str(env["workspace"])))
+    job = await _wait(job.id)
+    rt = broker._jobs[job.id]
+    assert job.status == "failed" and job.finished_at
+    assert "OSError" in job.error and "alguien" not in job.error
+    assert rt.done and rt.lines[-1]["event"] == "done" and rt.lines[-1]["status"] == "failed"
+    assert agents_registry.running_count("codex") == 0
+    assert job.log_path
+    events = [ev async for ev in broker.subscribe(job.id)]
+    assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_kills_live_child_process(env, monkeypatch):
+    spawned = {}
+
+    async def spawn_then_boom(rt, spec):
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)")
+        spawned["proc"] = rt.proc = proc
+        raise ConnectionResetError("stdin cerrado")
+
+    monkeypatch.setattr(broker, "_run_subprocess", spawn_then_boom)
+    job = await broker.submit(JobRequest(task="implementa el endpoint de facturas", workspace=str(env["workspace"])))
+    job = await _wait(job.id)
+    assert job.status == "failed" and broker._jobs[job.id].proc is None
+    assert await asyncio.wait_for(spawned["proc"].wait(), timeout=5) is not None

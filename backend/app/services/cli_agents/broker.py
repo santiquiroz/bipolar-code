@@ -21,6 +21,7 @@ import psutil
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.quota_signals import QuotaSignal, detect_signal, signal_from_attempt
+from app.core.utils import sanitize_error
 from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
@@ -36,6 +37,9 @@ OUTPUT_CAP = 2_000_000
 LOG_CAP = 5_000_000
 QUEUE_MULTIPLIER = 4
 GIT_TIMEOUT = 10
+STREAM_LIMIT = 16 * 1024 * 1024
+OVERSIZED_LINE_MARK = "[línea omitida: supera el límite de lectura]"
+TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"})
 
 
 class WorkspaceNotAllowed(Exception):
@@ -292,16 +296,25 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
+def _consume_line(rt: JobRuntime, line: bytes, name: str, sink: list[str]) -> None:
+    text = line.decode("utf-8", "replace").rstrip("\r\n")
+    rt.output_bytes += len(line)
+    if rt.output_bytes <= OUTPUT_CAP:
+        sink.append(text)
+        _emit(rt, {"event": "line", "stream": name, "text": text[:4000]})
+
+
 async def _pump(rt: JobRuntime, stream, name: str, sink: list[str]) -> None:
     while True:
-        line = await stream.readline()
+        try:
+            line = await stream.readline()
+        except ValueError:
+            # readline ya descartó el trozo que supera STREAM_LIMIT; seguir drenando evita bloquear al hijo
+            _emit(rt, {"event": "line", "stream": name, "text": OVERSIZED_LINE_MARK})
+            continue
         if not line:
             return
-        text = line.decode("utf-8", "replace").rstrip("\r\n")
-        rt.output_bytes += len(line)
-        if rt.output_bytes <= OUTPUT_CAP:
-            sink.append(text)
-            _emit(rt, {"event": "line", "stream": name, "text": text[:4000]})
+        _consume_line(rt, line, name, sink)
 
 
 async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str, bool]:
@@ -313,7 +326,7 @@ async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str
     proc = await asyncio.create_subprocess_exec(
         *spec.argv, cwd=spec.cwd, env=spec.env,
         stdin=asyncio.subprocess.PIPE if spec.stdin_payload else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **kwargs,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=STREAM_LIMIT, **kwargs,
     )
     rt.proc = proc
     if spec.stdin_payload:
@@ -436,13 +449,56 @@ def _apply_signal(agent: CliAgent, model: str, signal: QuotaSignal) -> None:
 
 
 async def _run_job(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
+    status_before: set[str] = set()
+    try:
+        status_before = set(_status_lines(rt.workspace)) if rt.request.mode == "task" else set()
+        await _run_attempts(rt, registry, statuses)
+    except Exception as e:
+        _kill_live_process(rt)
+        _mark_crashed(rt.job, e)
+    await _finalize_job(rt, status_before)
+
+
+def _kill_live_process(rt: JobRuntime) -> None:
+    if rt.proc is not None and rt.proc.returncode is None:
+        _kill_tree(rt.proc)
+    rt.proc = None
+
+
+def _mark_crashed(job: Job, error: Exception) -> None:
+    job.status = "failed"
+    job.error = sanitize_error(f"internal_error:{error.__class__.__name__}: {error}")[:300]
+    log.warning("delegate_job_crashed", job=job.id, error=job.error)
+
+
+async def _finalize_job(rt: JobRuntime, status_before: set[str]) -> None:
+    job = rt.job
+    job.finished_at = _now()
+    try:
+        await _collect_job_artifacts(rt, status_before)
+    except Exception as e:
+        log.warning("delegate_job_artifacts_failed", job=job.id, error=sanitize_error(str(e)))
+    rt.done = True
+    _emit(rt, {"event": "done", "status": job.status, "files_touched": job.files_touched, "error": job.error})
+    log.info("delegate_job_finished", job=job.id, status=job.status, agent=job.agent_id, attempts=len(job.attempts))
+
+
+async def _collect_job_artifacts(rt: JobRuntime, status_before: set[str]) -> None:
+    job = rt.job
+    if rt.request.mode == "task":
+        job.files_touched = _files_touched(rt.workspace, status_before)
+    job.log_path = _write_log(rt)
+    if job.agent_id:
+        await _record(job)
+
+
+async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
     job = rt.job
     agent = next((a for a in registry.cli_agents if a.id == job.agent_id), None)
     model = job.model
     tried: list[str] = []
     alt_pool_tried = False
     global_sem, _ = _sems(registry, agent.id if agent else "")
-    status_before = set(_status_lines(rt.workspace)) if rt.request.mode == "task" else set()
     async with global_sem:
         job.status = "running"
         job.started_at = _now()
@@ -492,15 +548,6 @@ async def _run_job(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[st
                 job.status, job.error = "quota", outcome.signal.excerpt
         if job.status == "running":
             job.status, job.error = "failed", job.error or "max_attempts"
-    job.finished_at = _now()
-    if rt.request.mode == "task":
-        job.files_touched = _files_touched(rt.workspace, status_before)
-    job.log_path = _write_log(rt)
-    if job.agent_id:
-        await _record(job)
-    rt.done = True
-    _emit(rt, {"event": "done", "status": job.status, "files_touched": job.files_touched, "error": job.error})
-    log.info("delegate_job_finished", job=job.id, status=job.status, agent=job.agent_id, attempts=len(job.attempts))
 
 
 def _finish_ok(job: Job, outcome: AttemptOutcome, agent: CliAgent, model: str) -> None:
@@ -536,6 +583,8 @@ async def cancel(job_id: str) -> Optional[Job]:
     rt = _jobs.get(job_id)
     if rt is None:
         return None
+    if rt.job.status in TERMINAL_STATUSES:
+        return rt.job
     if rt.proc is not None:
         _kill_tree(rt.proc)
     if rt.task is not None and not rt.task.done():
