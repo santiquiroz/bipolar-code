@@ -14,10 +14,17 @@ import psutil
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.provider import Provider
+from app.services.process_identity import (
+    ProcessIdentity,
+    find_owned_processes,
+    kill_quietly,
+    owned_process,
+)
 
 log = get_logger(__name__)
 
 DEFAULT_PORT = 4002
+_LLAMA_SERVER_NAMES = ("llama-server",)
 # Heurística KV cache: ~40 KiB/token cubre modelos GQA 30-80B en q8 KV.
 _KV_MIB_PER_TOKEN = 0.04
 _MODEL_OVERHEAD_FACTOR = 1.15
@@ -146,12 +153,12 @@ def build_cmdline(provider: Provider, devices: list[dict]) -> list[str]:
 async def get_status(provider: Provider) -> dict:
     import httpx
 
-    pid = _read_pid()
-    running = pid is not None and psutil.pid_exists(pid)
     port = port_from_api_base(provider.api_base)
+    proc = _owned_llamacpp(port)
+    running = proc is not None
     status = {
         "running": running,
-        "pid": pid if running else None,
+        "pid": proc.pid if running else None,
         "port": port,
         "model_path": provider.local_launch.get("model_path") or None,
         "healthy": False,
@@ -234,27 +241,40 @@ async def stop_llamacpp(provider: Provider, force: bool = False) -> dict:
             "Usa force=true para detenerlo de todos modos."
         )
 
-    killed = 0
-    pid = _read_pid()
-    if pid is not None:
-        try:
-            psutil.Process(pid).kill()
-            killed += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-            log.warning("llamacpp_pid_kill_failed", pid=pid, error=str(e))
-        _pid_file().unlink(missing_ok=True)
-
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-            if name.startswith("llama-server"):
-                proc.kill()
-                killed += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
+    port = port_from_api_base(provider.api_base)
+    killed = _kill_pid_file_server(port) + _kill_stray_servers(port)
     log.info("llamacpp_stopped", killed=killed, forced=force)
     return {"stopped": True, "killed": killed}
+
+
+def _llamacpp_identity(port: int) -> ProcessIdentity:
+    return ProcessIdentity(name_prefixes=_LLAMA_SERVER_NAMES, port=port)
+
+
+def _owned_llamacpp(port: int) -> psutil.Process | None:
+    pid = _read_pid()
+    if pid is None:
+        return None
+    proc = owned_process(pid, _llamacpp_identity(port))
+    if proc is None:
+        log.warning("llamacpp_stale_pid_file", pid=pid)
+        _pid_file().unlink(missing_ok=True)
+    return proc
+
+
+def _kill_pid_file_server(port: int) -> int:
+    proc = _owned_llamacpp(port)
+    if proc is None:
+        return 0
+    _pid_file().unlink(missing_ok=True)
+    if kill_quietly(proc):
+        return 1
+    log.warning("llamacpp_pid_kill_failed", pid=proc.pid)
+    return 0
+
+
+def _kill_stray_servers(port: int) -> int:
+    return sum(kill_quietly(proc) for proc in find_owned_processes(_llamacpp_identity(port)))
 
 
 def _read_pid() -> int | None:
@@ -272,13 +292,19 @@ def tail_logs(lines: int = 80) -> list[str]:
     return merged[-lines:]
 
 
+def _has_launch_target(provider: Provider) -> bool:
+    if provider.local_launch.get("router_mode"):
+        return True
+    return bool(str(provider.local_launch.get("model_path", "")).strip())
+
+
 async def autostart_if_configured() -> None:
     """Arranque al boot del backend: solo si el provider llamacpp lo pide explícitamente."""
     from app.services import providers_service
     provider = providers_service.get_provider("llamacpp")
     if not provider or not provider.local_launch.get("autostart"):
         return
-    if not str(provider.local_launch.get("model_path", "")).strip():
+    if not _has_launch_target(provider):
         return
     try:
         await start_llamacpp(provider)

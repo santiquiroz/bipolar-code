@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -239,6 +239,8 @@ async def test_stop_llamacpp_force_kills_busy_server(
             return_value=[],
         ) as process_iter_mock,
     ):
+        process_mock.return_value.name.return_value = "llama-server.exe"
+        process_mock.return_value.cmdline.return_value = ["llama-server.exe", "--port", "4002"]
         result = await llamacpp_service.stop_llamacpp(provider, force=True)
 
     assert result == {"stopped": True, "killed": 1}
@@ -259,3 +261,102 @@ def test_build_cmdline_router_mode_serves_models_dir(provider_factory, tmp_path,
     assert "--model" not in cmd
     assert "--models-dir" in cmd
     assert cmd[cmd.index("--models-dir") + 1] == str(tmp_path)
+
+
+def _fake_process(pid, name, cmdline):
+    proc = MagicMock(pid=pid)
+    proc.name.return_value = name
+    proc.cmdline.return_value = cmdline
+    proc.info = {"pid": pid, "name": name, "cmdline": cmdline}
+    return proc
+
+
+def _llama_server(pid, port):
+    return _fake_process(pid, "llama-server.exe", ["llama-server.exe", "--models-dir", "m", "--port", str(port)])
+
+
+@pytest.fixture
+def pid_file(tmp_path):
+    path = tmp_path / "llamacpp.pid"
+    path.write_text("4321", encoding="utf-8")
+    with patch.object(llamacpp_service, "_pid_file", return_value=path):
+        yield path
+
+
+@pytest.mark.asyncio
+async def test_get_status_ignores_reused_pid_of_foreign_process(pid_file, provider_factory):
+    notepad = _fake_process(4321, "notepad.exe", ["notepad.exe"])
+
+    with patch.object(llamacpp_service.psutil, "Process", return_value=notepad):
+        status = await llamacpp_service.get_status(provider_factory())
+
+    assert status["running"] is False
+    assert status["pid"] is None
+    assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_stop_llamacpp_does_not_kill_foreign_process_behind_stale_pid(pid_file, provider_factory):
+    notepad = _fake_process(4321, "notepad.exe", ["notepad.exe"])
+
+    with (
+        patch.object(llamacpp_service.psutil, "Process", return_value=notepad),
+        patch.object(llamacpp_service.psutil, "process_iter", return_value=[notepad]),
+    ):
+        result = await llamacpp_service.stop_llamacpp(provider_factory())
+
+    notepad.kill.assert_not_called()
+    assert result == {"stopped": True, "killed": 0}
+    assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_stop_llamacpp_fallback_only_kills_servers_on_bipolar_port(provider_factory):
+    ours = _llama_server(100, 4002)
+    other_workload = _llama_server(200, 9999)
+
+    with (
+        patch.object(llamacpp_service, "_read_pid", return_value=None),
+        patch.object(llamacpp_service.psutil, "process_iter", return_value=[ours, other_workload]),
+    ):
+        result = await llamacpp_service.stop_llamacpp(provider_factory())
+
+    ours.kill.assert_called_once_with()
+    other_workload.kill.assert_not_called()
+    assert result == {"stopped": True, "killed": 1}
+
+
+def _llamacpp_provider(provider_factory, **launch):
+    return provider_factory(local_launch={"autostart": True, **launch})
+
+
+@pytest.mark.asyncio
+async def test_autostart_starts_router_mode_without_model_path(provider_factory):
+    from app.services import providers_service
+
+    provider = _llamacpp_provider(provider_factory, router_mode=True, model_path="")
+    start = AsyncMock(return_value={"started": True})
+
+    with (
+        patch.object(providers_service, "get_provider", return_value=provider),
+        patch.object(llamacpp_service, "start_llamacpp", start),
+    ):
+        await llamacpp_service.autostart_if_configured()
+
+    start.assert_awaited_once_with(provider)
+
+
+@pytest.mark.asyncio
+async def test_autostart_skips_single_model_mode_without_model_path(provider_factory):
+    from app.services import providers_service
+
+    provider = _llamacpp_provider(provider_factory, model_path="")
+    start = AsyncMock()
+
+    with (
+        patch.object(providers_service, "get_provider", return_value=provider),
+        patch.object(llamacpp_service, "start_llamacpp", start),
+    ):
+        await llamacpp_service.autostart_if_configured()
+
+    start.assert_not_awaited()

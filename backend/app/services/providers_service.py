@@ -8,7 +8,6 @@ import json
 import threading
 import yaml
 import subprocess
-import psutil
 from pathlib import Path
 from typing import Optional
 from urllib.parse import SplitResult, urlsplit
@@ -16,12 +15,23 @@ from app.models.provider import Provider, ProviderRegistry
 from app.models.smart import DEFAULT_CLI_AGENTS, CliAgent, default_tier_table
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.process_identity import (
+    ProcessIdentity,
+    find_owned_processes,
+    kill_quietly,
+    owned_process,
+)
 from app.services.settings_service import is_valid_env_key
 
 log = get_logger(__name__)
 
 _registry_lock = threading.Lock()
 _switch_lock = asyncio.Lock()
+
+LITELLM_PORT = 4001
+_LITELLM_IDENTITY = ProcessIdentity(
+    name_prefixes=("python", "litellm"), port=LITELLM_PORT, cmdline_marker="litellm",
+)
 
 # Aliases que el proxy siempre expone — las herramientas externas (Claude Code, etc.) los usan
 PROXY_ALIASES = ["claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o"]
@@ -544,49 +554,63 @@ async def switch_to_provider(provider_id: str) -> dict:
 
 
 async def _kill_litellm() -> None:
-    killed = 0
-    pid_file = _pid_file_path()
-
-    # Intentar matar por PID file primero (más preciso)
-    if pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            proc = psutil.Process(pid)
-            proc.kill()
-            killed += 1
-            log.info("litellm_killed_by_pid_file", pid=pid)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, FileNotFoundError) as e:
-            log.warning("pid_file_kill_failed", error=str(e))
-        finally:
-            try:
-                pid_file.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-    # Fallback: buscar por cmdline
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            cmdline = " ".join(proc.info.get("cmdline") or [])
-            if "litellm" in cmdline.lower() and proc.info["name"] in ("python.exe", "python", "litellm", "litellm.exe"):
-                proc.kill()
-                killed += 1
-                log.info("litellm_process_killed_by_cmdline", pid=proc.pid)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
+    killed = _kill_pid_file_litellm() + _kill_stray_litellm()
     log.info("litellm_kill_done", killed=killed)
+    await _wait_litellm_port_released()
 
+
+def _read_litellm_pid(pid_file: Path) -> int | None:
+    try:
+        return int(pid_file.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _remove_pid_file(pid_file: Path) -> None:
+    try:
+        pid_file.unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("pid_file_remove_failed", error=str(e))
+
+
+def _kill_pid_file_litellm() -> int:
+    pid_file = _pid_file_path()
+    pid = _read_litellm_pid(pid_file)
+    _remove_pid_file(pid_file)
+    if pid is None:
+        return 0
+    proc = owned_process(pid, _LITELLM_IDENTITY)
+    if proc is None:
+        log.warning("litellm_stale_pid_file", pid=pid)
+        return 0
+    if not kill_quietly(proc):
+        log.warning("pid_file_kill_failed", pid=pid)
+        return 0
+    log.info("litellm_killed_by_pid_file", pid=pid)
+    return 1
+
+
+def _kill_stray_litellm() -> int:
+    killed = 0
+    for proc in find_owned_processes(_LITELLM_IDENTITY):
+        if kill_quietly(proc):
+            killed += 1
+            log.info("litellm_process_killed_by_cmdline", pid=proc.pid)
+    return killed
+
+
+async def _wait_litellm_port_released() -> None:
     for _ in range(30):
         try:
             _, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", 4001), timeout=0.3
+                asyncio.open_connection("127.0.0.1", LITELLM_PORT), timeout=0.3
             )
             writer.close()
             await writer.wait_closed()
             await asyncio.sleep(0.4)
         except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
             return
-    log.warning("litellm_port_not_released", port=4001)
+    log.warning("litellm_port_not_released", port=LITELLM_PORT)
 
 
 async def refresh_copilot_token() -> dict:
