@@ -77,8 +77,9 @@ def test_get_config_returns_agents_and_recommendations(env):
     assert {"ollama_anthropic_native", "shadow_mode"} <= codes
 
 
-def test_put_config_validates_and_persists(env):
+def test_put_config_validates_and_persists(env, tmp_path):
     client, registry = env
+    missing_workspace = str(tmp_path / "definitely-missing")
     bad = client.put("/api/smart/config", json={"smart": {"enabled": True, "thresholds": {"simple": 50, "standard": 20, "complex": 75}}})
     assert bad.status_code == 400
     unknown = client.put("/api/smart/config", json={"smart": {"tiers": [{"tier": "trivial", "targets": [{"provider_id": "nope"}]}]}})
@@ -86,7 +87,7 @@ def test_put_config_validates_and_persists(env):
     dangerous = client.put("/api/smart/config", json={"cli_agents": [{"id": "claude", "extra_args": ["--dangerously-skip-permissions"]}]})
     assert dangerous.status_code == 400
     ok = client.put("/api/smart/config", json={"smart": {"enabled": True, "mode": "active", "tiers": [{"tier": "trivial", "targets": [{"provider_id": "ollama"}]}]},
-                                                "delegation": {"enabled": True, "workspace_allowlist": ["C:/definitely/missing" if True else "/tmp"]}})
+                                                "delegation": {"enabled": True, "workspace_allowlist": [missing_workspace]}})
     assert ok.status_code == 200
     assert registry.smart.mode == "active" and registry.delegation.enabled is True
     assert ok.json()["warnings"]
