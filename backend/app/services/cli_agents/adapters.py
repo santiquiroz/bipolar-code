@@ -2,7 +2,7 @@
 Adaptadores por CLI: construyen la línea de comando (argv en lista, nunca shell) y
 parsean la salida. Los flags de seguridad son constantes: no se pueden desactivar
 desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex)
-o por un archivo puntero dentro del workspace (claude, copilot, agy).
+o por un archivo puntero dentro del workspace (claude, copilot, agy, cursor).
 """
 import json
 import os
@@ -14,7 +14,19 @@ from typing import Mapping, Optional
 
 from app.models.smart import CliAgent, tier_index
 
-BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama"}
+BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama", "cursor": "cursor-agent"}
+CURSOR_CRITICAL_DENY = (
+    "Shell(git push)", "Shell(git reset)", "Shell(git checkout)", "Shell(git commit)",
+    "Shell(rm)", "Shell(bash)", "Shell(powershell)", "Write(**/.git/**)",
+)
+CURSOR_SHIM_NAMES = ("cursor-agent.cmd", "cursor-agent.ps1", "agent.cmd")
+CURSOR_PRELOAD = "\n".join((
+    'const os = require("os");',
+    "delete process.env.MSYS2_ARG_CONV_EXCL;",
+    "delete process.env.MSYS_NO_PATHCONV;",
+    "const fakeHome = process.env.CURSOR_RESCUE_FAKE_HOME;",
+    "if (fakeHome) os.homedir = () => fakeHome;",
+))
 
 DANGEROUS_ARG_RE = re.compile(
     r"dangerously|bypass|--yolo|--allow-all|full-auto|danger-full-access|--permission-mode|--sandbox"
@@ -27,12 +39,15 @@ POSIX_PATH_RE = re.compile(r"^/[^\x00-\x1f]*$")
 
 TASK_CONSTRAINTS = (
     "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
-    "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, gemini, ollama, bipolar). "
+    "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, gemini, ollama, bipolar). "
     "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
     "Deja los cambios en el working tree y termina con la lista de archivos tocados."
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
-POINTER_PROMPT = "Read the file {rel} in this workspace and do exactly what it says. Do not modify or delete that file."
+POINTER_PROMPT = (
+    "Read the file {rel} in this workspace and do exactly what it says. Relative paths in it are relative "
+    "to the workspace root, not to that file's folder. Do not modify or delete that file."
+)
 POINTER_DIR = ".bipolar/jobs"
 
 ENV_ALLOWLIST = (
@@ -340,11 +355,100 @@ class AntigravityAdapter:
         )
 
 
+class CursorAdapter:
+    id = "cursor"
+    prompt_via = "pointer"
+
+    def config_dir(self) -> Path:
+        return Path(os.environ["CURSOR_RESCUE_HOME"]) if "CURSOR_RESCUE_HOME" in os.environ else Path.home() / ".cursor-rescue"
+
+    def deny_list_present(self) -> bool:
+        try:
+            data = json.loads((self.config_dir() / "cli-config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        permissions = data.get("permissions") if isinstance(data, dict) else None
+        deny = permissions.get("deny") if isinstance(permissions, dict) else None
+        return isinstance(deny, list) and all(rule in deny for rule in CURSOR_CRITICAL_DENY)
+
+    def isolation_wanted(self) -> bool:
+        try:
+            return (self.config_dir() / "isolate").read_text(encoding="utf-8").strip() == "on"
+        except (OSError, UnicodeError):
+            return False
+
+    def bundle_for(self, exe: str) -> Optional[tuple[Path, Path]]:
+        if Path(exe).name.lower() not in CURSOR_SHIM_NAMES:
+            return None
+        versions = Path(exe).parent / "versions"
+        try:
+            candidates = [
+                path for path in versions.iterdir()
+                if path.is_dir() and (path / "node.exe").is_file() and (path / "index.js").is_file()
+            ]
+        except OSError:
+            return None
+        if not candidates:
+            return None
+
+        def version_key(path: Path) -> tuple[bool, tuple[int, int, int]]:
+            match = re.match(r"^(\d+)\.(\d+)\.(\d+)", path.name)
+            return bool(match), tuple(map(int, match.groups())) if match else (0, 0, 0)
+
+        newest = max(candidates, key=version_key)
+        return newest / "node.exe", newest / "index.js"
+
+    def write_preload(self) -> Path:
+        path = self.config_dir() / "bipolar-cursor-preload.js"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() or path.read_text(encoding="utf-8") != CURSOR_PRELOAD:
+            path.write_text(CURSOR_PRELOAD, encoding="utf-8")
+        return path
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+        if not self.deny_list_present():
+            raise AdapterUnsafe("cursor_deny_list_missing")
+        ws = validate_path_argv(str(workspace))
+        pointer, rel = write_pointer(workspace, job_id, task)
+        extra_env = {"CURSOR_CONFIG_DIR": str(self.config_dir())}
+        for key in ("CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"):
+            if key in os.environ:
+                extra_env[key] = os.environ[key]
+        bundle = self.bundle_for(exe)
+        if bundle:
+            node, index = bundle
+            argv = [str(node), "--require", str(self.write_preload()), str(index)]
+            if self.isolation_wanted():
+                fake_home = self.config_dir() / "home"
+                fake_home.mkdir(parents=True, exist_ok=True)
+                extra_env["CURSOR_RESCUE_FAKE_HOME"] = str(fake_home)
+        else:
+            argv = exe_argv(exe)
+        argv += [
+            "-p", POINTER_PROMPT.format(rel=rel), "--output-format", "json", "--trust",
+            "--workspace", ws, "--force", "--model", model or "auto",
+        ]
+        argv += validate_extra_args(agent.extra_args)
+        return LaunchSpec(argv=argv, env=child_env(os.environ, extra_env), cwd=ws, pointer_file=pointer,
+                          timeout_s=timeout_s, redacted=redact(argv, len(task)))
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        obj = _last_json_object(stdout) or {}
+        usage = obj.get("usage") or {}
+        return AdapterResult(
+            text=str(obj.get("result") or stdout.strip() or stderr.strip()),
+            structured_error=bool(obj.get("is_error")) or (not obj and returncode not in (0, None)),
+            usage={"input_tokens": usage.get("inputTokens", 0), "output_tokens": usage.get("outputTokens", 0)},
+            session_id=str(obj.get("session_id") or ""),
+        )
+
+
 ADAPTERS = {
     "claude": ClaudeAdapter(),
     "codex": CodexAdapter(),
     "copilot": CopilotAdapter(),
     "antigravity": AntigravityAdapter(),
+    "cursor": CursorAdapter(),
 }
 
 

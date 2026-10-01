@@ -6,6 +6,7 @@ import pytest
 from app.models.provider import ProviderRegistry
 from app.models.smart import AGENT_IDS
 from app.services import providers_service
+from app.services.cli_agents.registry import parse_cursor_about
 
 
 @pytest.fixture
@@ -39,6 +40,16 @@ def test_legacy_registry_loads_with_defaults_and_seeds(config_dir):
     assert registry.smart.enabled is False and registry.smart.mode == "shadow"
     assert {a.id for a in registry.cli_agents} == set(AGENT_IDS)
     assert all(a.enabled is False for a in registry.cli_agents)
+    cursor = next(a for a in registry.cli_agents if a.id == "cursor")
+    assert cursor.enabled is False
+    assert cursor.name == "Cursor Agent CLI" and cursor.default_model == "auto"
+    assert cursor.supported_tiers == ["trivial", "simple", "standard"]
+    assert registry.delegation.tier_order == {
+        "trivial": ["ollama", "copilot", "cursor", "antigravity", "claude"],
+        "simple": ["copilot", "cursor", "antigravity", "codex", "claude"],
+        "standard": ["codex", "claude", "antigravity", "copilot", "cursor"],
+        "complex": ["codex", "claude", "antigravity"],
+    }
     assert registry.routing_rules[0].tier == "" and registry.routing_rules[0].max_tokens == 0
     assert registry.delegation.workspace_allowlist == []
     tier_targets = {p.tier: [t.provider_id for t in p.targets] for p in registry.smart.tiers}
@@ -69,3 +80,14 @@ def test_update_smart_config_partial(config_dir):
     assert updated.smart.enabled is True and updated.delegation.workspace_allowlist == ["C:/repo"]
     on_disk = ProviderRegistry(**json.loads((config_dir / "providers.json").read_text(encoding="utf-8")))
     assert on_disk.delegation.enabled is True
+
+
+def test_parse_cursor_about_signed_in_and_logged_out():
+    signed_in = parse_cursor_about(
+        "CLI Version         2026.09.28-64d2043\r\n"
+        "Subscription Tier   Free\r\n"
+        "User Email          dev@example.com\r\n"
+    )
+    assert signed_in == {"version": "2026.09.28-64d2043", "tier": "Free", "email": "dev@example.com"}
+    logged_out = parse_cursor_about("User Email          Not logged in\r\n")
+    assert logged_out == {"version": "", "tier": "", "email": "Not logged in"}

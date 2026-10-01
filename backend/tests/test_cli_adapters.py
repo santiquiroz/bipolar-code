@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -139,6 +140,84 @@ def test_antigravity_parse_reports_denied_actions_and_errors():
     assert "denied_actions: command" in r.text and "jetski:" in r.text and r.structured_error is False
     err = json.dumps({"status": "ERROR", "response": "", "error": "The stream was interrupted."})
     assert ad.AntigravityAdapter().parse(err, "", 0, None).structured_error is True
+
+
+def _write_cursor_deny_list(config_dir):
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "cli-config.json").write_text(json.dumps({
+        "permissions": {"deny": list(ad.CURSOR_CRITICAL_DENY)},
+    }), encoding="utf-8")
+
+
+def test_cursor_build_refuses_without_deny_list(tmp_path, monkeypatch, clean_env):
+    monkeypatch.setenv("CURSOR_RESCUE_HOME", str(tmp_path / "cr"))
+    with pytest.raises(ad.AdapterUnsafe, match="cursor_deny_list_missing"):
+        ad.CursorAdapter().build(_agent("cursor"), "cursor-agent", "j", "t", "", tmp_path, "simple", 600)
+
+
+def test_cursor_build_uses_pointer_and_minimal_environment(tmp_path, monkeypatch, clean_env):
+    config_dir = tmp_path / "cr"
+    monkeypatch.setenv("CURSOR_RESCUE_HOME", str(config_dir))
+    monkeypatch.setenv("CURSOR_API_KEY", "sk-x")
+    _write_cursor_deny_list(config_dir)
+    spec = ad.CursorAdapter().build(_agent("cursor"), "cursor-agent", "j", "tarea", "", tmp_path, "simple", 600)
+
+    assert spec.argv[:1] == ad.exe_argv("cursor-agent")
+    assert spec.argv[spec.argv.index("-p") + 1] == ad.POINTER_PROMPT.format(rel=".bipolar/jobs/j/task.md")
+    assert spec.argv[spec.argv.index("--output-format") + 1] == "json"
+    assert "--trust" in spec.argv and "--force" in spec.argv
+    assert spec.argv[spec.argv.index("--workspace") + 1] == str(tmp_path)
+    assert spec.argv[spec.argv.index("--model") + 1] == "auto"
+    assert "tarea" not in spec.argv
+    assert ad.TASK_CONSTRAINTS in spec.pointer_file.read_text(encoding="utf-8")
+    assert spec.env["CURSOR_CONFIG_DIR"] == str(config_dir)
+    assert spec.env["CURSOR_API_KEY"] == "sk-x"
+
+
+@pytest.mark.parametrize("isolate", ["on", "off"])
+def test_cursor_windows_bundle_uses_newest_version_and_preload(tmp_path, monkeypatch, clean_env, isolate):
+    config_dir = tmp_path / "cr"
+    monkeypatch.setenv("CURSOR_RESCUE_HOME", str(config_dir))
+    _write_cursor_deny_list(config_dir)
+    (config_dir / "isolate").write_text(isolate, encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    shim = bin_dir / "cursor-agent.cmd"
+    shim.parent.mkdir()
+    shim.touch()
+    versions = bin_dir / "versions"
+    for version in ("2026.09.26-aaa", "2026.09.28-bbb"):
+        version_dir = versions / version
+        version_dir.mkdir(parents=True)
+        (version_dir / "node.exe").touch()
+        (version_dir / "index.js").touch()
+
+    spec = ad.CursorAdapter().build(_agent("cursor"), str(shim), "j", "t", "auto", tmp_path, "simple", 600)
+    newest = versions / "2026.09.28-bbb"
+    assert Path(spec.argv[0]) == newest / "node.exe"
+    assert spec.argv[1] == "--require"
+    assert Path(spec.argv[2]).exists()
+    assert "os.homedir" in Path(spec.argv[2]).read_text(encoding="utf-8")
+    assert Path(spec.argv[3]) == newest / "index.js"
+    if isolate == "on":
+        assert spec.env["CURSOR_RESCUE_FAKE_HOME"] == str(config_dir / "home")
+        assert (config_dir / "home").is_dir()
+    else:
+        assert "CURSOR_RESCUE_FAKE_HOME" not in spec.env
+
+
+def test_cursor_parse_result_and_errors():
+    adapter = ad.CursorAdapter()
+    success = json.dumps({
+        "type": "result", "subtype": "success", "is_error": False, "result": "terminado",
+        "session_id": "sess-1", "usage": {"inputTokens": 12, "outputTokens": 4},
+    })
+    result = adapter.parse(success, "", 0, None)
+    assert result.text == "terminado" and result.structured_error is False
+    assert result.usage == {"input_tokens": 12, "output_tokens": 4} and result.session_id == "sess-1"
+    error = adapter.parse(json.dumps({"is_error": True, "result": "falló"}), "", 0, None)
+    assert error.structured_error is True
+    startup_error = adapter.parse("", "ActionRequiredError: Named models unavailable", 1, None)
+    assert startup_error.structured_error is True and "Named models unavailable" in startup_error.text
 
 
 def test_workspace_path_with_metachars_rejected():

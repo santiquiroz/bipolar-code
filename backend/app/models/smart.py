@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor")
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -89,9 +89,9 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["ollama", "copilot", "antigravity", "claude"],
-        "simple": ["copilot", "antigravity", "codex", "claude"],
-        "standard": ["codex", "claude", "antigravity", "copilot"],
+        "trivial": ["ollama", "copilot", "cursor", "antigravity", "claude"],
+        "simple": ["copilot", "cursor", "antigravity", "codex", "claude"],
+        "standard": ["codex", "claude", "antigravity", "copilot", "cursor"],
         "complex": ["codex", "claude", "antigravity"],
     })
     max_parallel_jobs: int = 3
@@ -124,6 +124,10 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     {
         "id": "ollama", "name": "Ollama (solo texto)", "supported_tiers": ["trivial"],
         "agentic": False, "cost_weight": 0.0, "priority": 10, "timeout_s": 900,
+    },
+    {
+        "id": "cursor", "name": "Cursor Agent CLI", "supported_tiers": ["trivial", "simple", "standard"],
+        "default_model": "auto", "quota_reset": "none", "cost_weight": 0.5, "priority": 55, "timeout_s": 600,
     },
 ]
 

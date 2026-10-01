@@ -27,7 +27,7 @@ from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import health_service, providers_service, usage_tracker
 from app.services.cli_agents import registry as agents_registry
-from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, adapter_for
+from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, adapter_for
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -157,6 +157,8 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
         return "auth_error"
     if agent.id == "antigravity" and not AntigravityAdapter().deny_list_present():
         return "agy_deny_list_missing"
+    if agent.id == "cursor" and not CursorAdapter().deny_list_present():
+        return "cursor_deny_list_missing"
     health = health_service.get(_pool_key(agent, model))
     if health.state != "available":
         return f"{health.state}:{health.last_signal or 'failures'}"
