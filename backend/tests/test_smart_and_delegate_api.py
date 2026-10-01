@@ -72,7 +72,7 @@ def test_get_config_returns_agents_and_recommendations(env):
     assert resp.status_code == 200
     data = resp.json()
     assert data["smart"]["mode"] == "shadow" and data["tiers"] == ["trivial", "simple", "standard", "complex"]
-    assert {a["id"] for a in data["agents"]} == {"claude", "codex", "copilot", "antigravity", "ollama"}
+    assert {a["id"] for a in data["agents"]} == {"claude", "codex", "copilot", "antigravity", "ollama", "cursor"}
     codes = {r["code"] for r in data["recommendations"]}
     assert {"ollama_anthropic_native", "shadow_mode"} <= codes
 

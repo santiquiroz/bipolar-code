@@ -5,6 +5,7 @@ gastar cuota, autenticación y cuota (agy expone /usage y /model en print mode).
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,7 +21,7 @@ from app.core.quota_signals import detect_signal
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, child_env, exe_argv
 
 log = get_logger(__name__)
 
@@ -45,6 +46,7 @@ def known_paths(agent_id: str) -> list[Path]:
         "codex": [Path(os.environ.get("APPDATA") or "") / "npm" / "codex.cmd"],
         "copilot": [local / "Microsoft" / "WinGet" / "Links" / "copilot.exe"],
         "ollama": [local / "Programs" / "Ollama" / "ollama.exe"],
+        "cursor": [local / "cursor-agent" / "cursor-agent.cmd", _home() / ".local" / "bin" / "cursor-agent"],
     }.get(agent_id, [])
 
 
@@ -150,6 +152,38 @@ async def _probe_antigravity(exe: str, status: AgentStatus) -> None:
         status.default_model = out.strip().splitlines()[0].split("\t")[0]
 
 
+def parse_cursor_about(text: str) -> dict[str, str]:
+    info = {"version": "", "tier": "", "email": ""}
+    fields = {"CLI Version": "version", "Subscription Tier": "tier", "User Email": "email"}
+    for line in (text or "").replace("\r", "").splitlines():
+        match = re.match(r"^(CLI Version|Subscription Tier|User Email)\s{2,}(.*)$", line)
+        if match:
+            info[fields[match.group(1)]] = match.group(2).strip()
+    return info
+
+
+async def _probe_cursor(exe: str, status: AgentStatus) -> None:
+    adapter = CursorAdapter()
+    status.deny_list_present = adapter.deny_list_present()
+    bundle = adapter.bundle_for(exe)
+    argv = [str(bundle[0]), str(bundle[1]), "about"] if bundle else exe_argv(exe) + ["about"]
+    extra_env = {"CURSOR_CONFIG_DIR": str(adapter.config_dir())}
+    for key in ("CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"):
+        if key in os.environ:
+            extra_env[key] = os.environ[key]
+    _, out, err = await run_capture(argv, timeout=40, env=child_env(os.environ, extra_env))
+    info = parse_cursor_about(out + err)
+    if info["version"]:
+        status.version = info["version"]
+    if info["email"] == "Not logged in" and "CURSOR_API_KEY" not in os.environ and "CURSOR_AUTH_TOKEN" not in os.environ:
+        status.auth = "auth_error"
+    elif info["email"]:
+        status.auth = "ok"
+    if info["tier"]:
+        status.quota = {"tier": info["tier"]}
+    status.default_model = status.default_model or "auto"
+
+
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -178,7 +212,10 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
             await _probe_ollama(status)
             status.installed = status.installed or status.auth == "ok"
         elif exe:
-            status.version, status.error = await _probe_version(exe)
+            if agent.id == "cursor":
+                await _probe_cursor(exe, status)
+            else:
+                status.version, status.error = await _probe_version(exe)
             if agent.id == "codex":
                 status.auth = await _probe_codex_auth(exe)
             elif agent.id == "antigravity":

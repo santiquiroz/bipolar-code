@@ -136,7 +136,9 @@ Providers → **Routing inteligente**. Cada request a `/v1/messages` o `/v1/chat
 - **Explicable**: `POST /api/smart/explain` con un body de ejemplo devuelve tier, puntaje, motivos y destino sin llamar a nadie; `X-Bipolar-Tier: complex` fuerza el tier desde el cliente.
 - **Presupuestos** por destino y ventana (día, semana, mes) sobre `usage.db`.
 
-Pestaña **Agentes**: bipolar-code detecta los CLIs instalados en el host (`claude`, `codex`, `copilot`, `agy` de Antigravity, `ollama`), muestra versión, auth y estado de cuota (Antigravity expone sus dos pools con `agy -p "/usage"`, gratis) y delega tareas de código al mejor disponible:
+Pestaña **Agentes**: bipolar-code detecta los CLIs instalados en el host (`claude`, `codex`, `copilot`, `agy` de Antigravity, `ollama`, `cursor-agent` de Cursor), muestra versión, auth y estado de cuota (Antigravity expone sus dos pools con `agy -p "/usage"`, gratis; Cursor informa con `cursor-agent about`, sin gastar cuota) y delega tareas de código al mejor disponible:
+
+Cursor requiere `~/.cursor-rescue/cli-config.json`, generado por `/cursor:setup` del plugin `cursor-plugin-cc`; sus reglas `permissions.deny` prevalecen sobre `--force`. En el plan Free de Cursor solo funciona el modelo `auto`.
 
 ```bash
 curl -sS -H "x-api-key: $KEY" -H "content-type: application/json" -d '{"task":"Genera tests para src/pagos.py (firmas abajo) ...","workspace":"C:/repos/miapp"}' http://localhost:8000/api/delegate/jobs

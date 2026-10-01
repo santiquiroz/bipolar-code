@@ -115,6 +115,13 @@ def test_choose_agent_respects_order_and_skips_with_reasons(env):
     assert agent is None and ("claude", "already_tried") in skipped
 
 
+def test_reject_cursor_without_deny_list(env, monkeypatch):
+    monkeypatch.setenv("CURSOR_RESCUE_HOME", str(env["tmp"] / "cursor-rescue"))
+    agent = next(a for a in _agents("cursor") if a.id == "cursor")
+    status = AgentStatus(id="cursor", installed=True, auth="unknown")
+    assert broker._reject_agent(agent, "simple", "task", status, "auto", False) == "cursor_deny_list_missing"
+
+
 def test_choose_agent_skips_cooling_and_busy(env):
     registry = env["registry"]
     statuses = {a.id: AgentStatus(id=a.id, installed=True) for a in registry.cli_agents}
