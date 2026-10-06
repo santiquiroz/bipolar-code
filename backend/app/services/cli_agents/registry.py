@@ -215,10 +215,15 @@ async def _probe_muse(exe: str, status: AgentStatus) -> None:
     else:
         status.error = (err or out or f"exit {rc}").strip()[:200]
     status.auth = "ok" if adapter.signed_in() else "auth_error"
-    status.quota = {"sandbox": "n/a"}
-    if sys.platform == "win32":
-        _, out, err = await run_capture(argv + ["sandbox", "windows", "check"], timeout=40)
-        status.quota = {"sandbox": _muse_sandbox_status(out or err)}
+    status.quota = {"sandbox": await _muse_sandbox(argv)}
+
+
+async def _muse_sandbox(argv: list[str]) -> str:
+    # Si el chequeo lanza en Windows, quota queda sin sandbox y el broker falla cerrado.
+    if sys.platform != "win32":
+        return "n/a"
+    _, out, err = await run_capture(argv + ["sandbox", "windows", "check"], timeout=40)
+    return _muse_sandbox_status(out or err)
 
 
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:

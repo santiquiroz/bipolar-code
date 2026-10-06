@@ -98,6 +98,21 @@ def test_probe_muse_reports_unready_sandbox(muse_install, monkeypatch):
     assert status.quota == {"sandbox": "setup_required"}
 
 
+def test_probe_muse_sandbox_check_crash_on_windows_fails_closed(muse_install, monkeypatch):
+    _, shim, _ = muse_install
+    monkeypatch.setattr(agents_registry.sys, "platform", "win32")
+
+    async def fake(argv, **kwargs):
+        if "sandbox" in argv:
+            raise OSError("runner missing")
+        return 0, "Muse Code 1.4.3 (1.4.3-R5018.1)\n", ""
+
+    monkeypatch.setattr(agents_registry, "run_capture", fake)
+    agent = CliAgent(id="muse", name="Muse", exe_path=str(shim))
+    status = asyncio.run(agents_registry.probe(agent, force=True))
+    assert (status.quota or {}).get("sandbox") not in ("ready", "n/a")
+
+
 def test_probe_muse_version_failure_sets_error(muse_install, monkeypatch):
     _, shim, _ = muse_install
     fake, _ = _fake_capture(version_result=(1, "", "boom"))
