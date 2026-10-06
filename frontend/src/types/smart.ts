@@ -1,5 +1,5 @@
 export type Tier = 'trivial' | 'simple' | 'standard' | 'complex'
-export type AgentId = 'claude' | 'codex' | 'copilot' | 'antigravity' | 'ollama' | 'cursor' | 'deepseek'
+export type AgentId = 'claude' | 'codex' | 'copilot' | 'antigravity' | 'ollama' | 'cursor' | 'deepseek' | 'muse'
 export type QuotaReset = 'none' | '5h' | 'daily' | 'weekly'
 
 export interface RouteTarget { provider_id: string; model: string }

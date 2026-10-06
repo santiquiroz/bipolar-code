@@ -144,6 +144,12 @@ def _pool_key(agent: CliAgent, model: str) -> str:
     return AntigravityAdapter.pool_key(model) if agent.id == "antigravity" else agent.key
 
 
+def _muse_sandbox_verified(status: Optional[AgentStatus]) -> bool:
+    # Falla cerrado: sin sondeo no hay sandbox verificado. "n/a" = plataforma sin chequeo (fuera de Windows).
+    sandbox = (status.quota or {}).get("sandbox") if status is not None else None
+    return sandbox in ("ready", "n/a")
+
+
 def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentStatus], model: str, preferred: bool) -> Optional[str]:
     if not agent.enabled:
         return "disabled"
@@ -155,6 +161,8 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
         return "tier_unsupported"
     if status is not None and status.auth == "auth_error":
         return "auth_error"
+    if agent.id == "muse" and not _muse_sandbox_verified(status):
+        return "muse_sandbox_not_ready"
     if agent.id == "antigravity" and not AntigravityAdapter().deny_list_present():
         return "agy_deny_list_missing"
     if agent.id == "cursor" and not CursorAdapter().deny_list_present():

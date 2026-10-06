@@ -21,7 +21,7 @@ from app.core.quota_signals import detect_signal
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, child_env, exe_argv
 
 log = get_logger(__name__)
 
@@ -48,6 +48,7 @@ def known_paths(agent_id: str) -> list[Path]:
         "ollama": [local / "Programs" / "Ollama" / "ollama.exe"],
         "cursor": [local / "cursor-agent" / "cursor-agent.cmd", _home() / ".local" / "bin" / "cursor-agent"],
         "deepseek": [local / "Programs" / "DeepSeek Harness" / "resources" / "runtime" / "cli" / "bin" / "dsh.cmd"],
+        "muse": [local / "Programs" / "muse" / "muse.cmd"],
     }.get(agent_id, [])
 
 
@@ -197,6 +198,29 @@ async def _probe_deepseek(exe: str, status: AgentStatus) -> None:
     status.quota = {"provider": adapter.provider()}
 
 
+def _muse_sandbox_status(text: str) -> str:
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "status":
+            return value.strip()
+    return "unknown"
+
+
+async def _probe_muse(exe: str, status: AgentStatus) -> None:
+    adapter = MuseAdapter()
+    argv = adapter.bin_for(exe)
+    rc, out, err = await run_capture(argv + ["--version"], timeout=40)
+    if rc == 0:
+        status.version = _version_from(out or err)
+    else:
+        status.error = (err or out or f"exit {rc}").strip()[:200]
+    status.auth = "ok" if adapter.signed_in() else "auth_error"
+    status.quota = {"sandbox": "n/a"}
+    if sys.platform == "win32":
+        _, out, err = await run_capture(argv + ["sandbox", "windows", "check"], timeout=40)
+        status.quota = {"sandbox": _muse_sandbox_status(out or err)}
+
+
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -229,6 +253,8 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
                 await _probe_cursor(exe, status)
             elif agent.id == "deepseek":
                 await _probe_deepseek(exe, status)
+            elif agent.id == "muse":
+                await _probe_muse(exe, status)
             else:
                 status.version, status.error = await _probe_version(exe)
             if agent.id == "codex":

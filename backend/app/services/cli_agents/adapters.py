@@ -2,7 +2,7 @@
 Adaptadores por CLI: construyen la línea de comando (argv en lista, nunca shell) y
 parsean la salida. Los flags de seguridad son constantes: no se pueden desactivar
 desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex, dsh)
-o por un archivo puntero dentro del workspace (claude, copilot, agy, cursor).
+o por un archivo puntero dentro del workspace (claude, copilot, agy, cursor, muse).
 """
 import json
 import os
@@ -15,10 +15,10 @@ from typing import Mapping, Optional
 from app.models.smart import CliAgent, tier_index
 
 BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
-            "cursor": "cursor-agent", "deepseek": "dsh"}
+            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse"}
 DSH_ACCOUNT_RECORD = "deepseek-account-platform/default:"
 DSH_CLI_PARTS = ("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
-DSH_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MODEL_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DSH_MODEL_PATCH = (
     "- id: agent-default-model\n"
     '  name: "@deepseek-ai/dsh-agent-default-model"\n'
@@ -42,7 +42,8 @@ CURSOR_PRELOAD = "\n".join((
 
 DANGEROUS_ARG_RE = re.compile(
     r"dangerously|bypass|--yolo|--allow-all|full-auto|danger-full-access|--permission-mode|--sandbox"
-    r"|--approve|--add-dir|--cd\b|^-C$|--autopilot|--allow-tool|--allowedTools|--patch|--profile",
+    r"|--approve|--add-dir|--cd\b|^-C$|--autopilot|--allow-tool|--allowedTools|--patch|--profile"
+    r"|--disable-|--trust-workspace|--approval|--workspace|--prompt-file|--permission-profile",
     re.I,
 )
 SAFE_ARG_RE = re.compile(r"^--?[A-Za-z0-9][\w-]*(=[\w./:,-]*)?$")
@@ -110,6 +111,12 @@ def validate_extra_args(args: list[str]) -> list[str]:
         if not SAFE_ARG_RE.match(arg) or DANGEROUS_ARG_RE.search(arg):
             raise AdapterUnsafe(f"extra_arg_not_allowed:{arg[:40]}")
     return list(args or [])
+
+
+def validate_model(model: str) -> str:
+    if not MODEL_SLUG_RE.fullmatch(model):
+        raise AdapterUnsafe(f"model_not_allowed:{model[:40]}")
+    return model
 
 
 def validate_path_argv(path: str) -> str:
@@ -526,8 +533,7 @@ class DeepseekAdapter:
 
     def write_patch(self, job_dir: Path, model: str) -> Path:
         # El patch es YAML con tags !!js ejecutables: el modelo nunca entra sin validar.
-        if not DSH_MODEL_RE.match(model):
-            raise AdapterUnsafe(f"model_not_allowed:{model[:40]}")
+        model = validate_model(model)
         patch = job_dir / "dsh-model.patch.yml"
         patch.write_text(DSH_MODEL_PATCH.format(provider=self.provider(), model=model), encoding="utf-8")
         return patch
@@ -557,6 +563,92 @@ class DeepseekAdapter:
         )
 
 
+def _muse_version_bin(folder: Path) -> Optional[Path]:
+    try:
+        version = (folder / ".muse-version").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    binary = folder / f"muse-bin-{version}.exe"
+    return binary if binary.parent == folder and binary.is_file() else None
+
+
+def _muse_terminal(records: list[dict]) -> dict:
+    return next((record.get("payload") or {} for record in reversed(records)
+                 if str(record.get("payload_type") or "").startswith("run.terminal.")), {})
+
+
+def _muse_session(records: list[dict]) -> str:
+    streams = [record.get("stream") or {} for record in records]
+    return next((str(stream.get("id") or "") for stream in streams if stream.get("kind") == "session"), "")
+
+
+class MuseAdapter:
+    id = "muse"
+    prompt_via = "pointer"
+
+    @staticmethod
+    def bin_for(exe: str) -> list[str]:
+        path = Path(exe).resolve()
+        if path.name.lower() != "muse.cmd":
+            return exe_argv(exe)
+        binary = _muse_version_bin(path.parent)
+        if binary:
+            return [str(binary)]
+        binaries = sorted(binary for binary in path.parent.glob("muse-bin-*.exe") if binary.is_file())
+        return [str(binaries[-1])] if binaries else exe_argv(exe)
+
+    @staticmethod
+    def config_dir() -> Path:
+        return Path(os.environ["MUSE_CONFIG_DIR"]) if "MUSE_CONFIG_DIR" in os.environ else Path.home() / ".config" / "muse"
+
+    def signed_in(self) -> bool:
+        if os.environ.get("META_API_KEY"):
+            return True
+        try:
+            auth = json.loads((self.config_dir() / "auth.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return False
+        return _muse_auth_present(auth)
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+        ws = validate_path_argv(str(workspace))
+        extra_args = validate_extra_args(agent.extra_args)
+        model = validate_model(model) if model else ""
+        pointer, _ = write_pointer(workspace, job_id, task)
+        argv = self.bin_for(exe) + [
+            "exec", "--json", "--prompt-file", validate_path_argv(str(pointer)), "--workspace", ws,
+            "--approval-mode", "never", "--approval-judge", "off", "--no-foreign-personal-context",
+            "--user-input-auto-resolve", "--max-model-steps", "60", "--reasoning-effort", effort_for_tier(tier),
+        ]
+        if model:
+            argv += ["--model", model]
+        argv += extra_args
+        extra = {"META_API_KEY": os.environ["META_API_KEY"]} if "META_API_KEY" in os.environ else {}
+        return LaunchSpec(argv=argv, env=child_env(os.environ, extra), cwd=ws, pointer_file=pointer,
+                          timeout_s=timeout_s, redacted=redact(argv, len(task)))
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        records = _jsonl(stdout)
+        terminal = _muse_terminal(records)
+        return AdapterResult(
+            text=str(terminal.get("text") or terminal.get("reason") or stderr.strip()),
+            structured_error=terminal.get("terminal") != "completed" or returncode not in (0, None),
+            usage={"input_tokens": 0, "output_tokens": 0}, session_id=_muse_session(records),
+        )
+
+
+def _muse_auth_present(auth: object) -> bool:
+    if not isinstance(auth, dict):
+        return False
+    providers = auth.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    meta = providers.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    return bool(meta.get("access_token") or meta.get("api_key"))
+
+
 ADAPTERS = {
     "claude": ClaudeAdapter(),
     "codex": CodexAdapter(),
@@ -564,6 +656,7 @@ ADAPTERS = {
     "antigravity": AntigravityAdapter(),
     "cursor": CursorAdapter(),
     "deepseek": DeepseekAdapter(),
+    "muse": MuseAdapter(),
 }
 
 

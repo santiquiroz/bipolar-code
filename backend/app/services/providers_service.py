@@ -209,6 +209,27 @@ def load_registry() -> ProviderRegistry:
         return ProviderRegistry(providers=[Provider(**d) for d in _DEFAULTS])
 
 
+def _place_seeded_agent(agent_id: str, tier: str, order: list[str]) -> list[str]:
+    if agent_id == "deepseek":
+        return [agent_id] + order
+    if tier == "complex":
+        return order + [agent_id]
+    index = order.index("deepseek") + 1 if "deepseek" in order else 0
+    return order[:index] + [agent_id] + order[index:]
+
+
+def _seed_agent_order(registry: ProviderRegistry, existing: set[str], agent_id: str) -> None:
+    if agent_id in existing:
+        return
+    orders = registry.delegation.tier_order
+    if any(agent_id in order for order in orders.values()):
+        return
+    # La posición inicial se migra solo al sembrar el agente; después el orden es del usuario.
+    registry.delegation.tier_order = {
+        tier: _place_seeded_agent(agent_id, tier, order) for tier, order in orders.items()
+    }
+
+
 def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
     """Agrega agentes CLI faltantes (deshabilitados) y una tabla de tiers inicial
     cuando no hay ninguna. Nunca toca lo que el usuario ya configuró."""
@@ -218,12 +239,8 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
         if defaults["id"] not in existing:
             registry.cli_agents.append(CliAgent(**defaults))
             seeded.append(f"cli:{defaults['id']}")
-    if "deepseek" not in existing and not any("deepseek" in order for order in registry.delegation.tier_order.values()):
-        # DeepSeek entra como primer carril de cada tier una sola vez, al sembrarlo; después el orden es del usuario.
-        registry.delegation.tier_order = {
-            tier: ["deepseek"] + [a for a in order if a != "deepseek"]
-            for tier, order in registry.delegation.tier_order.items()
-        }
+    _seed_agent_order(registry, existing, "deepseek")
+    _seed_agent_order(registry, existing, "muse")
     if not registry.smart.tiers and registry.providers:
         registry.smart.tiers = default_tier_table({p.id for p in registry.providers})
         seeded.append("smart.tiers")

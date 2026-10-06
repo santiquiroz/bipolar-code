@@ -145,7 +145,9 @@ def _full_registry() -> ProviderRegistry:
 
 
 def _full_statuses(registry: ProviderRegistry) -> dict[str, AgentStatus]:
-    return {a.id: AgentStatus(id=a.id, installed=True, auth="ok") for a in registry.cli_agents}
+    statuses = {a.id: AgentStatus(id=a.id, installed=True, auth="ok") for a in registry.cli_agents}
+    statuses["muse"].quota = {"sandbox": "ready"}
+    return statuses
 
 
 @pytest.mark.parametrize("tier", ["trivial", "simple", "standard", "complex"])
@@ -154,6 +156,48 @@ def test_choose_agent_prefers_deepseek_in_every_tier(env, tier):
     agent, _, reasons, _ = broker.choose_agent(tier, registry, _full_statuses(registry))
     assert agent is not None and agent.id == "deepseek"
     assert reasons == [f"agent:deepseek:{tier}"]
+
+
+@pytest.mark.parametrize("tier, expected", [
+    ("trivial", "muse"), ("simple", "muse"), ("standard", "muse"), ("complex", "codex"),
+])
+def test_choose_agent_uses_muse_lane_when_deepseek_excluded(env, tier, expected):
+    registry = _full_registry()
+    agent, _, reasons, skipped = broker.choose_agent(
+        tier, registry, _full_statuses(registry), exclude=("deepseek",))
+    assert agent is not None and agent.id == expected
+    assert reasons == [f"agent:{expected}:{tier}"]
+    assert ("deepseek", "already_tried") in skipped
+
+
+@pytest.mark.parametrize("sandbox", ["missing", "not_ready", "error", ""])
+def test_choose_agent_skips_muse_when_sandbox_not_ready(env, sandbox):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["muse"].quota = {"sandbox": sandbox}
+    agent, _, _, skipped = broker.choose_agent(
+        "standard", registry, statuses, exclude=("deepseek",))
+    assert ("muse", "muse_sandbox_not_ready") in skipped
+    assert agent is not None and agent.id == "codex"
+
+
+def test_choose_agent_skips_unprobed_muse(env):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["muse"].quota = {}
+    agent, _, _, skipped = broker.choose_agent("standard", registry, statuses, exclude=("deepseek",))
+    assert ("muse", "muse_sandbox_not_ready") in skipped
+    assert agent is not None and agent.id == "codex"
+
+
+@pytest.mark.parametrize("sandbox", ["ready", "n/a"])
+def test_choose_agent_accepts_muse_sandbox_status(env, sandbox):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["muse"].quota = {"sandbox": sandbox}
+    agent, _, _, _ = broker.choose_agent(
+        "standard", registry, statuses, exclude=("deepseek",))
+    assert agent is not None and agent.id == "muse"
 
 
 def test_choose_agent_skips_deepseek_on_auth_error(env):

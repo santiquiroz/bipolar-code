@@ -415,3 +415,200 @@ def test_deepseek_parse_ignores_step_end_without_usage():
         json.dumps({"type": "status", "phase": "step_end", "turn": 1, "step": 2}),
     ])
     assert ad.DeepseekAdapter().parse(out, "", 0, None).usage == {"input_tokens": 10, "output_tokens": 2}
+
+
+@pytest.fixture
+def muse_env(tmp_path, monkeypatch):
+    config_dir = tmp_path / "muse-config"
+    monkeypatch.setenv("MUSE_CONFIG_DIR", str(config_dir))
+    monkeypatch.delenv("META_API_KEY", raising=False)
+    return config_dir
+
+
+def _muse_layout(tmp_path):
+    root = tmp_path / "muse"
+    root.mkdir()
+    shim = root / "muse.cmd"
+    shim.touch()
+    binary = root / "muse-bin-1.4.3-R5018.1.exe"
+    binary.touch()
+    (root / ".muse-version").write_text("1.4.3-R5018.1\n", encoding="utf-8")
+    return shim, binary
+
+
+def _muse_build(tmp_path, exe, model="", tier="standard", **overrides):
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
+    spec = ad.MuseAdapter().build(
+        _agent("muse", **overrides), str(exe), "jobmuse", "haz X", model, workspace, tier, 900,
+    )
+    return spec, workspace
+
+
+@pytest.mark.parametrize("tier,effort", [("trivial", "low"), ("simple", "low"), ("standard", "medium"), ("complex", "high")])
+def test_muse_build_uses_binary_pointer_and_fixed_safety_flags(tmp_path, muse_env, tier, effort):
+    shim, binary = _muse_layout(tmp_path)
+    spec, workspace = _muse_build(tmp_path, shim, tier=tier)
+    pointer = workspace / ".bipolar" / "jobs" / "jobmuse" / "task.md"
+    assert spec.argv == [
+        str(binary), "exec", "--json", "--prompt-file", str(pointer),
+        "--workspace", str(workspace), "--approval-mode", "never", "--approval-judge", "off",
+        "--no-foreign-personal-context", "--user-input-auto-resolve", "--max-model-steps", "60",
+        "--reasoning-effort", effort,
+    ]
+    assert spec.pointer_file == pointer
+    assert pointer.read_text(encoding="utf-8") == "haz X" + ad.TASK_CONSTRAINTS
+    assert (workspace / ".bipolar" / ".gitignore").read_text() == "*\n"
+    assert spec.cwd == str(workspace)
+    assert spec.stdin_payload is None
+    assert "haz X" not in " ".join(spec.argv)
+
+
+def test_muse_build_adds_valid_model_and_safe_extra_args(tmp_path, muse_env):
+    shim, _ = _muse_layout(tmp_path)
+    spec, _ = _muse_build(tmp_path, shim, model="meta-model-v1", extra_args=["--verbose"])
+    assert spec.argv[-3:] == ["--model", "meta-model-v1", "--verbose"]
+
+
+@pytest.mark.parametrize("version", [None, "missing-version"])
+def test_muse_binary_falls_back_to_lexicographically_greatest(tmp_path, version):
+    shim, binary = _muse_layout(tmp_path)
+    newest = shim.parent / "muse-bin-9.0.exe"
+    newest.touch()
+    version_file = shim.parent / ".muse-version"
+    if version is None:
+        version_file.unlink()
+    else:
+        version_file.write_text(version, encoding="utf-8")
+    assert ad.MuseAdapter().bin_for(str(shim)) == [str(newest)]
+
+
+def test_muse_named_version_wins_over_greatest_binary(tmp_path):
+    shim, binary = _muse_layout(tmp_path)
+    (shim.parent / "muse-bin-9.0.exe").touch()
+    assert ad.MuseAdapter().bin_for(str(shim)) == [str(binary)]
+
+
+def test_muse_shim_without_binary_uses_exe_argv(tmp_path):
+    shim = tmp_path / "muse.cmd"
+    shim.touch()
+    assert ad.MuseAdapter().bin_for(str(shim)) == ad.exe_argv(str(shim))
+
+
+def test_muse_non_shim_executable_uses_exe_argv(tmp_path):
+    shim, _ = _muse_layout(tmp_path)
+    exe = shim.parent / "other.exe"
+    exe.touch()
+    assert ad.MuseAdapter().bin_for(str(exe)) == ad.exe_argv(str(exe))
+
+
+def test_muse_shim_name_is_case_insensitive(tmp_path):
+    shim, binary = _muse_layout(tmp_path)
+    upper_shim = shim.parent / "MUSE.CMD"
+    assert ad.MuseAdapter().bin_for(str(upper_shim)) == [str(binary)]
+
+
+def test_muse_binary_resolves_shim_symlink_first(tmp_path):
+    shim, binary = _muse_layout(tmp_path)
+    link = tmp_path / "muse-link.cmd"
+    try:
+        link.symlink_to(shim)
+    except OSError:
+        pytest.skip("El sistema no permite crear symlinks")
+    assert ad.MuseAdapter().bin_for(str(link)) == [str(binary)]
+
+
+@pytest.mark.parametrize("model", ["--yolo", "a b", "!!x"])
+def test_muse_build_rejects_unsafe_model(tmp_path, muse_env, model):
+    shim, _ = _muse_layout(tmp_path)
+    with pytest.raises(ad.AdapterUnsafe, match="model_not_allowed"):
+        _muse_build(tmp_path, shim, model=model)
+
+
+@pytest.mark.parametrize("arg", ["--disable-sandbox", "--trust-workspace", "--approval-mode=never", "--workspace=x", "--prompt-file=x", "--permission-profile=x"])
+def test_muse_build_rejects_dangerous_extra_args(tmp_path, muse_env, arg):
+    shim, _ = _muse_layout(tmp_path)
+    with pytest.raises(ad.AdapterUnsafe):
+        _muse_build(tmp_path, shim, extra_args=[arg])
+
+
+@pytest.mark.parametrize("api_key", [None, "meta-secret"])
+def test_muse_env_passes_own_key_only_when_set(tmp_path, monkeypatch, muse_env, clean_env, api_key):
+    if api_key:
+        monkeypatch.setenv("META_API_KEY", api_key)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    shim, _ = _muse_layout(tmp_path)
+    spec, _ = _muse_build(tmp_path, shim)
+    assert spec.env.get("META_API_KEY") == api_key
+    for name in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "SOME_PASSWORD"):
+        assert name not in spec.env
+
+
+@pytest.mark.parametrize("field", ["access_token", "api_key"])
+def test_muse_signed_in_with_auth_file(muse_env, field):
+    muse_env.mkdir()
+    (muse_env / "auth.json").write_text(json.dumps({"providers": {"meta": {field: "secret"}}}), encoding="utf-8")
+    assert ad.MuseAdapter().config_dir() == muse_env
+    assert ad.MuseAdapter().signed_in() is True
+
+
+def test_muse_default_config_dir_is_under_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("MUSE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert ad.MuseAdapter().config_dir() == tmp_path / ".config" / "muse"
+
+
+@pytest.mark.parametrize("content", ["invalid-json", "[]", "{}", '{"providers":null}', '{"providers":{"meta":null}}', '{"providers":{"meta":{"access_token":"","api_key":""}}}'])
+def test_muse_signed_in_rejects_missing_or_malformed_credentials(muse_env, content):
+    muse_env.mkdir()
+    (muse_env / "auth.json").write_text(content, encoding="utf-8")
+    assert ad.MuseAdapter().signed_in() is False
+
+
+def test_muse_api_key_takes_priority_over_malformed_auth_file(muse_env, monkeypatch):
+    muse_env.mkdir()
+    (muse_env / "auth.json").write_text("invalid-json", encoding="utf-8")
+    monkeypatch.setenv("META_API_KEY", "meta-secret")
+    assert ad.MuseAdapter().signed_in() is True
+
+
+def _muse_run(terminal="completed", **payload):
+    records = [
+        {"stream": {"kind": "session", "id": "session-muse"}, "payload_type": "run.model.configured", "payload": {"model_id": "meta/model-v1"}},
+        {"stream": {"kind": "session", "id": "session-muse"}, "payload_type": "run.terminal.finished", "payload": {"terminal": terminal, **payload}},
+    ]
+    return "\n".join(json.dumps(record) for record in records)
+
+
+@pytest.mark.parametrize("returncode", [0, None])
+def test_muse_parse_completed_terminal(returncode):
+    result = ad.MuseAdapter().parse(_muse_run(text="listo"), "noise", returncode, None)
+    assert result.text == "listo"
+    assert result.structured_error is False
+    assert result.usage == {"input_tokens": 0, "output_tokens": 0}
+    assert result.session_id == "session-muse"
+
+
+def test_muse_parse_failed_terminal_reason():
+    result = ad.MuseAdapter().parse(_muse_run("failed", reason="rate limit exceeded"), "", 0, None)
+    assert result.text == "rate limit exceeded"
+    assert result.structured_error is True
+
+
+def test_muse_parse_completed_terminal_with_failed_process():
+    result = ad.MuseAdapter().parse(_muse_run(text="listo"), "", 1, None)
+    assert result.text == "listo"
+    assert result.structured_error is True
+
+
+def test_muse_parse_missing_terminal_falls_back_to_stderr():
+    result = ad.MuseAdapter().parse("", "muse: crashed", 1, None)
+    assert result.text == "muse: crashed"
+    assert result.structured_error is True
+    assert result.session_id == ""
+
+
+def test_muse_parse_missing_terminal_is_error_even_with_zero_returncode():
+    result = ad.MuseAdapter().parse(json.dumps({"payload_type": "run.model.configured", "payload": {"model_id": "meta/default"}}), "", 0, None)
+    assert result.structured_error is True

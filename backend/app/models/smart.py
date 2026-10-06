@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse")
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -89,10 +89,10 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["deepseek", "ollama", "copilot", "cursor", "antigravity", "claude"],
-        "simple": ["deepseek", "copilot", "cursor", "antigravity", "codex", "claude"],
-        "standard": ["deepseek", "codex", "claude", "antigravity", "copilot", "cursor"],
-        "complex": ["deepseek", "codex", "claude", "antigravity"],
+        "trivial": ["deepseek", "muse", "ollama", "copilot", "cursor", "antigravity", "claude"],
+        "simple": ["deepseek", "muse", "copilot", "cursor", "antigravity", "codex", "claude"],
+        "standard": ["deepseek", "muse", "codex", "claude", "antigravity", "copilot", "cursor"],
+        "complex": ["deepseek", "codex", "claude", "antigravity", "muse"],
     })
     max_parallel_jobs: int = 3
     max_attempts: int = 3
@@ -134,6 +134,10 @@ DEFAULT_CLI_AGENTS: list[dict] = [
         "default_model": "deepseek-flash",
         "model_by_tier": {"standard": "deepseek-v4-pro", "complex": "deepseek-v4-pro"},
         "quota_reset": "none", "cost_weight": 0.3, "priority": 5, "timeout_s": 900,
+    },
+    {
+        "id": "muse", "name": "Muse (Meta)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
+        "quota_reset": "none", "cost_weight": 0.4, "priority": 8, "timeout_s": 900,
     },
 ]
 
