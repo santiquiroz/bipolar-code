@@ -218,6 +218,12 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
         if defaults["id"] not in existing:
             registry.cli_agents.append(CliAgent(**defaults))
             seeded.append(f"cli:{defaults['id']}")
+    if "deepseek" not in existing and not any("deepseek" in order for order in registry.delegation.tier_order.values()):
+        # DeepSeek entra como primer carril de cada tier una sola vez, al sembrarlo; después el orden es del usuario.
+        registry.delegation.tier_order = {
+            tier: ["deepseek"] + [a for a in order if a != "deepseek"]
+            for tier, order in registry.delegation.tier_order.items()
+        }
     if not registry.smart.tiers and registry.providers:
         registry.smart.tiers = default_tier_table({p.id for p in registry.providers})
         seeded.append("smart.tiers")

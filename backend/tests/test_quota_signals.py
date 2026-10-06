@@ -80,3 +80,13 @@ def test_excerpt_is_compact_and_bounded():
     text = "a  b\n\n c" + "x" * 500
     excerpt = qs.make_excerpt(text)
     assert "\n" not in excerpt and len(excerpt) <= qs.EXCERPT_CHARS
+
+
+def test_detect_signal_dsh_insufficient_balance_is_quota_exhausted():
+    signal = qs.detect_signal("Error: Insufficient Balance")
+    assert signal is not None and signal.kind == "quota_exhausted"
+
+
+def test_detect_signal_dsh_missing_credential_is_auth():
+    signal = qs.detect_signal("dsh: MISSING_CREDENTIAL: llm-deepseek: no API key")
+    assert signal is not None and signal.kind == "auth"

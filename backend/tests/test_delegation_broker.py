@@ -9,7 +9,7 @@ import pytest
 
 from app.models.delegate import AgentStatus, JobRequest
 from app.models.provider import ProviderRegistry
-from app.models.smart import DEFAULT_CLI_AGENTS, CliAgent, DelegationConfig
+from app.models.smart import AGENT_IDS, DEFAULT_CLI_AGENTS, CliAgent, DelegationConfig
 from app.services import health_service, providers_service, usage_tracker
 from app.services.cli_agents import broker
 from app.services.cli_agents import registry as agents_registry
@@ -134,6 +134,41 @@ def test_choose_agent_skips_cooling_and_busy(env):
         agents_registry.adjust_running("claude", -1)
     assert agent is None
     assert ("codex", "cooling:rate_limit") in skipped and ("claude", "busy") in skipped
+
+
+def _full_registry() -> ProviderRegistry:
+    return ProviderRegistry(
+        active_provider_id="copilot", providers=[],
+        cli_agents=_agents(*AGENT_IDS),
+        delegation=DelegationConfig(enabled=True),
+    )
+
+
+def _full_statuses(registry: ProviderRegistry) -> dict[str, AgentStatus]:
+    return {a.id: AgentStatus(id=a.id, installed=True, auth="ok") for a in registry.cli_agents}
+
+
+@pytest.mark.parametrize("tier", ["trivial", "simple", "standard", "complex"])
+def test_choose_agent_prefers_deepseek_in_every_tier(env, tier):
+    registry = _full_registry()
+    agent, _, reasons, _ = broker.choose_agent(tier, registry, _full_statuses(registry))
+    assert agent is not None and agent.id == "deepseek"
+    assert reasons == [f"agent:deepseek:{tier}"]
+
+
+def test_choose_agent_skips_deepseek_on_auth_error(env):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["deepseek"] = AgentStatus(id="deepseek", installed=True, auth="auth_error")
+    agent, _, _, skipped = broker.choose_agent("complex", registry, statuses)
+    assert ("deepseek", "auth_error") in skipped
+    assert agent is not None and agent.id == "codex"
+
+
+def test_seeded_deepseek_model_for_tier(env):
+    agent = next(a for a in _agents(*AGENT_IDS) if a.id == "deepseek")
+    assert agent.model_for("complex") == "deepseek-v4-pro"
+    assert agent.model_for("simple") == "deepseek-flash"
 
 
 # ── submit ───────────────────────────────────────────────────────────────────

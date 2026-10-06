@@ -21,7 +21,7 @@ from app.core.quota_signals import detect_signal
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, child_env, exe_argv
 
 log = get_logger(__name__)
 
@@ -47,6 +47,7 @@ def known_paths(agent_id: str) -> list[Path]:
         "copilot": [local / "Microsoft" / "WinGet" / "Links" / "copilot.exe"],
         "ollama": [local / "Programs" / "Ollama" / "ollama.exe"],
         "cursor": [local / "cursor-agent" / "cursor-agent.cmd", _home() / ".local" / "bin" / "cursor-agent"],
+        "deepseek": [local / "Programs" / "DeepSeek Harness" / "resources" / "runtime" / "cli" / "bin" / "dsh.cmd"],
     }.get(agent_id, [])
 
 
@@ -184,6 +185,18 @@ async def _probe_cursor(exe: str, status: AgentStatus) -> None:
     status.default_model = status.default_model or "auto"
 
 
+async def _probe_deepseek(exe: str, status: AgentStatus) -> None:
+    adapter = DeepseekAdapter()
+    argv, extra_env = adapter.launcher(exe)
+    rc, out, err = await run_capture(argv + ["--version"], timeout=40, env=child_env(os.environ, extra_env))
+    if rc == 0:
+        status.version = _version_from(out or err)
+    else:
+        status.error = (err or out or f"exit {rc}").strip()[:200]
+    status.auth = "ok" if adapter.has_credentials() else "auth_error"
+    status.quota = {"provider": adapter.provider()}
+
+
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -214,6 +227,8 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
         elif exe:
             if agent.id == "cursor":
                 await _probe_cursor(exe, status)
+            elif agent.id == "deepseek":
+                await _probe_deepseek(exe, status)
             else:
                 status.version, status.error = await _probe_version(exe)
             if agent.id == "codex":

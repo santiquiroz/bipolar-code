@@ -229,3 +229,189 @@ def test_workspace_path_with_metachars_rejected():
 @pytest.mark.parametrize("tier,effort", [("trivial", "low"), ("simple", "low"), ("standard", "medium"), ("complex", "high")])
 def test_effort_for_tier(tier, effort):
     assert ad.effort_for_tier(tier) == effort
+
+
+# ── DeepSeek Harness (dsh) ───────────────────────────────────────────────────
+
+@pytest.fixture
+def dsh_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    return tmp_path / "dsh-home"
+
+
+def _dsh_layout(tmp_path):
+    """Instalación de Electron: el shim dsh.cmd apunta al cli.js dentro de app.asar."""
+    root = tmp_path / "DeepSeek Harness"
+    (root / "DeepSeek Harness.exe").parent.mkdir(parents=True, exist_ok=True)
+    (root / "DeepSeek Harness.exe").touch()
+    resources = root / "resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    (resources / "app.asar").touch()
+    exe = resources / "runtime" / "cli" / "bin" / "dsh.cmd"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.touch()
+    return root, exe
+
+
+def _dsh_build(tmp_path, exe, model="deepseek-v4-pro", job_id="jobdsh"):
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
+    return ad.DeepseekAdapter().build(_agent("deepseek"), str(exe), job_id, "haz X", model, workspace, "complex", 900), workspace
+
+
+def test_deepseek_build_uses_electron_launcher_and_model_patch(tmp_path, dsh_env):
+    root, exe = _dsh_layout(tmp_path)
+    spec, workspace = _dsh_build(tmp_path, exe)
+    argv = spec.argv
+
+    assert argv[0] == str(root / "DeepSeek Harness.exe")
+    assert argv[1] == "--expose-internals"
+    cli_js = Path(argv[2])
+    assert cli_js.as_posix().endswith("dsh-desktop-host/lib/cli.js")
+    assert "resources/app.asar" in cli_js.as_posix()
+    assert argv[argv.index("--profile") + 1] == "headless"
+    assert "--json" in argv and argv[-1] == "-"
+    assert spec.env["ELECTRON_RUN_AS_NODE"] == "1"
+    assert spec.env["DSH_PERMISSION_MODE"] == "workspace-write"
+    assert spec.stdin_payload.decode("utf-8") == "haz X" + ad.TASK_CONSTRAINTS
+    assert spec.pointer_file is None
+    assert spec.cwd == str(workspace)
+
+    patch = Path(argv[argv.index("--patch") + 1])
+    assert patch == workspace / ".bipolar" / "jobs" / "jobdsh" / "dsh-model.patch.yml"
+    assert patch.exists()
+    content = patch.read_text(encoding="utf-8")
+    assert "provider: deepseek-account" in content
+    assert "model: deepseek-v4-pro" in content
+    assert "DEEPSEEK_API_KEY" not in content and "sk-" not in content
+
+
+def test_deepseek_foreign_exe_skips_electron_launcher(tmp_path, dsh_env):
+    exe = tmp_path / "dsh.exe"
+    exe.touch()
+    spec, _ = _dsh_build(tmp_path, exe, model="deepseek-flash")
+    assert spec.argv[0] == str(exe)
+    assert "ELECTRON_RUN_AS_NODE" not in spec.env
+
+
+def test_deepseek_empty_model_falls_back_to_default(tmp_path, dsh_env):
+    root, exe = _dsh_layout(tmp_path)
+    spec, _ = _dsh_build(tmp_path, exe, model="")
+    patch = Path(spec.argv[spec.argv.index("--patch") + 1])
+    assert "model: deepseek-flash" in patch.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("model", ["!!js process.exit()", "deepseek-flash\nprovider: x", "a b"])
+def test_deepseek_rejects_unsafe_model(tmp_path, dsh_env, model):
+    root, exe = _dsh_layout(tmp_path)
+    with pytest.raises(ad.AdapterUnsafe):
+        _dsh_build(tmp_path, exe, model=model)
+
+
+@pytest.mark.parametrize("arg", ["--patch=x.yml", "--profile"])
+def test_deepseek_dangerous_extra_args_rejected(arg):
+    with pytest.raises(ad.AdapterUnsafe):
+        ad.validate_extra_args([arg])
+
+
+def _write_dsh_credentials(home: Path) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".credentials.yaml").write_text("  deepseek-account-platform/default:\n    token: secret\n", encoding="utf-8")
+
+
+def test_deepseek_account_credentials_win_over_api_key(tmp_path, monkeypatch):
+    home = tmp_path / "dsh-home"
+    _write_dsh_credentials(home)
+    monkeypatch.setenv("DSH_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    adapter = ad.DeepseekAdapter()
+    assert adapter.provider() == "deepseek-account"
+    assert adapter.has_credentials() is True
+
+
+def test_deepseek_api_key_only_is_official_provider(tmp_path, monkeypatch):
+    home = tmp_path / "dsh-home"
+    home.mkdir()
+    monkeypatch.setenv("DSH_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    adapter = ad.DeepseekAdapter()
+    assert adapter.provider() == "deepseek-official"
+    assert adapter.has_credentials() is True
+
+
+def test_deepseek_without_credentials(tmp_path, monkeypatch):
+    home = tmp_path / "dsh-home"
+    home.mkdir()
+    monkeypatch.setenv("DSH_HOME", str(home))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    adapter = ad.DeepseekAdapter()
+    assert adapter.provider() == "deepseek-account"
+    assert adapter.has_credentials() is False
+
+
+def test_deepseek_env_passes_own_secret_but_not_other_secrets(tmp_path, monkeypatch, dsh_env):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    root, exe = _dsh_layout(tmp_path)
+    spec, _ = _dsh_build(tmp_path, exe, model="deepseek-flash")
+    assert spec.env["DEEPSEEK_API_KEY"] == "sk-ds"
+    assert "OPENAI_API_KEY" not in spec.env
+
+
+def test_deepseek_env_drops_api_key_when_account_signed_in(tmp_path, monkeypatch, dsh_env):
+    dsh_env.mkdir(parents=True, exist_ok=True)
+    (dsh_env / ".credentials.yaml").write_text("  deepseek-account-platform/default:\n    token: t\n", encoding="utf-8")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    _, exe = _dsh_layout(tmp_path)
+    spec, _ = _dsh_build(tmp_path, exe, model="deepseek-flash")
+    assert "DEEPSEEK_API_KEY" not in spec.env
+
+
+def _dsh_run(*, turn_error=None, final_text="final answer"):
+    lines = [
+        {"type": "session", "sessionId": "session-abc", "cwd": "C:\\ws"},
+        {"type": "status", "phase": "turn_start", "turn": 1},
+        {"type": "tool_call", "callId": "c1", "tool": "write", "input": {"file_path": "hello.txt", "content": "ok"}},
+        {"type": "tool_result", "callId": "c1", "status": "completed", "result": "Created file"},
+        {"type": "status", "phase": "step_end", "turn": 1, "step": 1, "usage": {"inputTokens": 12538, "outputTokens": 164}},
+        {"type": "status", "phase": "step_end", "turn": 1, "step": 2, "usage": {"inputTokens": 183, "outputTokens": 325}},
+        {"type": "status", "phase": "turn_end", "turn": 1,
+         "reason": turn_error or {"kind": "completed"}},
+        {"type": "final", "text": final_text},
+    ]
+    return "\n".join(json.dumps(line) for line in lines)
+
+
+def test_deepseek_parse_completed_run():
+    result = ad.DeepseekAdapter().parse(_dsh_run(), "", 0, None)
+    assert result.text == "final answer"
+    assert result.structured_error is False
+    assert result.usage == {"input_tokens": 12721, "output_tokens": 489}
+    assert result.session_id == "session-abc"
+
+
+def test_deepseek_parse_failed_turn_reports_structured_error():
+    out = _dsh_run(turn_error={"kind": "error", "error": {"message": "llm-deepseek: no API key", "code": "MISSING_CREDENTIAL"}},
+                   final_text="")
+    result = ad.DeepseekAdapter().parse(out, "", 1, None)
+    assert result.structured_error is True
+    assert result.text == "MISSING_CREDENTIAL: llm-deepseek: no API key"
+
+
+def test_deepseek_parse_error_event():
+    result = ad.DeepseekAdapter().parse(json.dumps({"type": "error", "message": "boom"}), "", 0, None)
+    assert result.structured_error is True and result.text == "boom"
+
+
+def test_deepseek_parse_falls_back_to_stderr():
+    result = ad.DeepseekAdapter().parse("", "dsh: crashed", 1, None)
+    assert result.structured_error is True and result.text == "dsh: crashed"
+
+
+def test_deepseek_parse_ignores_step_end_without_usage():
+    out = "\n".join([
+        json.dumps({"type": "status", "phase": "step_end", "turn": 1, "step": 1, "usage": {"inputTokens": 10, "outputTokens": 2}}),
+        json.dumps({"type": "status", "phase": "step_end", "turn": 1, "step": 2}),
+    ])
+    assert ad.DeepseekAdapter().parse(out, "", 0, None).usage == {"input_tokens": 10, "output_tokens": 2}

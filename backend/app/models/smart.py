@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek")
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -89,10 +89,10 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["ollama", "copilot", "cursor", "antigravity", "claude"],
-        "simple": ["copilot", "cursor", "antigravity", "codex", "claude"],
-        "standard": ["codex", "claude", "antigravity", "copilot", "cursor"],
-        "complex": ["codex", "claude", "antigravity"],
+        "trivial": ["deepseek", "ollama", "copilot", "cursor", "antigravity", "claude"],
+        "simple": ["deepseek", "copilot", "cursor", "antigravity", "codex", "claude"],
+        "standard": ["deepseek", "codex", "claude", "antigravity", "copilot", "cursor"],
+        "complex": ["deepseek", "codex", "claude", "antigravity"],
     })
     max_parallel_jobs: int = 3
     max_attempts: int = 3
@@ -128,6 +128,12 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     {
         "id": "cursor", "name": "Cursor Agent CLI", "supported_tiers": ["trivial", "simple", "standard"],
         "default_model": "auto", "quota_reset": "none", "cost_weight": 0.5, "priority": 55, "timeout_s": 600,
+    },
+    {
+        "id": "deepseek", "name": "DeepSeek Harness (dsh)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
+        "default_model": "deepseek-flash",
+        "model_by_tier": {"standard": "deepseek-v4-pro", "complex": "deepseek-v4-pro"},
+        "quota_reset": "none", "cost_weight": 0.3, "priority": 5, "timeout_s": 900,
     },
 ]
 

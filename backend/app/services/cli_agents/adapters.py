@@ -1,7 +1,7 @@
 """
 Adaptadores por CLI: construyen la línea de comando (argv en lista, nunca shell) y
 parsean la salida. Los flags de seguridad son constantes: no se pueden desactivar
-desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex)
+desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex, dsh)
 o por un archivo puntero dentro del workspace (claude, copilot, agy, cursor).
 """
 import json
@@ -14,7 +14,19 @@ from typing import Mapping, Optional
 
 from app.models.smart import CliAgent, tier_index
 
-BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama", "cursor": "cursor-agent"}
+BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
+            "cursor": "cursor-agent", "deepseek": "dsh"}
+DSH_ACCOUNT_RECORD = "deepseek-account-platform/default:"
+DSH_CLI_PARTS = ("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
+DSH_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+DSH_MODEL_PATCH = (
+    "- id: agent-default-model\n"
+    '  name: "@deepseek-ai/dsh-agent-default-model"\n'
+    "  config:\n"
+    "    provider: {provider}\n"
+    "    model: {model}\n"
+    "    reasoningEffort: high\n"
+)
 CURSOR_CRITICAL_DENY = (
     "Shell(git push)", "Shell(git reset)", "Shell(git checkout)", "Shell(git commit)",
     "Shell(rm)", "Shell(bash)", "Shell(powershell)", "Write(**/.git/**)",
@@ -30,7 +42,7 @@ CURSOR_PRELOAD = "\n".join((
 
 DANGEROUS_ARG_RE = re.compile(
     r"dangerously|bypass|--yolo|--allow-all|full-auto|danger-full-access|--permission-mode|--sandbox"
-    r"|--approve|--add-dir|--cd\b|^-C$|--autopilot|--allow-tool|--allowedTools",
+    r"|--approve|--add-dir|--cd\b|^-C$|--autopilot|--allow-tool|--allowedTools|--patch|--profile",
     re.I,
 )
 SAFE_ARG_RE = re.compile(r"^--?[A-Za-z0-9][\w-]*(=[\w./:,-]*)?$")
@@ -39,7 +51,7 @@ POSIX_PATH_RE = re.compile(r"^/[^\x00-\x1f]*$")
 
 TASK_CONSTRAINTS = (
     "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
-    "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, gemini, ollama, bipolar). "
+    "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
     "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
     "Deja los cambios en el working tree y termina con la lista de archivos tocados."
 )
@@ -443,12 +455,115 @@ class CursorAdapter:
         )
 
 
+def _dsh_usage(events: list[dict]) -> dict:
+    steps = [ev.get("usage") or {} for ev in events if ev.get("type") == "status" and ev.get("phase") == "step_end"]
+    return {"input_tokens": sum(int(u.get("inputTokens") or 0) for u in steps),
+            "output_tokens": sum(int(u.get("outputTokens") or 0) for u in steps)}
+
+
+def _dsh_turn_error(event: dict) -> str:
+    reason = event.get("reason") if event.get("phase") == "turn_end" else None
+    if not isinstance(reason, dict) or reason.get("kind") == "completed":
+        return ""
+    error = reason.get("error") or {}
+    return f"{error.get('code') or reason.get('kind')}: {error.get('message') or ''}".strip()
+
+
+def _dsh_error(events: list[dict]) -> str:
+    for ev in reversed(events):
+        if ev.get("type") == "error":
+            return str(ev.get("message") or "error")
+        if ev.get("type") == "status" and ev.get("phase") == "turn_end":
+            return _dsh_turn_error(ev)
+    return ""
+
+
+def _last_field(events: list[dict], kind: str, key: str) -> str:
+    return next((str(ev.get(key) or "") for ev in reversed(events) if ev.get("type") == kind), "")
+
+
+class DeepseekAdapter:
+    id = "deepseek"
+    prompt_via = "stdin"
+
+    @staticmethod
+    def home() -> Path:
+        return Path(os.environ["DSH_HOME"]) if "DSH_HOME" in os.environ else Path.home() / ".dsh"
+
+    def account_signed_in(self) -> bool:
+        try:
+            return DSH_ACCOUNT_RECORD in (self.home() / ".credentials.yaml").read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return False
+
+    def has_credentials(self) -> bool:
+        return self.account_signed_in() or "DEEPSEEK_API_KEY" in os.environ
+
+    def provider(self) -> str:
+        return "deepseek-official" if not self.account_signed_in() and "DEEPSEEK_API_KEY" in os.environ else "deepseek-account"
+
+    @staticmethod
+    def bundle_for(exe: str) -> Optional[tuple[Path, Path]]:
+        path = Path(exe).resolve()
+        if path.name.lower() != "dsh.cmd" or len(path.parents) < 5:
+            return None
+        root = path.parents[4]
+        app = root / "DeepSeek Harness.exe"
+        if not app.is_file() or not (root / "resources" / "app.asar").is_file():
+            return None
+        return app, root.joinpath(*DSH_CLI_PARTS)
+
+    def launcher(self, exe: str) -> tuple[list[str], dict]:
+        extra_env = {"DSH_HOME": os.environ["DSH_HOME"]} if "DSH_HOME" in os.environ else {}
+        if self.provider() == "deepseek-official":
+            extra_env["DEEPSEEK_API_KEY"] = os.environ["DEEPSEEK_API_KEY"]
+        bundle = self.bundle_for(exe)
+        if not bundle:
+            return exe_argv(exe), extra_env
+        # dsh.cmd solo hace esto; llamarlo directo evita que cmd.exe re-parsee el argv.
+        extra_env["ELECTRON_RUN_AS_NODE"] = "1"
+        return [str(bundle[0]), "--expose-internals", str(bundle[1])], extra_env
+
+    def write_patch(self, job_dir: Path, model: str) -> Path:
+        # El patch es YAML con tags !!js ejecutables: el modelo nunca entra sin validar.
+        if not DSH_MODEL_RE.match(model):
+            raise AdapterUnsafe(f"model_not_allowed:{model[:40]}")
+        patch = job_dir / "dsh-model.patch.yml"
+        patch.write_text(DSH_MODEL_PATCH.format(provider=self.provider(), model=model), encoding="utf-8")
+        return patch
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+        ws = validate_path_argv(str(workspace))
+        job_dir = workspace / POINTER_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        patch = self.write_patch(job_dir, model or agent.default_model or "deepseek-flash")
+        argv, extra_env = self.launcher(exe)
+        extra_env["DSH_PERMISSION_MODE"] = "workspace-write"
+        argv += ["--profile", "headless", "--patch", validate_path_argv(str(patch)), "--json"]
+        argv += validate_extra_args(agent.extra_args)
+        argv.append("-")
+        return LaunchSpec(argv=argv, env=child_env(os.environ, extra_env), cwd=ws,
+                          stdin_payload=(task + TASK_CONSTRAINTS).encode("utf-8"),
+                          timeout_s=timeout_s, redacted=redact(argv, len(task)))
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        events = _jsonl(stdout)
+        error = _dsh_error(events)
+        return AdapterResult(
+            text=_last_field(events, "final", "text") or error or stderr.strip(),
+            structured_error=bool(error) or returncode not in (0, None),
+            usage=_dsh_usage(events),
+            session_id=_last_field(events, "session", "sessionId"),
+        )
+
+
 ADAPTERS = {
     "claude": ClaudeAdapter(),
     "codex": CodexAdapter(),
     "copilot": CopilotAdapter(),
     "antigravity": AntigravityAdapter(),
     "cursor": CursorAdapter(),
+    "deepseek": DeepseekAdapter(),
 }
 
 
