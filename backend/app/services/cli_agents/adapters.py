@@ -624,6 +624,9 @@ class MuseAdapter:
             argv += ["--model", model]
         argv += extra_args
         extra = {"META_API_KEY": os.environ["META_API_KEY"]} if "META_API_KEY" in os.environ else {}
+        # El shell de Muse corre como otro usuario de Windows: sin safe.directory, git rechaza el repo por "dubious ownership".
+        extra.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory",
+                      "GIT_CONFIG_VALUE_0": ws.replace("\\", "/")})
         return LaunchSpec(argv=argv, env=child_env(os.environ, extra), cwd=ws, pointer_file=pointer,
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
 

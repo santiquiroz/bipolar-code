@@ -545,6 +545,14 @@ def test_muse_env_passes_own_key_only_when_set(tmp_path, monkeypatch, muse_env, 
         assert name not in spec.env
 
 
+def test_muse_env_marks_workspace_as_git_safe_directory(tmp_path, muse_env):
+    shim, _ = _muse_layout(tmp_path)
+    spec, workspace = _muse_build(tmp_path, shim)
+    assert spec.env["GIT_CONFIG_COUNT"] == "1"
+    assert spec.env["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert spec.env["GIT_CONFIG_VALUE_0"] == str(workspace).replace("\\", "/")
+
+
 @pytest.mark.parametrize("field", ["access_token", "api_key"])
 def test_muse_signed_in_with_auth_file(muse_env, field):
     muse_env.mkdir()
