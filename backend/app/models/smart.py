@@ -53,6 +53,7 @@ class SmartRoutingConfig(BaseModel):
     sticky_ttl_seconds: int = 1800
     skip_cooling_providers: bool = True
     respect_capabilities: bool = True
+    max_failover_attempts: int = Field(default=4, ge=1, le=10)
 
     def policy_for(self, tier: str) -> Optional[TierPolicy]:
         return next((p for p in self.tiers if p.tier == tier), None)
