@@ -15,6 +15,7 @@ from app.api import llamacpp as llamacpp_router
 from app.api import openai_compat as openai_compat_router
 from app.api import smart as smart_router_api
 from app.api import delegate as delegate_router
+from app.api import accounts as accounts_router
 from app.core.logging import setup_logging, get_logger
 from app.core.config import get_settings
 
@@ -149,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(openai_compat_router.router)
     app.include_router(smart_router_api.router, prefix="/api")
     app.include_router(delegate_router.router, prefix="/api")
+    app.include_router(accounts_router.router, prefix="/api")
 
     @app.get("/api/health")
     async def health():

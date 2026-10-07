@@ -1130,6 +1130,8 @@ Expected: todo en verde.
 
 ---
 
+> **Nota del orquestador (2026-10-07):** `/api/*` y `/mcp` pasan por el guard del plano de control. Todo `TestClient` de estos tests debe crearse con `client=("127.0.0.1", 50000)`, como en `tests/test_smart_and_delegate_api.py`; si no, responde 403.
+
 ### Task A6: API de llaves del pool
 
 **Files:**
