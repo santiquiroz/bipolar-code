@@ -19,6 +19,7 @@ class Provider(BaseModel):
 
     # Autenticación
     auth_env_var: str = ""           # variable del .env que contiene el token/key
+    extra_auth_env_vars: list[str] = []  # llaves adicionales del pool (nombres de variables del .env)
     extra_headers: dict = {}         # headers adicionales (ej: Copilot-Integration-Id)
 
     # Listado de modelos (opcional — no todos los proveedores tienen endpoint de modelos)
