@@ -154,6 +154,36 @@ def _safe_json(resp: httpx.Response):
         return {"error": {"message": sanitize_error(resp.text[:500])}}
 
 
+async def _respond_plain(opened, stack, decision, started, headers):
+    await stack.aclose()
+    smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
+    try:
+        _record_usage(opened.step.provider.id, opened.model, opened.resp.json().get("usage") or {})
+    except ValueError:
+        pass
+    return JSONResponse(status_code=opened.resp.status_code, content=_safe_json(opened.resp), headers=headers)
+
+
+def _stream_chat(opened, stack, decision, started, headers):
+    async def generate():
+        usage_seen: dict = {}
+        try:
+            async for line in opened.resp.aiter_lines():
+                if chunk_usage := _line_usage(line):
+                    usage_seen = chunk_usage
+                yield f"{line}\n"
+            _record_usage(opened.step.provider.id, opened.model, usage_seen)
+            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
+        except Exception as e:
+            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, False, error=str(e))
+            log.error("openai_compat_stream_error", error=sanitize_error(str(e)))
+            yield f"data: {json.dumps({'error': {'message': sanitize_error(str(e))}})}\n\n"
+        finally:
+            await opened.attempt_stack.aclose()
+            await stack.aclose()
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **headers})
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     settings = get_settings()
@@ -198,33 +228,6 @@ async def chat_completions(request: Request):
     smart_router.note_success(decision, result.step, body)
 
     if not stream:
-        await stack.aclose()
-        smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
-        try:
-            _record_usage(opened.step.provider.id, opened.model, opened.resp.json().get("usage") or {})
-        except ValueError:
-            pass
-        return JSONResponse(status_code=opened.resp.status_code, content=_safe_json(opened.resp), headers=headers)
+        return await _respond_plain(opened, stack, decision, started, headers)
 
-    async def generate():
-        usage_seen: dict = {}
-        try:
-            async for line in opened.resp.aiter_lines():
-                if chunk_usage := _line_usage(line):
-                    usage_seen = chunk_usage
-                yield f"{line}\n"
-            _record_usage(opened.step.provider.id, opened.model, usage_seen)
-            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
-        except Exception as e:
-            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, False, error=str(e))
-            log.error("openai_compat_stream_error", error=sanitize_error(str(e)))
-            yield f"data: {json.dumps({'error': {'message': sanitize_error(str(e))}})}\n\n"
-        finally:
-            await opened.attempt_stack.aclose()
-            await stack.aclose()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **headers},
-    )
+    return _stream_chat(opened, stack, decision, started, headers)

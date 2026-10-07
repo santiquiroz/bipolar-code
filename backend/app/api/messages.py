@@ -484,6 +484,62 @@ async def _relay_oai(resp, message_id: str, model: str, usage_buf: dict):
         yield chunk
 
 
+async def _compress_if_needed(body, messages, used, ctx_window, active, model, settings):
+    if not (ctx_window > 0 and used >= int(ctx_window * 0.9)):
+        return messages, False
+    compressed = None
+    if settings.semantic_compression and active:
+        compressed = await compression_service.compress_messages(messages, active, model)
+    if compressed:
+        messages = compressed
+        log.info("semantic_compression_applied", before_tokens=used, after_tokens=token_service.count_tokens(messages))
+    else:
+        messages = token_service.truncate_messages(messages, ctx_window)
+    body["messages"] = messages
+    return messages, True
+
+
+def _route_headers(decision, used, ctx_window):
+    ctx_pct = int(used / ctx_window * 100) if ctx_window else 0
+    return {
+        "X-Context-Usage": f"{used}/{ctx_window} tokens ({ctx_pct}%)",
+        "X-Bipolar-Route": decision.to_header(),
+        "X-Bipolar-Decision-Id": decision.decision_id,
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+
+
+def _exhausted_messages_response(decision, failures, headers):
+    status = upstream.exhausted_status(failures)
+    if len(failures) == 1 and failures[0].kind == "fatal":
+        message = _sanitize_error(failures[0].message)
+    else:
+        message = _sanitize_error("Ningún destino respondió: " + upstream.failures_summary(failures, lambda s: s.label))
+    smart_router.report_outcome_sync(decision, "", False, status=status, error=message)
+    return JSONResponse(status_code=status, content=upstream.anthropic_error_body(status, message), headers={**headers, "X-Bipolar-Attempts": str(len(failures))})
+
+
+def _stream_messages(opened, stack, decision, started, usage_buf, message_id, truncated, headers):
+    async def generate():
+        try:
+            if opened.kind == "native":
+                async for chunk in _relay_native(opened.resp, usage_buf):
+                    yield chunk
+            else:
+                async for chunk in _relay_oai(opened.resp, message_id, opened.model, usage_buf):
+                    yield chunk
+            _record_usage(opened.step.provider.id, opened.model, usage_buf, truncated)
+            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
+        except Exception as e:
+            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, False, error=str(e))
+            yield _sse_error(_sanitize_error(str(e)))
+        finally:
+            await opened.attempt_stack.aclose()
+            await stack.aclose()
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
+
+
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("/v1/messages")
@@ -499,32 +555,8 @@ async def messages_passthrough(request: Request):
 
     decision = await smart_router.decide(body, model, used, request.headers, surface="messages")
     active, routed_model, is_active_provider = decision.as_pick()
-    truncated = False
-
-    if ctx_window > 0 and used >= int(ctx_window * 0.9):
-        compressed = None
-        if settings.semantic_compression and active:
-            compressed = await compression_service.compress_messages(messages, active, model)
-        if compressed:
-            messages = compressed
-            log.info(
-                "semantic_compression_applied",
-                before_tokens=used,
-                after_tokens=token_service.count_tokens(messages),
-            )
-        else:
-            messages = token_service.truncate_messages(messages, ctx_window)
-        body["messages"] = messages
-        truncated = True
-
-    ctx_pct = int(used / ctx_window * 100) if ctx_window else 0
-    response_headers = {
-        "X-Context-Usage": f"{used}/{ctx_window} tokens ({ctx_pct}%)",
-        "X-Bipolar-Route": decision.to_header(),
-        "X-Bipolar-Decision-Id": decision.decision_id,
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no",
-    }
+    messages, truncated = await _compress_if_needed(body, messages, used, ctx_window, active, model, settings)
+    response_headers = _route_headers(decision, used, ctx_window)
     started = time.monotonic()
 
     plan = decision.plan
@@ -548,13 +580,7 @@ async def messages_passthrough(request: Request):
 
     if not result.ok:
         await stack.aclose()
-        status = upstream.exhausted_status(result.failures)
-        if len(result.failures) == 1 and result.failures[0].kind == "fatal":
-            message = _sanitize_error(result.failures[0].message)
-        else:
-            message = _sanitize_error("Ningún destino respondió: " + upstream.failures_summary(result.failures, lambda s: s.label))
-        smart_router.report_outcome_sync(decision, "", False, status=status, error=message)
-        return JSONResponse(status_code=status, content=upstream.anthropic_error_body(status, message), headers={**response_headers, "X-Bipolar-Attempts": str(len(result.failures))})
+        return _exhausted_messages_response(decision, result.failures, response_headers)
 
     opened: OpenUpstream = result.upstream
     headers = {**response_headers, "X-Bipolar-Target": result.step.label, "X-Bipolar-Attempts": str(len(result.failures) + 1)}
@@ -562,24 +588,7 @@ async def messages_passthrough(request: Request):
     usage_buf: dict = {"input_tokens": 0, "output_tokens": 0}
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
-    async def generate():
-        try:
-            if opened.kind == "native":
-                async for chunk in _relay_native(opened.resp, usage_buf):
-                    yield chunk
-            else:
-                async for chunk in _relay_oai(opened.resp, message_id, opened.model, usage_buf):
-                    yield chunk
-            _record_usage(opened.step.provider.id, opened.model, usage_buf, truncated)
-            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
-        except Exception as e:
-            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, False, error=str(e))
-            yield _sse_error(_sanitize_error(str(e)))
-        finally:
-            await opened.attempt_stack.aclose()
-            await stack.aclose()
-
-    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
+    return _stream_messages(opened, stack, decision, started, usage_buf, message_id, truncated, headers)
 
 
 def _save_model_info(provider, key: str, value) -> None:
