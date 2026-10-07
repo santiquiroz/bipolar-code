@@ -23,7 +23,10 @@ export interface SmartRoutingConfig {
   respect_capabilities: boolean
 }
 export interface CliAgent {
-  id: AgentId
+  id: string
+  adapter: string
+  account_dir: string
+  account_label: string
   name: string
   enabled: boolean
   exe_path: string
@@ -48,6 +51,12 @@ export interface DelegationConfig {
   max_parallel_jobs: number
   max_attempts: number
   job_retention: number
+  thinkers: string[]
+  account_exhausted_pct: number
+  allow_request_verify: boolean
+  review_default: boolean
+  verify_timeout_s: number
+  review_timeout_s: number
 }
 export interface AgentStatus {
   id: string
@@ -132,18 +141,29 @@ export interface DecisionsSummary {
 }
 export interface Attempt {
   agent_id: string; model: string; started_at: string; finished_at?: string | null
-  returncode?: number | null; signal: string; duration_s: number; error: string
+  returncode?: number | null; signal: string; kind: 'work' | 'verify' | 'review'
+  detail: Record<string, unknown>; duration_s: number; error: string
 }
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled' | 'quota' | 'auth_error'
+export type GateStatus = 'n/a' | 'passed' | 'failed' | 'skipped'
 export interface Job {
   id: string; created_at: string; started_at?: string | null; finished_at?: string | null
   status: JobStatus; mode: 'task' | 'text'; workspace: string; task_preview: string
   tier: string; score: number; reasons: string[]; skipped: string[][]; agent_id?: string | null
   model: string; attempts: Attempt[]; output_tail: string; files_touched: string[]
-  error: string; tokens_in: number; tokens_out: number; cost_usd?: number | null; log_path: string
+  error: string; tokens_in: number; tokens_out: number; cost_usd?: number | null
+  verification_status: GateStatus; review_status: GateStatus; escalations: number; log_path: string
 }
 export interface JobRequest {
   task: string; workspace: string; mode: 'task' | 'text'; tier_hint?: Tier
   agent_id?: string; model?: string; timeout_s?: number; dry_run?: boolean
+  verify?: string[]; review?: boolean; max_revisions?: number
 }
+export interface UsageWindow { used_percentage: number; resets_at: number }
+export interface AccountUsage { received_at: string; five_hour?: UsageWindow; seven_day?: UsageWindow }
+export interface AccountInfo {
+  agent_id: string; base: string; label: string; account_dir: string; enabled: boolean
+  has_login: boolean | null; state: string; seconds_left: number; usage: AccountUsage | null
+}
+export interface LoginCommands { powershell: string; bash: string; note?: string }
 export interface SseEvent { event: 'status' | 'line' | 'attempt' | 'ping' | 'done'; [key: string]: unknown }
