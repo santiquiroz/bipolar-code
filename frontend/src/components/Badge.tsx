@@ -15,7 +15,7 @@ interface BadgeProps {
 
 export function Badge({ label, variant = 'neutral' }: BadgeProps) {
   return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${styles[variant]}`}>
+    <span data-variant={variant} className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${styles[variant]}`}>
       {label}
     </span>
   )
