@@ -13,6 +13,11 @@ vi.mock('@/hooks/useSmart', () => ({
   useResetHealth: () => ({ mutate: vi.fn() }),
   useClassify: () => ({ mutate: vi.fn(), isPending: false }),
 }))
+vi.mock('@/hooks/useAccounts', () => ({
+  useAccounts: () => ({ data: { accounts: [] } }),
+  useCreateAccount: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteAccount: () => ({ mutate: vi.fn(), isPending: false }),
+}))
 vi.mock('@/hooks/useDelegate', () => ({
   useJobs: () => ({ data: { jobs: [] } }),
   useSubmitJob: () => ({ mutate: vi.fn(), isPending: false }),
