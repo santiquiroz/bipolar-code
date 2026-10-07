@@ -26,8 +26,8 @@ from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import health_service, providers_service, usage_tracker
-from app.services.cli_agents import registry as agents_registry
-from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for
+from app.services.cli_agents import registry as agents_registry, reviewer, verifier
+from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -50,6 +50,10 @@ class DelegationDisabled(Exception):
     pass
 
 
+class InvalidRequest(ValueError):
+    pass
+
+
 class NoAgentAvailable(Exception):
     def __init__(self, reasons: list[str], skipped: list[tuple[str, str]]):
         super().__init__("no_agent_available")
@@ -68,6 +72,13 @@ class AttemptOutcome:
 
 
 @dataclass
+class GateResult:
+    accepted: bool
+    reason: str = ""
+    outcome: Optional["AttemptOutcome"] = None
+
+
+@dataclass
 class JobRuntime:
     job: Job
     request: JobRequest
@@ -78,6 +89,8 @@ class JobRuntime:
     task: Optional[asyncio.Task] = None
     output_bytes: int = 0
     done: bool = False
+    current_task: str = ""
+    status_before: set = field(default_factory=set)
 
 
 _jobs: "OrderedDict[str, JobRuntime]" = OrderedDict()
@@ -257,6 +270,7 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
         raise DelegationDisabled("too_many_jobs")
     job_id = uuid.uuid4().hex[:12]
     workspace = validate_workspace(req.workspace, registry.delegation.workspace_allowlist) if req.mode == "task" else scratch_dir(job_id)
+    _validate_verify(req, registry, workspace)
     cls = classify_task(req.task, thresholds=registry.smart.thresholds)
     tier = req.tier_hint or cls.tier
     statuses = await _statuses(registry, req.agent_id)
@@ -270,11 +284,25 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
         raise NoAgentAvailable(job.reasons, skipped)
     if req.dry_run:
         return job
-    runtime = JobRuntime(job=job, request=req, workspace=workspace)
+    runtime = JobRuntime(job=job, request=req, workspace=workspace, current_task=req.task)
     _jobs[job_id] = runtime
     _trim_jobs(registry.delegation.job_retention)
     runtime.task = asyncio.create_task(_run_job(runtime, registry, statuses))
     return job
+
+
+def _validate_verify(req: JobRequest, registry, workspace: Path) -> None:
+    if not req.verify:
+        return
+    if req.mode != "task":
+        raise InvalidRequest("verify_requires_task_mode")
+    if not registry.delegation.allow_request_verify:
+        raise InvalidRequest("verify_disabled")
+    for cmd in req.verify:
+        try:
+            verifier.parse_command(cmd, workspace)
+        except verifier.InvalidCommand as e:
+            raise InvalidRequest(f"invalid_verify: {e}")
 
 
 def _trim_jobs(retention: int) -> None:
@@ -387,14 +415,14 @@ async def _run_ollama(rt: JobRuntime, agent: CliAgent, model: str, task: str, ti
     return AttemptOutcome(ok=True, returncode=0, result=AdapterResult(text="".join(chunks)))
 
 
-async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: int) -> AttemptOutcome:
+async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: int, task: Optional[str] = None, read_only: bool = False) -> AttemptOutcome:
     if agent.base == "ollama":
-        return await _run_ollama(rt, agent, model, rt.request.task, timeout_s)
+        return await _run_ollama(rt, agent, model, task or rt.request.task, timeout_s)
     exe = agents_registry.resolve_exe(agent)
     if not exe:
         return AttemptOutcome(ok=False, error="not_installed")
     try:
-        spec = adapter_for(agent.base).build(agent, exe, rt.job.id, rt.request.task, model, rt.workspace, rt.job.tier, timeout_s)
+        spec = adapter_for(agent.base).build(agent, exe, rt.job.id, task or rt.request.task, model, rt.workspace, rt.job.tier, timeout_s, read_only=read_only)
         spec.env.update(account_env(agent))
     except AdapterUnsafe as e:
         return AttemptOutcome(ok=False, error=str(e))
@@ -460,14 +488,14 @@ def _apply_signal(agent: CliAgent, model: str, signal: QuotaSignal) -> None:
 
 
 async def _run_job(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
-    status_before: set[str] = set()
+    rt.status_before = set()
     try:
-        status_before = set(_status_lines(rt.workspace)) if rt.request.mode == "task" else set()
+        rt.status_before = set(_status_lines(rt.workspace)) if rt.request.mode == "task" else set()
         await _run_attempts(rt, registry, statuses)
     except Exception as e:
         _kill_live_process(rt)
         _mark_crashed(rt.job, e)
-    await _finalize_job(rt, status_before)
+    await _finalize_job(rt, rt.status_before)
 
 
 def _kill_live_process(rt: JobRuntime) -> None:
@@ -503,33 +531,209 @@ async def _collect_job_artifacts(rt: JobRuntime, status_before: set[str]) -> Non
         await _record(job)
 
 
+def _work_count(job: Job) -> int:
+    return sum(1 for a in job.attempts if a.kind == "work" and not a.detail.get("revision"))
+
+
+async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: CliAgent, model: str) -> AttemptOutcome:
+    job = rt.job
+    _, agent_sem = _sems(registry, agent.id)
+    attempt = Attempt(agent_id=agent.id, model=model, started_at=_now())
+    job.attempts.append(attempt)
+    job.agent_id, job.model = agent.id, model
+    t0 = time.monotonic()
+    agents_registry.adjust_running(agent.id, +1)
+    try:
+        async with agent_sem:
+            outcome = await _run_attempt(rt, agent, model, rt.request.timeout_s or agent.timeout_s, task=rt.current_task)
+    finally:
+        agents_registry.adjust_running(agent.id, -1)
+    attempt.finished_at, attempt.duration_s, attempt.returncode = _now(), round(time.monotonic() - t0, 2), outcome.returncode
+    attempt.error = outcome.error[:300]
+    if outcome.signal is not None:
+        attempt.signal = outcome.signal.kind
+    return outcome
+
+
+def _review_enabled(rt: JobRuntime, registry: ProviderRegistry) -> bool:
+    if rt.request.review is not None:
+        return rt.request.review
+    return registry.delegation.review_default
+
+
+async def _record_verify_checks(rt: JobRuntime, registry: ProviderRegistry) -> list:
+    job = rt.job
+    checks = await verifier.run_checks(rt.request.verify, rt.workspace, registry.delegation.verify_timeout_s)
+    for check in checks:
+        job.attempts.append(Attempt(agent_id="bipolar", started_at=_now(), finished_at=_now(),
+                                    returncode=check.returncode, kind="verify",
+                                    detail={"command": check.command, "returncode": check.returncode,
+                                            "timed_out": check.timed_out, "error": check.error}))
+        _emit(rt, {"event": "verify_result", "command": check.command, "returncode": check.returncode,
+                   "timed_out": check.timed_out, "error": check.error[:300], "ok": check.ok})
+    return checks
+
+
+async def _run_attempt_guarded(rt: JobRuntime, registry: ProviderRegistry, agent: CliAgent, model: str,
+                               timeout_s: int, task: str, read_only: bool = False) -> AttemptOutcome:
+    # revisiones y revisores respetan max_concurrency y cuentan como "running", igual que el trabajo normal
+    _, agent_sem = _sems(registry, agent.id)
+    agents_registry.adjust_running(agent.id, +1)
+    try:
+        async with agent_sem:
+            return await _run_attempt(rt, agent, model, timeout_s, task=task, read_only=read_only)
+    finally:
+        agents_registry.adjust_running(agent.id, -1)
+
+
+async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, model: str, issues: list, failed_check) -> AttemptOutcome:
+    job = rt.job
+    task = reviewer.revision_task(rt.request.task, issues, failed_check)
+    attempt = Attempt(agent_id=worker.id, model=model, started_at=_now(), kind="work", detail={"revision": True})
+    job.attempts.append(attempt)
+    t0 = time.monotonic()
+    outcome = await _run_attempt_guarded(rt, registry, worker, model, rt.request.timeout_s or worker.timeout_s, task)
+    attempt.finished_at, attempt.duration_s, attempt.returncode = _now(), round(time.monotonic() - t0, 2), outcome.returncode
+    attempt.error = outcome.error[:300]
+    if outcome.signal is not None:
+        attempt.signal = outcome.signal.kind
+    _emit(rt, {"event": "revision", "agent_id": worker.id, "ok": outcome.ok, "error": outcome.error[:300]})
+    return outcome
+
+
+def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAgent, tier: str) -> list:
+    agents = {a.id: a for a in registry.cli_agents}
+    candidates = []
+    for thinker_id in registry.delegation.thinkers:
+        cand = agents.get(thinker_id)
+        if cand is None or cand.id == worker.id or not supports_read_only(cand.base):
+            continue
+        if _reject_agent(cand, tier, "task", statuses.get(thinker_id), cand.model_for(tier), False):
+            continue
+        candidates.append(cand)
+    candidates.sort(key=lambda c: c.base == worker.base)
+    return candidates
+
+
+async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, worker: CliAgent, checks: list):
+    job = rt.job
+    candidates = _review_candidates(registry, statuses, worker, job.tier)
+    if not candidates:
+        return None
+    diff = reviewer.collect_diff(rt.workspace, _files_touched(rt.workspace, rt.status_before))
+    prompt = reviewer.review_prompt(rt.request.task, diff, checks)
+    for cand in candidates:
+        model_cand = cand.model_for(job.tier)
+        outcome = await _run_attempt_guarded(rt, registry, cand, model_cand, registry.delegation.review_timeout_s, prompt, read_only=True)
+        verdict = reviewer.parse_verdict(outcome.result.text) if outcome.ok and outcome.result else None
+        job.attempts.append(Attempt(agent_id=cand.id, model=model_cand, started_at=_now(), finished_at=_now(),
+                                    returncode=outcome.returncode, kind="review", error=outcome.error[:300],
+                                    detail={"verdict": verdict.verdict if verdict else "",
+                                            "issues": verdict.issues if verdict else []}))
+        _emit(rt, {"event": "review_result", "agent_id": cand.id, "verdict": verdict.verdict if verdict else "",
+                   "issues": verdict.issues if verdict else [], "ok": outcome.ok})
+        if outcome.signal is not None:
+            _apply_signal(cand, model_cand, outcome.signal)
+            continue
+        if verdict is not None:
+            return verdict
+    return None
+
+
+async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, worker: CliAgent,
+                        model: str, outcome: AttemptOutcome) -> GateResult:
+    job = rt.job
+    if rt.request.mode != "task":
+        return GateResult(True, "", outcome)
+    revisions = rt.request.max_revisions
+    while True:
+        checks = await _record_verify_checks(rt, registry)
+        if checks and not verifier.checks_passed(checks):
+            job.verification_status = "failed"
+            if revisions > 0:
+                revisions -= 1
+                outcome = await _revise(rt, registry, worker, model, [], checks[-1])
+                if not outcome.ok:
+                    return GateResult(False, f"revision_failed: {outcome.error}"[:300], outcome)
+                continue
+            return GateResult(False, f"verify_failed: {checks[-1].command}"[:300], outcome)
+        job.verification_status = "passed" if checks else "n/a"
+        if not _review_enabled(rt, registry):
+            job.review_status = "n/a"
+            return GateResult(True, "", outcome)
+        verdict = await _review(rt, registry, statuses, worker, checks)
+        if verdict is None:
+            job.review_status = "skipped"
+            return GateResult(True, "", outcome)
+        if verdict.verdict == "approve":
+            job.review_status = "passed"
+            return GateResult(True, "", outcome)
+        if verdict.verdict == "revise" and revisions > 0:
+            revisions -= 1
+            outcome = await _revise(rt, registry, worker, model, verdict.issues, None)
+            if not outcome.ok:
+                return GateResult(False, f"revision_failed: {outcome.error}"[:300], outcome)
+            continue
+        job.review_status = "failed"
+        reason = f"review_rejected: {'; '.join(verdict.issues)}" if verdict.issues else "review_rejected"
+        return GateResult(False, reason[:300], outcome)
+
+
+def _escalation_target(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, tried: list) -> tuple:
+    job = rt.job
+    agents = {a.id: a for a in registry.cli_agents}
+    for thinker_id in registry.delegation.thinkers:
+        if thinker_id in tried:
+            continue
+        cand = agents.get(thinker_id)
+        if cand is None or not cand.agentic:
+            continue
+        model = cand.model_for(job.tier)
+        if _reject_agent(cand, job.tier, "task", statuses.get(thinker_id), model, False):
+            continue
+        return cand, model
+    agent, model, _, _ = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode="task")
+    return agent, model
+
+
+async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, agent: CliAgent,
+                          model: str, outcome: AttemptOutcome, tried: list, history: list):
+    job = rt.job
+    gate = await _quality_gate(rt, registry, statuses, agent, model, outcome)
+    if gate.accepted:
+        _finish_ok(job, gate.outcome or outcome, agent, model)
+        return None
+    history.append(f"{agent.id}: {gate.reason}")
+    tried.append(agent.id)
+    nxt, nxt_model = _escalation_target(rt, registry, statuses, tried)
+    if nxt is None or _work_count(job) >= max(1, registry.delegation.max_attempts):
+        job.status, job.error = "failed", gate.reason[:300]
+        return None
+    job.escalations += 1
+    _emit(rt, {"event": "escalated", "from": agent.id, "to": nxt.id, "reason": gate.reason[:300]})
+    rt.current_task = reviewer.escalation_task(rt.request.task, history)
+    return nxt, nxt_model
+
+
 async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
     job = rt.job
     agent = next((a for a in registry.cli_agents if a.id == job.agent_id), None)
     model = job.model
     tried: list[str] = []
+    history: list[str] = []
     alt_pool_tried = False
     global_sem, _ = _sems(registry, agent.id if agent else "")
     async with global_sem:
         job.status = "running"
         job.started_at = _now()
-        while agent is not None and len(job.attempts) < max(1, registry.delegation.max_attempts):
-            _, agent_sem = _sems(registry, agent.id)
-            attempt = Attempt(agent_id=agent.id, model=model, started_at=_now())
-            job.attempts.append(attempt)
-            job.agent_id, job.model = agent.id, model
-            t0 = time.monotonic()
-            agents_registry.adjust_running(agent.id, +1)
-            try:
-                async with agent_sem:
-                    outcome = await _run_attempt(rt, agent, model, rt.request.timeout_s or agent.timeout_s)
-            finally:
-                agents_registry.adjust_running(agent.id, -1)
-            attempt.finished_at, attempt.duration_s, attempt.returncode = _now(), round(time.monotonic() - t0, 2), outcome.returncode
-            attempt.error = outcome.error[:300]
+        while agent is not None and _work_count(job) < max(1, registry.delegation.max_attempts):
+            outcome = await _run_work_attempt(rt, registry, agent, model)
             if outcome.ok:
-                _finish_ok(job, outcome, agent, model)
-                break
+                nxt = await _handle_gate_ok(rt, registry, statuses, agent, model, outcome, tried, history)
+                if nxt is None:
+                    break
+                agent, model = nxt
+                continue
             if outcome.timed_out:
                 job.status, job.error = "timeout", "timeout"
                 health_service.mark_failure(_pool_key(agent, model), "timeout")
@@ -538,7 +742,6 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 job.status, job.error = "failed", outcome.error
                 health_service.mark_failure(_pool_key(agent, model), outcome.error)
                 break
-            attempt.signal = outcome.signal.kind
             _apply_signal(agent, model, outcome.signal)
             _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt})
             if outcome.signal.kind == "auth":

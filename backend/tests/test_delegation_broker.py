@@ -37,6 +37,7 @@ def env(tmp_path, monkeypatch):
         active_provider_id="copilot", providers=[],
         cli_agents=_agents("claude", "codex"),
         delegation=DelegationConfig(enabled=True, workspace_allowlist=[str(workspace)], max_attempts=3,
+                                    review_default=False,  # las pruebas de failover de este archivo no cubren la puerta de calidad
                                     tier_order={"trivial": ["codex", "claude"], "simple": ["codex", "claude"],
                                                 "standard": ["codex", "claude"], "complex": ["codex", "claude"]}),
     )
