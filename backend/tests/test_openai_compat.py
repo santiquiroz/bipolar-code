@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.api.openai_compat import resolve_target
 from app.core.config import get_settings
 from app.models.provider import Provider
+from app.services import credentials
+from app.services.smart_router import PlanStep
 
 
 @pytest.fixture
@@ -27,8 +29,12 @@ def _provider(**overrides) -> Provider:
     return Provider(**{**base, **overrides})
 
 
+def _step(provider: Provider, model=None, is_active: bool = True) -> PlanStep:
+    return PlanStep(provider, model, credentials.credential_slots(provider)[0], is_active)
+
+
 def test_resolve_target_openai_provider_goes_direct():
-    url, headers, model = resolve_target(_provider(), get_settings())
+    url, headers, model = resolve_target(_step(_provider()), get_settings())
     assert url == "http://127.0.0.1:4002/chat/completions"
     assert model == "qwen3-coder-next"
     assert headers["Authorization"] == "Bearer no-key"
@@ -37,7 +43,7 @@ def test_resolve_target_openai_provider_goes_direct():
 def test_resolve_target_anthropic_provider_goes_through_litellm():
     settings = get_settings()
     provider = _provider(id="anthropic", litellm_prefix="anthropic")
-    url, headers, model = resolve_target(provider, settings)
+    url, headers, model = resolve_target(_step(provider), settings)
     assert url == f"{settings.proxy_url}/v1/chat/completions"
     assert headers["Authorization"] == f"Bearer {settings.proxy_api_key}"
     assert model == "claude-sonnet-4-6"
@@ -45,7 +51,7 @@ def test_resolve_target_anthropic_provider_goes_through_litellm():
 
 def test_resolve_target_includes_extra_headers():
     provider = _provider(id="copilot", extra_headers={"Copilot-Integration-Id": "vscode-chat"})
-    _, headers, _ = resolve_target(provider, get_settings())
+    _, headers, _ = resolve_target(_step(provider), get_settings())
     assert headers["Copilot-Integration-Id"] == "vscode-chat"
 
 
@@ -81,6 +87,7 @@ def test_chat_completions_upstream_error_relayed(client):
     body = {"model": "x", "messages": []}
     upstream = AsyncMock()
     upstream.status_code = 400
+    upstream.text = '{"error":{"message":"bad"}}'
     upstream.json = lambda: {"error": {"message": "bad"}}
     with patch(
         "app.api.openai_compat.providers_service.pick_provider",
@@ -99,12 +106,12 @@ def test_resolve_target_adds_v1_for_ollama_default_base():
     from app.core.config import get_settings
     from app.models.provider import Provider
     ollama = Provider(id="ollama", name="Ollama", api_base="http://127.0.0.1:11434", active_model="llama3.2")
-    url, _, model = resolve_target(ollama, get_settings())
+    url, _, model = resolve_target(_step(ollama), get_settings())
     assert url == "http://127.0.0.1:11434/v1/chat/completions" and model == "llama3.2"
     lmstudio = Provider(id="lmstudio", name="LM", api_base="http://127.0.0.1:1234/v1", active_model="m")
-    assert resolve_target(lmstudio, get_settings())[0] == "http://127.0.0.1:1234/v1/chat/completions"
+    assert resolve_target(_step(lmstudio), get_settings())[0] == "http://127.0.0.1:1234/v1/chat/completions"
     copilot = Provider(id="copilot", name="C", api_base="https://api.business.githubcopilot.com", active_model="m")
-    assert resolve_target(copilot, get_settings())[0] == "https://api.business.githubcopilot.com/chat/completions"
+    assert resolve_target(_step(copilot), get_settings())[0] == "https://api.business.githubcopilot.com/chat/completions"
 
 
 def test_resolve_target_reads_auth_key_from_config_dotenv(dotenv_config_dir, monkeypatch):
@@ -113,6 +120,6 @@ def test_resolve_target_reads_auth_key_from_config_dotenv(dotenv_config_dir, mon
     provider = _provider(id="openrouter", api_base="https://openrouter.ai/api/v1",
                          auth_env_var="OPENROUTER_API_KEY")
 
-    _, headers, _ = resolve_target(provider, get_settings())
+    _, headers, _ = resolve_target(_step(provider), get_settings())
 
     assert headers["Authorization"] == "Bearer sk-x"
