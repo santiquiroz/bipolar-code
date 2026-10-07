@@ -1,7 +1,9 @@
 """Verificador: comandos sin shell, resolución relativa al workspace, timeout que mata el árbol."""
+import asyncio
 import sys
 from pathlib import Path
 
+import psutil
 import pytest
 
 from app.services.cli_agents import verifier
@@ -66,3 +68,35 @@ async def test_spawn_os_error_is_a_failed_check(tmp_path, monkeypatch):
     monkeypatch.setattr(verifier.asyncio, "create_subprocess_exec", boom)
     results = await verifier.run_checks([f'"{PY}" -c "print(1)"'], tmp_path, timeout_s=5)
     assert "acceso denegado" in results[0].error and not verifier.checks_passed(results)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_verify_kills_child(tmp_path, monkeypatch):
+    procs = []
+    orig = asyncio.create_subprocess_exec
+
+    async def wrapper(*args, **kwargs):
+        proc = await orig(*args, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(verifier.asyncio, "create_subprocess_exec", wrapper)
+    task = asyncio.create_task(
+        verifier.run_checks([f'"{PY}" -c "import time; time.sleep(60)"'], tmp_path, timeout_s=60))
+    await asyncio.sleep(0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert procs, "no se creó el subproceso"
+    pid = procs[0].pid
+    for _ in range(50):
+        if not psutil.pid_exists(pid):
+            break
+        await asyncio.sleep(0.1)
+    try:
+        assert not psutil.pid_exists(pid)
+    finally:
+        try:
+            psutil.Process(pid).kill()
+        except psutil.Error:
+            pass

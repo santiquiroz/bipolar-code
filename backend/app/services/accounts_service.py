@@ -150,14 +150,27 @@ def _from_epoch(value: float) -> datetime | None:
         return None
 
 
+_ALLOWED_WINDOWS = frozenset({"five_hour", "seven_day"})
+
+
+def _valid_window(data: dict) -> bool:
+    pct, resets = data.get("used_percentage"), data.get("resets_at")
+    if isinstance(pct, bool) or isinstance(resets, bool):
+        return False
+    return isinstance(pct, (int, float)) and isinstance(resets, (int, float))
+
+
 def record_usage(agent_id: str, rate_limits: dict, now: datetime | None = None) -> dict:
     registry = providers_service.load_registry()
     if all(a.id != agent_id for a in registry.cli_agents):
         raise KeyError(agent_id)
     entry = {"received_at": (now or datetime.now(timezone.utc)).isoformat()}
     for window, data in (rate_limits or {}).items():
-        if isinstance(data, dict):
-            entry[window] = dict(data)
+        if window not in _ALLOWED_WINDOWS or not isinstance(data, dict):
+            continue
+        if not _valid_window(data):
+            continue
+        entry[window] = dict(data)
     _usage[agent_id] = entry
     _exhaust_windows(agent_id, entry, registry.delegation.account_exhausted_pct)
     return {"agent_id": agent_id, "state": health_service.get(f"cli:{agent_id}").state,

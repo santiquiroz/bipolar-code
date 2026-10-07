@@ -802,6 +802,10 @@ async def wait_job(job_id: str, timeout_s: float) -> Optional[Job]:
             await asyncio.wait_for(asyncio.shield(rt.task), timeout_s)
         except asyncio.TimeoutError:
             pass
+        except asyncio.CancelledError:
+            if rt.task.cancelled():
+                return get_job(job_id)
+            raise
     return get_job(job_id)
 
 

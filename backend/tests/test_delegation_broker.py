@@ -409,3 +409,25 @@ async def test_account_job_launch_env_has_account_config_dir(env, monkeypatch, t
     job = await _wait(job.id)
     assert job.status == "succeeded" and job.agent_id == "claude-2"
     assert calls[0].env["CLAUDE_CONFIG_DIR"] == str(account_dir)
+
+
+@pytest.mark.asyncio
+async def test_wait_job_returns_when_task_cancelled_externally(env):
+    job = broker.Job(id="w1", created_at=broker._now())
+    req = JobRequest(task="x", workspace=str(env["workspace"]))
+    rt = broker.JobRuntime(job=job, request=req, workspace=env["workspace"])
+
+    async def sleeper():
+        await asyncio.sleep(30)
+
+    rt.task = asyncio.create_task(sleeper())
+    broker._jobs["w1"] = rt
+    waiter = asyncio.create_task(broker.wait_job("w1", 5))
+    await asyncio.sleep(0.1)
+    rt.task.cancel()
+    result = await waiter
+    assert result is not None and result.id == "w1"
+    try:
+        await rt.task
+    except asyncio.CancelledError:
+        pass

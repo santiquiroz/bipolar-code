@@ -84,6 +84,13 @@ async def _run_one(command: str, workspace: Path, timeout_s: int) -> CheckResult
         _kill_tree_pid(proc.pid)
         await proc.wait()
         return CheckResult(command, proc.returncode, time.monotonic() - start, "", timed_out=True)
+    except asyncio.CancelledError:
+        _kill_tree_pid(proc.pid)
+        try:
+            await proc.wait()
+        except Exception:
+            pass
+        raise
     tail = (out or b"").decode("utf-8", "replace")[-OUTPUT_TAIL_CHARS:]
     return CheckResult(command, proc.returncode, time.monotonic() - start, tail)
 

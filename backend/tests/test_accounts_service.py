@@ -102,3 +102,13 @@ def test_record_usage_ignores_absurd_reset_timestamp(env):
     accounts_service.create_account("claude", "")
     out = accounts_service.record_usage("claude-2", {"five_hour": {"used_percentage": 100, "resets_at": 1e20}})
     assert out["state"] == "available"
+
+
+def test_record_usage_ignores_unknown_windows(env):
+    accounts_service.create_account("claude", "")
+    resets = int(datetime(2099, 1, 1, tzinfo=timezone.utc).timestamp())
+    rate_limits = {f"bogus_{i}": {"used_percentage": 99, "resets_at": resets} for i in range(1000)}
+    rate_limits["five_hour"] = {"used_percentage": 10, "resets_at": resets}
+    rate_limits["seven_day"] = {"used_percentage": "mucho", "resets_at": resets}
+    out = accounts_service.record_usage("claude-2", rate_limits)
+    assert set(out["usage"].keys()) == {"received_at", "five_hour"}
