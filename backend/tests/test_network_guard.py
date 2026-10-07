@@ -96,6 +96,12 @@ def test_public_ip_gets_403_on_health(ui_key):
     assert _client("8.8.8.8", ui_key).get("/api/health").status_code == 403
 
 
+def test_public_ip_gets_403_on_mcp(ui_key):
+    resp = _client("8.8.8.8", ui_key).post("/mcp")
+
+    assert resp.status_code == 403
+
+
 def test_lan_client_with_key_reaches_control_plane(ui_key):
     assert _client("192.168.1.5", ui_key).get("/api/providers").status_code == 200
 

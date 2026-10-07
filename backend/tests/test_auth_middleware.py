@@ -39,6 +39,11 @@ def test_protected_without_key_returns_401():
     assert resp.status_code == 401
 
 
+def test_mcp_without_key_returns_401():
+    resp = client.post("/mcp")
+    assert resp.status_code == 401
+
+
 def test_protected_with_bearer_token():
     resp = client.get("/api/protected", headers={"Authorization": f"Bearer {VALID_KEY}"})
     assert resp.status_code == 200
