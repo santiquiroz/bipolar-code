@@ -38,8 +38,15 @@ def test_messages_counts_context_usage_header(client):
     assert "x-context-usage" in resp.headers or resp.status_code in (200, 500)
 
 
-def test_messages_error_on_provider_failure(client):
-    """Provider returning 400 should yield an SSE error event."""
+def test_messages_returns_http_error_on_fatal_provider_failure(client, monkeypatch):
+    """Fatal 400 del upstream se devuelve con status HTTP real, no como evento SSE."""
+    from app.models.provider import Provider, ProviderRegistry
+    from app.services import providers_service
+
+    provider = Provider(id="p1", name="p1", api_base="https://p1.example.com/v1", active_model="m1")
+    registry = ProviderRegistry(active_provider_id="p1", providers=[provider])
+    monkeypatch.setattr(providers_service, "load_registry", lambda: registry)
+
     body = {
         "model": "claude-sonnet-4-6",
         "messages": [{"role": "user", "content": "hello"}],
@@ -54,5 +61,9 @@ def test_messages_error_on_provider_failure(client):
         mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_client.return_value.stream = MagicMock(return_value=mock_stream)
         resp = client.post("/v1/messages", json=body)
-    # StreamingResponse with SSE error or 4xx status
-    assert resp.status_code in (200, 400, 422, 500)
+    assert resp.status_code == 400
+    payload = resp.json()
+    assert payload["type"] == "error"
+    assert payload["error"]["type"] == "invalid_request_error"
+    assert "bad request" in payload["error"]["message"]
+    assert resp.headers["x-bipolar-attempts"] == "1"
