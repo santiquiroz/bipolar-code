@@ -23,7 +23,7 @@ from app.core.config import get_settings
 setup_logging()
 log = get_logger(__name__)
 
-APP_VERSION = "2.17.0"
+APP_VERSION = "2.18.0"
 
 _REFRESH_MARGIN = 120   # refresh when less than 2 min remain
 _RETRY_ON_ERROR = 60    # retry after 1 min on failure
