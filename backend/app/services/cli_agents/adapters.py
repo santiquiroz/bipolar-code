@@ -57,6 +57,10 @@ TASK_CONSTRAINTS = (
     "Deja los cambios en el working tree y termina con la lista de archivos tocados."
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
+READ_ONLY_CONSTRAINTS = (
+    "\n\nRestricciones: ejecución de solo lectura. No edites archivos ni ejecutes comandos que cambien el repositorio; "
+    "responde solo con texto. No invoques otros CLIs de IA."
+)
 POINTER_PROMPT = (
     "Read the file {rel} in this workspace and do exactly what it says. Relative paths in it are relative "
     "to the workspace root, not to that file's folder. Do not modify or delete that file."
@@ -85,6 +89,11 @@ ARGV_PROMPT_MAX = 24_000
 
 def supports_accounts(base: str) -> bool:
     return base in ACCOUNT_ENV
+
+
+def supports_read_only(base: str) -> bool:
+    adapter = ADAPTERS.get(base)
+    return bool(adapter and getattr(adapter, "supports_read_only", False))
 
 
 def account_env(agent: CliAgent) -> dict[str, str]:
@@ -227,15 +236,16 @@ def _jsonl(text: str) -> list[dict]:
 class ClaudeAdapter:
     id = "claude"
     prompt_via = "pointer"
+    supports_read_only = True
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
         pointer, rel = write_pointer(workspace, job_id, task)
         argv = exe_argv(exe) + [
             "-p", POINTER_PROMPT.format(rel=rel),
             "--output-format", "json",
-            "--permission-mode", "acceptEdits",
-            "--disallowedTools", "Task,Agent,WebFetch,WebSearch",
+            "--permission-mode", "plan" if read_only else "acceptEdits",
+            "--disallowedTools", "Task,Agent,WebFetch,WebSearch,Edit,Write,MultiEdit,NotebookEdit,Bash" if read_only else "Task,Agent,WebFetch,WebSearch",
             "--max-turns", "50",
             "--setting-sources", "project,local", "--strict-mcp-config",
             "--add-dir", ws,
@@ -261,21 +271,23 @@ class ClaudeAdapter:
 class CodexAdapter:
     id = "codex"
     prompt_via = "stdin"
+    supports_read_only = True
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
         out_dir = workspace / POINTER_DIR / job_id
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / "last.md"
         argv = exe_argv(exe) + [
-            "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--color", "never", "--json",
+            "exec", "--sandbox", "read-only" if read_only else "workspace-write", "--skip-git-repo-check", "--color", "never", "--json",
             "-C", ws, "-o", validate_path_argv(str(out_file)),
         ]
         if model:
             argv += ["-m", model]
         argv += validate_extra_args(agent.extra_args)
         argv.append("-")
-        return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, stdin_payload=(task + TASK_CONSTRAINTS).encode("utf-8"),
+        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
+        return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, stdin_payload=(task + constraints).encode("utf-8"),
                           out_file=out_file, timeout_s=timeout_s, redacted=redact(argv, len(task)))
 
     def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
@@ -301,10 +313,13 @@ class CodexAdapter:
 class CopilotAdapter:
     id = "copilot"
     prompt_via = "pointer"
+    supports_read_only = False
     DENY = ("shell(rm)", "shell(rmdir)", "shell(del)", "shell(Remove-Item)", "shell(git push)",
             "shell(git reset)", "shell(git clean)", "shell(git checkout)")
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        if read_only:
+            raise AdapterUnsafe("read_only_unsupported")
         ws = validate_path_argv(str(workspace))
         pointer, rel = write_pointer(workspace, job_id, task)
         argv = exe_argv(exe) + [
@@ -340,6 +355,7 @@ class CopilotAdapter:
 class AntigravityAdapter:
     id = "antigravity"
     prompt_via = "pointer"
+    supports_read_only = False
 
     @staticmethod
     def settings_path() -> Path:
@@ -358,7 +374,9 @@ class AntigravityAdapter:
     def pool_key(model: str) -> str:
         return "cli:antigravity#gemini" if (not model or model.startswith("gemini")) else "cli:antigravity#claude"
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        if read_only:
+            raise AdapterUnsafe("read_only_unsupported")
         if not self.deny_list_present():
             raise AdapterUnsafe("agy_deny_list_missing")
         ws = validate_path_argv(str(workspace))
@@ -398,6 +416,7 @@ class AntigravityAdapter:
 class CursorAdapter:
     id = "cursor"
     prompt_via = "pointer"
+    supports_read_only = True
 
     def config_dir(self) -> Path:
         return Path(os.environ["CURSOR_RESCUE_HOME"]) if "CURSOR_RESCUE_HOME" in os.environ else Path.home() / ".cursor-rescue"
@@ -445,7 +464,7 @@ class CursorAdapter:
             path.write_text(CURSOR_PRELOAD, encoding="utf-8")
         return path
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         if not self.deny_list_present():
             raise AdapterUnsafe("cursor_deny_list_missing")
         ws = validate_path_argv(str(workspace))
@@ -466,8 +485,10 @@ class CursorAdapter:
             argv = exe_argv(exe)
         argv += [
             "-p", POINTER_PROMPT.format(rel=rel), "--output-format", "json", "--trust",
-            "--workspace", ws, "--force", "--model", model or "auto",
+            "--workspace", ws,
         ]
+        argv += ["--mode", "ask"] if read_only else ["--force"]
+        argv += ["--model", model or "auto"]
         argv += validate_extra_args(agent.extra_args)
         return LaunchSpec(argv=argv, env=child_env(os.environ, extra_env), cwd=ws, pointer_file=pointer,
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
@@ -513,6 +534,7 @@ def _last_field(events: list[dict], kind: str, key: str) -> str:
 class DeepseekAdapter:
     id = "deepseek"
     prompt_via = "stdin"
+    supports_read_only = True
 
     @staticmethod
     def home() -> Path:
@@ -559,18 +581,19 @@ class DeepseekAdapter:
         patch.write_text(DSH_MODEL_PATCH.format(provider=self.provider(), model=model), encoding="utf-8")
         return patch
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
         job_dir = workspace / POINTER_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         patch = self.write_patch(job_dir, model or agent.default_model or "deepseek-flash")
         argv, extra_env = self.launcher(exe)
-        extra_env["DSH_PERMISSION_MODE"] = "workspace-write"
+        extra_env["DSH_PERMISSION_MODE"] = "read-only" if read_only else "workspace-write"
         argv += ["--profile", "headless", "--patch", validate_path_argv(str(patch)), "--json"]
         argv += validate_extra_args(agent.extra_args)
         argv.append("-")
+        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
         return LaunchSpec(argv=argv, env=child_env(os.environ, extra_env), cwd=ws,
-                          stdin_payload=(task + TASK_CONSTRAINTS).encode("utf-8"),
+                          stdin_payload=(task + constraints).encode("utf-8"),
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
 
     def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
@@ -606,6 +629,7 @@ def _muse_session(records: list[dict]) -> str:
 class MuseAdapter:
     id = "muse"
     prompt_via = "pointer"
+    supports_read_only = True
 
     @staticmethod
     def bin_for(exe: str) -> list[str]:
@@ -631,7 +655,7 @@ class MuseAdapter:
             return False
         return _muse_auth_present(auth)
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
         extra_args = validate_extra_args(agent.extra_args)
         model = validate_model(model) if model else ""
@@ -641,6 +665,8 @@ class MuseAdapter:
             "--approval-mode", "never", "--approval-judge", "off", "--no-foreign-personal-context",
             "--user-input-auto-resolve", "--max-model-steps", "60", "--reasoning-effort", effort_for_tier(tier),
         ]
+        if read_only:
+            argv += ["--disable-write", "--disable-shell"]
         if model:
             argv += ["--model", model]
         argv += extra_args
