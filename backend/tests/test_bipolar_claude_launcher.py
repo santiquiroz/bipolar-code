@@ -1,5 +1,6 @@
 """Lanzador bipolar-claude: núcleo puro (espejo, settings, slug, transcript)."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -80,3 +81,148 @@ def test_read_api_key_env_then_dotenv(tmp_path):
     assert bc.read_api_key(tmp_path, {"BIPOLAR_API_KEY": "bc-env"}) == "bc-env"
     assert bc.read_api_key(tmp_path, {}) == "bc-file"
     assert bc.read_api_key(tmp_path / "nope", {}) == ""
+
+
+def _pick_opener(payload=None, status=200, exc=None):
+    class Resp:
+        def __init__(self):
+            self.status = status
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def opener(req, timeout=None):
+        if exc:
+            raise exc
+        return Resp()
+
+    return opener
+
+
+def test_fetch_pick_failures_are_none():
+    bc = _load()
+    assert bc.fetch_pick("http://x", "k", opener=_pick_opener(exc=OSError("down"))) is None
+    assert bc.fetch_pick("http://x", "k", opener=_pick_opener({"mode": "proxy"}, status=401)) is None
+    assert bc.fetch_pick("http://x", "k", opener=_pick_opener({"mode": "proxy"})) == {"mode": "proxy"}
+
+
+def test_launch_plan_modes():
+    bc = _load()
+    assert bc.launch_plan(None, "k", "http://b") == ({}, "plain")
+    assert bc.launch_plan({"mode": "account", "account_dir": "C:/a", "agent_id": "claude-2"}, "k", "http://b") == ({"CLAUDE_CONFIG_DIR": "C:/a"}, "account")
+    env, mode = bc.launch_plan({"mode": "proxy"}, "k", "http://b")
+    assert mode == "proxy" and env == {"ANTHROPIC_BASE_URL": "http://b", "ANTHROPIC_API_KEY": "k"}
+
+
+def test_apply_mirror_never_overwrites_real_dir(tmp_path, monkeypatch):
+    bc = _load()
+    user, acct = tmp_path / "user", tmp_path / "acct"
+    (user / "skills").mkdir(parents=True)
+    (user / "settings.json").write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://x"}}), encoding="utf-8")
+    (acct / "skills").mkdir(parents=True)
+    (acct / "skills" / "mine.md").write_text("propio", encoding="utf-8")
+    links = []
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    warnings = bc.apply_mirror(user, acct, "cmd", link=lambda s, d: links.append((s, d)))
+    assert (acct / "skills" / "mine.md").read_text(encoding="utf-8") == "propio"
+    assert any("skills" in w for w in warnings) and links == []
+    settings = json.loads((acct / "settings.json").read_text(encoding="utf-8"))
+    assert "env" not in settings and settings["statusLine"]["command"] == "cmd"
+
+
+def test_main_dry_run_account_mode(tmp_path, monkeypatch):
+    bc = _load()
+    acct = tmp_path / "accounts" / "claude-2"
+    acct.mkdir(parents=True)
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    out = io.StringIO()
+    opener = _pick_opener({"mode": "account", "agent_id": "claude-2", "account_dir": str(acct)})
+    rc = bc.main(["--bc-dry-run", "--bc-no-mirror", "-p", "hola"], {"LITELLM_CONFIG_DIR": str(tmp_path), "BIPOLAR_API_KEY": "k"},
+                 run=lambda *a, **k: 99, opener=opener, out=out)
+    assert rc == 0
+    report = json.loads(out.getvalue().strip().splitlines()[-1])
+    assert report["mode"] == "account" and report["args"] == ["-p", "hola"] and "CLAUDE_CONFIG_DIR" in report["env"]
+
+
+def test_main_plain_when_bipolar_down_and_passes_exit_code(tmp_path, monkeypatch):
+    bc = _load()
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    seen = {}
+
+    def run(argv, env=None):
+        seen["argv"], seen["env"] = argv, env
+        return 7
+
+    rc = bc.main(["--version"], {"LITELLM_CONFIG_DIR": str(tmp_path), "ANTHROPIC_BASE_URL": "http://keep"}, run=run,
+                 opener=_pick_opener(exc=OSError("down")), out=io.StringIO())
+    assert rc == 7 and Path(seen["argv"][0]).stem.lower() == "claude" and seen["argv"][1:] == ["--version"]
+    assert seen["env"]["ANTHROPIC_BASE_URL"] == "http://keep"
+
+
+def test_main_account_mode_drops_inherited_proxy_vars(tmp_path, monkeypatch):
+    bc = _load()
+    acct = tmp_path / "accounts" / "claude-2"
+    acct.mkdir(parents=True)
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    seen = {}
+    bc.main(["--bc-no-mirror"], {"LITELLM_CONFIG_DIR": str(tmp_path), "ANTHROPIC_BASE_URL": "http://proxy", "BIPOLAR_API_KEY": "k"},
+            run=lambda argv, env=None: seen.setdefault("env", env) and 0,
+            opener=_pick_opener({"mode": "account", "agent_id": "claude-2", "account_dir": str(acct)}), out=io.StringIO())
+    assert seen["env"]["CLAUDE_CONFIG_DIR"] == str(acct) and "ANTHROPIC_BASE_URL" not in seen["env"]
+
+
+def test_continue_without_previous_session_warns(tmp_path, monkeypatch):
+    bc = _load()
+    acct = tmp_path / "accounts" / "claude-3"
+    acct.mkdir(parents=True)
+    (tmp_path / "accounts" / ".last").write_text(json.dumps({"agent_id": "claude-2", "account_dir": str(tmp_path / "accounts" / "claude-2")}), encoding="utf-8")
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    out, seen = io.StringIO(), {}
+    bc.main(["--bc-continue", "--bc-no-mirror"], {"LITELLM_CONFIG_DIR": str(tmp_path), "BIPOLAR_API_KEY": "k"},
+            run=lambda argv, env=None: seen.setdefault("argv", argv) and 0,
+            opener=_pick_opener({"mode": "account", "agent_id": "claude-3", "account_dir": str(acct)}), out=out)
+    assert "--resume" not in seen["argv"] and "nueva" in out.getvalue()
+
+
+def test_continue_copies_transcript_and_resumes(tmp_path, monkeypatch):
+    bc = _load()
+    prev, new = tmp_path / "accounts" / "claude-2", tmp_path / "accounts" / "claude-3"
+    new.mkdir(parents=True)
+    folder = prev / "projects" / bc.project_slug(Path.cwd())
+    folder.mkdir(parents=True)
+    (folder / "sess-123.jsonl").write_text('{"x":1}\n', encoding="utf-8")
+    (tmp_path / "accounts" / ".last").write_text(json.dumps({"agent_id": "claude-2", "account_dir": str(prev)}), encoding="utf-8")
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    seen = {}
+    bc.main(["--bc-continue", "--bc-no-mirror"], {"LITELLM_CONFIG_DIR": str(tmp_path), "BIPOLAR_API_KEY": "k"},
+            run=lambda argv, env=None: seen.setdefault("argv", argv) and 0,
+            opener=_pick_opener({"mode": "account", "agent_id": "claude-3", "account_dir": str(new)}), out=io.StringIO())
+    assert seen["argv"][-2:] == ["--resume", "sess-123"]
+    assert (new / "projects" / bc.project_slug(Path.cwd()) / "sess-123.jsonl").exists()
+
+
+def test_dry_run_account_has_no_side_effects(tmp_path, monkeypatch):
+    bc = _load()
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    acct = tmp_path / "accounts" / "claude-2"
+    acct.mkdir(parents=True)
+    monkeypatch.setattr(bc.Path, "home", lambda: home)
+    out = io.StringIO()
+
+    def run(*a, **k):
+        raise AssertionError("dry-run no debe lanzar claude")
+
+    rc = bc.main(["--bc-dry-run", "-p", "hola"], {"LITELLM_CONFIG_DIR": str(tmp_path), "BIPOLAR_API_KEY": "k"},
+                 run=run, opener=_pick_opener({"mode": "account", "agent_id": "claude-2", "account_dir": str(acct)}), out=out)
+    assert rc == 0
+    assert list(acct.iterdir()) == []
+    assert not (tmp_path / "accounts" / ".last").exists()
+    report = json.loads(out.getvalue().strip().splitlines()[-1])
+    assert report["mode"] == "account" and report["mirror"] is True and report["args"] == ["-p", "hola"]
