@@ -9,7 +9,7 @@ import pytest
 
 from app.models.delegate import AgentStatus, JobRequest
 from app.models.provider import ProviderRegistry
-from app.models.smart import DEFAULT_CLI_AGENTS, CliAgent, DelegationConfig
+from app.models.smart import AGENT_IDS, DEFAULT_CLI_AGENTS, CliAgent, DelegationConfig
 from app.services import health_service, providers_service, usage_tracker
 from app.services.cli_agents import broker
 from app.services.cli_agents import registry as agents_registry
@@ -37,6 +37,7 @@ def env(tmp_path, monkeypatch):
         active_provider_id="copilot", providers=[],
         cli_agents=_agents("claude", "codex"),
         delegation=DelegationConfig(enabled=True, workspace_allowlist=[str(workspace)], max_attempts=3,
+                                    review_default=False,  # las pruebas de failover de este archivo no cubren la puerta de calidad
                                     tier_order={"trivial": ["codex", "claude"], "simple": ["codex", "claude"],
                                                 "standard": ["codex", "claude"], "complex": ["codex", "claude"]}),
     )
@@ -134,6 +135,85 @@ def test_choose_agent_skips_cooling_and_busy(env):
         agents_registry.adjust_running("claude", -1)
     assert agent is None
     assert ("codex", "cooling:rate_limit") in skipped and ("claude", "busy") in skipped
+
+
+def _full_registry() -> ProviderRegistry:
+    return ProviderRegistry(
+        active_provider_id="copilot", providers=[],
+        cli_agents=_agents(*AGENT_IDS),
+        delegation=DelegationConfig(enabled=True),
+    )
+
+
+def _full_statuses(registry: ProviderRegistry) -> dict[str, AgentStatus]:
+    statuses = {a.id: AgentStatus(id=a.id, installed=True, auth="ok") for a in registry.cli_agents}
+    statuses["muse"].quota = {"sandbox": "ready"}
+    return statuses
+
+
+@pytest.mark.parametrize("tier", ["trivial", "simple", "standard", "complex"])
+def test_choose_agent_prefers_muse_in_every_tier(env, tier):
+    registry = _full_registry()
+    agent, _, reasons, _ = broker.choose_agent(tier, registry, _full_statuses(registry))
+    assert agent is not None and agent.id == "muse"
+    assert reasons == [f"agent:muse:{tier}"]
+
+
+@pytest.mark.parametrize("tier, expected", [
+    ("trivial", "copilot"), ("simple", "copilot"), ("standard", "codex"), ("complex", "codex"),
+])
+def test_choose_agent_uses_second_lane_when_muse_excluded(env, tier, expected):
+    registry = _full_registry()
+    agent, _, reasons, skipped = broker.choose_agent(
+        tier, registry, _full_statuses(registry), exclude=("muse",))
+    assert agent is not None and agent.id == expected
+    assert reasons == [f"agent:{expected}:{tier}"]
+    assert ("muse", "already_tried") in skipped
+
+
+@pytest.mark.parametrize("sandbox", ["missing", "not_ready", "error", ""])
+def test_choose_agent_skips_muse_when_sandbox_not_ready(env, sandbox):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["muse"].quota = {"sandbox": sandbox}
+    agent, _, _, skipped = broker.choose_agent(
+        "standard", registry, statuses, exclude=("deepseek",))
+    assert ("muse", "muse_sandbox_not_ready") in skipped
+    assert agent is not None and agent.id == "codex"
+
+
+def test_choose_agent_skips_unprobed_muse(env):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["muse"].quota = {}
+    agent, _, _, skipped = broker.choose_agent("standard", registry, statuses, exclude=("deepseek",))
+    assert ("muse", "muse_sandbox_not_ready") in skipped
+    assert agent is not None and agent.id == "codex"
+
+
+@pytest.mark.parametrize("sandbox", ["ready", "n/a"])
+def test_choose_agent_accepts_muse_sandbox_status(env, sandbox):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["muse"].quota = {"sandbox": sandbox}
+    agent, _, _, _ = broker.choose_agent(
+        "standard", registry, statuses, exclude=("deepseek",))
+    assert agent is not None and agent.id == "muse"
+
+
+def test_choose_agent_skips_deepseek_on_auth_error(env):
+    registry = _full_registry()
+    statuses = _full_statuses(registry)
+    statuses["deepseek"] = AgentStatus(id="deepseek", installed=True, auth="auth_error")
+    agent, _, _, skipped = broker.choose_agent("complex", registry, statuses, preferred="deepseek", exclude=("muse",))
+    assert ("deepseek", "auth_error") in skipped
+    assert agent is not None and agent.id == "codex"
+
+
+def test_seeded_deepseek_model_for_tier(env):
+    agent = next(a for a in _agents(*AGENT_IDS) if a.id == "deepseek")
+    assert agent.model_for("complex") == "deepseek-v4-pro"
+    assert agent.model_for("simple") == "deepseek-flash"
 
 
 # ── submit ───────────────────────────────────────────────────────────────────
@@ -316,3 +396,38 @@ async def test_unexpected_exception_kills_live_child_process(env, monkeypatch):
     job = await _wait(job.id)
     assert job.status == "failed" and broker._jobs[job.id].proc is None
     assert await asyncio.wait_for(spawned["proc"].wait(), timeout=5) is not None
+
+
+@pytest.mark.asyncio
+async def test_account_job_launch_env_has_account_config_dir(env, monkeypatch, tmp_path):
+    account_dir = tmp_path / "accounts" / "claude-2"
+    account_dir.mkdir(parents=True)
+    env["registry"].cli_agents.append(CliAgent(id="claude-2", account_dir=str(account_dir), enabled=True))
+    run, calls = _fake_subprocess([_claude_ok()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    job = await broker.submit(JobRequest(task="implementa el endpoint", workspace=str(env["workspace"]), agent_id="claude-2"))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.agent_id == "claude-2"
+    assert calls[0].env["CLAUDE_CONFIG_DIR"] == str(account_dir)
+
+
+@pytest.mark.asyncio
+async def test_wait_job_returns_when_task_cancelled_externally(env):
+    job = broker.Job(id="w1", created_at=broker._now())
+    req = JobRequest(task="x", workspace=str(env["workspace"]))
+    rt = broker.JobRuntime(job=job, request=req, workspace=env["workspace"])
+
+    async def sleeper():
+        await asyncio.sleep(30)
+
+    rt.task = asyncio.create_task(sleeper())
+    broker._jobs["w1"] = rt
+    waiter = asyncio.create_task(broker.wait_job("w1", 5))
+    await asyncio.sleep(0.1)
+    rt.task.cancel()
+    result = await waiter
+    assert result is not None and result.id == "w1"
+    try:
+        await rt.task
+    except asyncio.CancelledError:
+        pass

@@ -4,7 +4,7 @@ import json
 import pytest
 
 from app.models.provider import ProviderRegistry
-from app.models.smart import AGENT_IDS
+from app.models.smart import AGENT_IDS, DEFAULT_CLI_AGENTS
 from app.services import providers_service
 from app.services.cli_agents.registry import parse_cursor_about
 
@@ -44,11 +44,24 @@ def test_legacy_registry_loads_with_defaults_and_seeds(config_dir):
     assert cursor.enabled is False
     assert cursor.name == "Cursor Agent CLI" and cursor.default_model == "auto"
     assert cursor.supported_tiers == ["trivial", "simple", "standard"]
+    deepseek = next(a for a in registry.cli_agents if a.id == "deepseek")
+    assert deepseek.enabled is False
+    assert deepseek.name == "DeepSeek Harness (dsh)"
+    assert deepseek.default_model == "deepseek-flash"
+    assert deepseek.supported_tiers == ["trivial", "simple", "standard", "complex"]
+    assert deepseek.model_by_tier == {"standard": "deepseek-v4-pro", "complex": "deepseek-v4-pro"}
+    assert deepseek.priority == 90
+    muse = next(a for a in registry.cli_agents if a.id == "muse")
+    assert muse.name == "Muse (Meta)" and muse.enabled is False
+    assert muse.supported_tiers == ["trivial", "simple", "standard", "complex"]
+    assert muse.default_model == "" and muse.model_by_tier == {}
+    assert muse.quota_reset == "none" and muse.cost_weight == 0.4
+    assert muse.priority == 5 and muse.timeout_s == 900
     assert registry.delegation.tier_order == {
-        "trivial": ["ollama", "copilot", "cursor", "antigravity", "claude"],
-        "simple": ["copilot", "cursor", "antigravity", "codex", "claude"],
-        "standard": ["codex", "claude", "antigravity", "copilot", "cursor"],
-        "complex": ["codex", "claude", "antigravity"],
+        "trivial": ["muse", "ollama", "copilot", "cursor", "antigravity", "claude", "deepseek"],
+        "simple": ["muse", "copilot", "cursor", "antigravity", "codex", "claude", "deepseek"],
+        "standard": ["muse", "codex", "claude", "antigravity", "copilot", "cursor", "deepseek"],
+        "complex": ["muse", "codex", "claude", "antigravity", "deepseek"],
     }
     assert registry.routing_rules[0].tier == "" and registry.routing_rules[0].max_tokens == 0
     assert registry.delegation.workspace_allowlist == []
@@ -68,6 +81,109 @@ def test_seeding_is_idempotent_and_respects_user_edits(config_dir):
     assert second.cli_agents[0].enabled is True
     assert len(second.cli_agents) == len(AGENT_IDS)
     assert second.smart.tiers  # tabla vacía → se vuelve a sembrar
+
+
+def _previous_version_json(tier_order: dict, *, with_deepseek: bool, with_muse: bool = True) -> dict:
+    data = _legacy_json()
+    excluded = set()
+    if not with_deepseek:
+        excluded.add("deepseek")
+    if not with_muse:
+        excluded.add("muse")
+    data["cli_agents"] = [dict(d) for d in DEFAULT_CLI_AGENTS if d["id"] not in excluded]
+    data["delegation"] = {"enabled": True, "tier_order": tier_order}
+    return data
+
+
+def test_previous_version_registry_gets_deepseek_appended_to_custom_tier_order(config_dir):
+    tier_order = {"simple": ["cursor", "copilot"], "complex": ["codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=False)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == {
+        "simple": ["cursor", "copilot", "deepseek"],
+        "complex": ["codex", "deepseek"],
+    }
+    assert "deepseek" in {a.id for a in registry.cli_agents}
+
+
+def test_deepseek_already_registered_leaves_tier_order_untouched(config_dir):
+    tier_order = {"simple": ["cursor", "copilot"], "complex": ["codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=True)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == tier_order
+
+
+def test_deepseek_reseeded_agent_keeps_user_tier_order_that_already_has_it(config_dir):
+    tier_order = {"simple": ["cursor", "deepseek"], "complex": ["codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=False)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == tier_order
+
+
+def test_version_216_registry_gets_muse_first_in_every_tier(config_dir):
+    tier_order = {
+        "trivial": ["deepseek", "ollama", "copilot", "cursor", "antigravity", "claude"],
+        "simple": ["deepseek", "copilot", "cursor", "antigravity", "codex", "claude"],
+        "standard": ["deepseek", "codex", "claude", "antigravity", "copilot", "cursor"],
+        "complex": ["deepseek", "codex", "claude", "antigravity"],
+    }
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=True, with_muse=False)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    for tier in ("trivial", "simple", "standard", "complex"):
+        assert registry.delegation.tier_order[tier] == ["muse", *tier_order[tier]]
+    assert "muse" in {a.id for a in registry.cli_agents}
+
+
+def test_muse_seeded_into_custom_tiers_without_deepseek_goes_first_in_every_tier(config_dir):
+    tier_order = {"simple": ["cursor", "copilot"], "standard": [], "complex": ["codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=True, with_muse=False)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == {
+        "simple": ["muse", "cursor", "copilot"], "standard": ["muse"], "complex": ["muse", "codex"],
+    }
+
+
+def test_muse_seeded_first_preserves_custom_agent_order(config_dir):
+    tier_order = {"simple": ["cursor", "deepseek", "copilot"], "complex": ["claude", "deepseek", "codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=True, with_muse=False)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == {
+        "simple": ["muse", "cursor", "deepseek", "copilot"],
+        "complex": ["muse", "claude", "deepseek", "codex"],
+    }
+
+
+def test_registry_without_deepseek_nor_muse_seeds_muse_first_and_deepseek_last(config_dir):
+    tier_order = {"simple": ["cursor", "copilot"], "complex": ["codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=False, with_muse=False)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == {
+        "simple": ["muse", "cursor", "copilot", "deepseek"],
+        "complex": ["muse", "codex", "deepseek"],
+    }
+
+
+def test_muse_reseeded_agent_keeps_user_tier_order_that_already_names_it(config_dir):
+    tier_order = {"simple": ["cursor", "muse", "deepseek"], "complex": ["codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=True, with_muse=False)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == tier_order
+
+
+def test_muse_already_registered_leaves_tier_order_untouched(config_dir):
+    tier_order = {"simple": ["cursor", "copilot"], "complex": ["codex"]}
+    (config_dir / "providers.json").write_text(
+        json.dumps(_previous_version_json(tier_order, with_deepseek=True)), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == tier_order
 
 
 def test_update_smart_config_partial(config_dir):

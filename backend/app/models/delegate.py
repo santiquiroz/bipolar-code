@@ -1,7 +1,7 @@
 """Modelos del broker de delegación a agentes CLI."""
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.smart import Tier
 
@@ -18,6 +18,17 @@ class JobRequest(BaseModel):
     model: str = ""
     timeout_s: Optional[int] = Field(default=None, ge=60, le=3600)
     dry_run: bool = False
+    verify: list[str] = Field(default_factory=list, max_length=10)
+    review: Optional[bool] = None
+    max_revisions: int = Field(default=1, ge=0, le=3)
+
+    @field_validator("verify")
+    @classmethod
+    def _check_verify_commands(cls, v: list[str]) -> list[str]:
+        for cmd in v:
+            if len(cmd) > 500:
+                raise ValueError("cada comando de verify admite hasta 500 caracteres")
+        return v
 
 
 class Attempt(BaseModel):
@@ -27,6 +38,8 @@ class Attempt(BaseModel):
     finished_at: Optional[str] = None
     returncode: Optional[int] = None
     signal: str = ""
+    kind: Literal["work", "verify", "review"] = "work"
+    detail: dict = Field(default_factory=dict)
     duration_s: float = 0.0
     error: str = ""
 
@@ -53,6 +66,9 @@ class Job(BaseModel):
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: Optional[float] = None
+    verification_status: Literal["n/a", "passed", "failed", "skipped"] = "n/a"
+    review_status: Literal["n/a", "passed", "failed", "skipped"] = "n/a"
+    escalations: int = 0
     log_path: str = ""
 
 

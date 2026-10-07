@@ -42,7 +42,7 @@ def is_allowed_client(host: str, networks: tuple[Network, ...]) -> bool:
 
 
 def _is_control_plane(path: str) -> bool:
-    return path.startswith("/api")
+    return path.startswith(("/api", "/mcp"))
 
 
 class ControlPlaneGuardMiddleware(BaseHTTPMiddleware):

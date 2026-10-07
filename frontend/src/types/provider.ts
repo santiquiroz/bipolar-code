@@ -5,6 +5,7 @@ export interface Provider {
   api_base: string
   litellm_prefix: string
   auth_env_var: string
+  extra_auth_env_vars: string[]
   extra_headers: Record<string, string>
   models_endpoint: string | null
   models_auth_env_var: string
@@ -17,6 +18,9 @@ export interface Provider {
   anthropic_native?: boolean
   local_launch?: LocalLaunchConfig
 }
+
+export interface CredentialSlotStatus { slot: number; env_var: string; has_value: boolean; health_key: string; state: string; seconds_left: number; last_signal: string }
+export interface CredentialsResponse { provider_id: string; slots: CredentialSlotStatus[]; missing: string[] }
 
 export interface LocalLaunchConfig {
   exe_path?: string

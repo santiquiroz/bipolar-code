@@ -3,16 +3,20 @@ import json
 import re
 import time
 import uuid
+from contextlib import AsyncExitStack
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.config import env_value, get_settings
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
-from app.services import compression_service, providers_service, smart_router, token_service, usage_tracker
+from app.services import compression_service, credentials, providers_service, smart_router, token_service, upstream, usage_tracker
 from app.services.pricing_service import estimate_cost
+from app.services.smart_router import PlanStep
 
 log = get_logger(__name__)
 router = APIRouter(tags=["messages"])
@@ -313,6 +317,229 @@ async def _oai_stream_to_anthropic(resp_iter, message_id: str, model: str, usage
     yield _sse("message_stop", {"type": "message_stop"})
 
 
+# ── Failover antes del primer byte ─────────────────────────────────────────────
+
+@dataclass
+class OpenUpstream:
+    kind: str  # "native" (directo o vía litellm) u "oai"
+    resp: Any
+    attempt_stack: AsyncExitStack
+    step: PlanStep
+    model: str
+
+
+def _error_message(raw: bytes) -> str:
+    try:
+        return json.loads(raw).get("error", {}).get("message") or raw.decode()
+    except Exception:
+        return raw.decode(errors="replace")
+
+
+def _native_request(step: PlanStep, body: dict, request: Request, settings, model: str) -> tuple[str, dict, dict]:
+    provider = step.provider
+    payload = {**body, "model": step.model or provider.active_model or model}
+    headers = {"Content-Type": "application/json"}
+    for name in ("anthropic-version", "anthropic-beta"):
+        if name in request.headers:
+            headers[name] = request.headers[name]
+    if provider.litellm_prefix == "anthropic" and not provider.anthropic_native and step.is_active:
+        headers["Authorization"] = f"Bearer {settings.proxy_api_key}"
+        return f"{settings.proxy_url}/v1/messages", headers, payload
+    key = credentials.api_key_for(step.slot)
+    if key:
+        headers["x-api-key"] = key
+    return f"{provider.api_base.rstrip('/').removesuffix('/v1')}/v1/messages", headers, payload
+
+
+def _oai_request(step: PlanStep, body: dict, model: str) -> tuple[str, dict, dict]:
+    provider = step.provider
+    provider_model = step.model or provider.active_model or model
+    info = provider.model_info or {}
+    is_claude = _is_claude_model(provider_model)
+    oai_body = _anthropic_to_oai_request(
+        body, provider_model, provider.max_tools, set() if is_claude else {"Agent"},
+        "" if is_claude else _NON_CLAUDE_SYSTEM_PREFIX,
+        include_tools=info.get("supports_tools", is_claude),
+        strip_images=not info.get("supports_vision", True),
+        system_as_user=not info.get("supports_system_prompt", True),
+    )
+    ctx_limit = info.get("context_window", 0)
+    out_limit = info.get("max_output_tokens", 0)
+    if (ctx_limit > 0 or out_limit > 0) and oai_body.get("max_tokens"):
+        ctx_cap = max(512, ctx_limit - token_service.count_tokens(body.get("messages", [])) - 256) if ctx_limit > 0 else oai_body["max_tokens"]
+        out_cap = out_limit if out_limit > 0 else oai_body["max_tokens"]
+        oai_body["max_tokens"] = min(oai_body["max_tokens"], ctx_cap, out_cap)
+    if provider.api_base:
+        url = providers_service.oai_chat_completions_url(provider)
+    else:
+        url = f"{get_settings().proxy_url}/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {credentials.api_key_for(step.slot) or 'no-key'}", "Content-Type": "application/json"}
+    if provider.extra_headers:
+        headers.update(provider.extra_headers)
+    log.info(
+        "oai_direct_request",
+        provider=provider.id,
+        url=url,
+        model=provider_model,
+        msgs=len(oai_body.get("messages", [])),
+        has_tools=bool(oai_body.get("tools")),
+        num_tools=len(oai_body.get("tools", [])),
+        ctx_limit=ctx_limit,
+        max_tokens=oai_body.get("max_tokens"),
+    )
+    return url, headers, oai_body
+
+
+def _context_retry_body(err_msg: str, oai_body: dict, body: dict, provider) -> dict | None:
+    if not oai_body.get("max_tokens"):
+        return None
+    ctx_match = re.search(r'maximum context length is (\d+)', err_msg, re.IGNORECASE)
+    out_match = re.search(r'maximum.*?(?:output|completion|generated).*?(?:tokens?|length).*?(\d+)', err_msg, re.IGNORECASE)
+    if not (ctx_match or out_match):
+        return None
+    if ctx_match:
+        detected_ctx = int(ctx_match.group(1))
+        msg_match = re.search(r'\((\d+) in the messages?', err_msg, re.IGNORECASE)
+        msg_tokens = int(msg_match.group(1)) if msg_match else token_service.count_tokens(body.get("messages", []))
+        new_max = max(512, detected_ctx - msg_tokens - 256)
+        _save_model_info(provider, "context_window", detected_ctx)
+    else:
+        new_max = int(out_match.group(1))
+        _save_model_info(provider, "max_output_tokens", new_max)
+    log.info("limit_detected_retrying", new_max_tokens=new_max, error_snippet=err_msg[:120])
+    return {**oai_body, "max_tokens": new_max}
+
+
+async def _open_stream(client: httpx.AsyncClient, attempt_stack: AsyncExitStack, url: str, headers: dict, payload: dict) -> upstream.Opened | upstream.Failed:
+    try:
+        resp = await attempt_stack.enter_async_context(client.stream("POST", url, json=payload, headers=headers))
+        if resp.status_code >= 400:
+            raw = await resp.aread()
+            await attempt_stack.aclose()
+            return upstream.Failed(resp.status_code, _error_message(raw))
+        return upstream.Opened(resp)
+    except Exception as e:
+        await attempt_stack.aclose()
+        return upstream.Failed(None, str(e), e)
+
+
+def _is_native_step(step: PlanStep) -> bool:
+    return step.provider.anthropic_native or (step.provider.litellm_prefix == "anthropic" and not step.is_active)
+
+
+def _local_unreachable(step: PlanStep, failed: upstream.Failed) -> upstream.Failed:
+    if failed.exc is not None and step.provider.anthropic_native and providers_service._is_local_base(step.provider.api_base):
+        return upstream.Failed(None, f"Servidor local no responde en {step.provider.api_base}. Inícialo desde Providers → llama.cpp (Start).", failed.exc)
+    return failed
+
+
+async def _open_native(client, step: PlanStep, body: dict, request: Request, settings, model: str) -> upstream.Opened | upstream.Failed:
+    url, headers, payload = _native_request(step, body, request, settings, model)
+    attempt_stack = AsyncExitStack()
+    outcome = await _open_stream(client, attempt_stack, url, headers, payload)
+    if isinstance(outcome, upstream.Opened):
+        return upstream.Opened(OpenUpstream("native", outcome.upstream, attempt_stack, step, model))
+    return _local_unreachable(step, outcome)
+
+
+async def _open_oai(client, step: PlanStep, body: dict, model: str) -> upstream.Opened | upstream.Failed:
+    url, headers, oai_body = _oai_request(step, body, model)
+    attempt_stack = AsyncExitStack()
+    first = await _open_stream(client, attempt_stack, url, headers, oai_body)
+    if isinstance(first, upstream.Opened):
+        return upstream.Opened(OpenUpstream("oai", first.upstream, attempt_stack, step, model))
+    retry_body = _context_retry_body(first.message, oai_body, body, step.provider) if first.status == 400 and first.exc is None else None
+    if retry_body is None:
+        return first
+    retry_stack = AsyncExitStack()
+    second = await _open_stream(client, retry_stack, url, headers, retry_body)
+    if isinstance(second, upstream.Opened):
+        return upstream.Opened(OpenUpstream("oai", second.upstream, retry_stack, step, model))
+    return second
+
+
+async def _open_attempt(client, step: PlanStep, body: dict, request: Request, settings, model: str) -> upstream.Opened | upstream.Failed:
+    if _is_native_step(step) or step.provider.litellm_prefix == "anthropic":
+        return await _open_native(client, step, body, request, settings, model)
+    return await _open_oai(client, step, body, model)
+
+
+async def _relay_native(resp, usage_buf: dict):
+    async for line in resp.aiter_lines():
+        if line.startswith("data: "):
+            try:
+                ev = json.loads(line[6:])
+                etype = ev.get("type", "")
+                if etype == "message_start":
+                    usage_buf["input_tokens"] = ev.get("message", {}).get("usage", {}).get("input_tokens", 0)
+                elif etype == "message_delta":
+                    usage_buf["output_tokens"] = ev.get("usage", {}).get("output_tokens", 0)
+            except Exception as e:
+                log.warning("event_parse_failed", error=str(e))
+        yield f"{line}\n"
+
+
+async def _relay_oai(resp, message_id: str, model: str, usage_buf: dict):
+    async for chunk in _oai_stream_to_anthropic(resp.aiter_lines(), message_id, model, usage_buf):
+        yield chunk
+
+
+async def _compress_if_needed(body, messages, used, ctx_window, active, model, settings):
+    if not (ctx_window > 0 and used >= int(ctx_window * 0.9)):
+        return messages, False
+    compressed = None
+    if settings.semantic_compression and active:
+        compressed = await compression_service.compress_messages(messages, active, model)
+    if compressed:
+        messages = compressed
+        log.info("semantic_compression_applied", before_tokens=used, after_tokens=token_service.count_tokens(messages))
+    else:
+        messages = token_service.truncate_messages(messages, ctx_window)
+    body["messages"] = messages
+    return messages, True
+
+
+def _route_headers(decision, used, ctx_window):
+    ctx_pct = int(used / ctx_window * 100) if ctx_window else 0
+    return {
+        "X-Context-Usage": f"{used}/{ctx_window} tokens ({ctx_pct}%)",
+        "X-Bipolar-Route": decision.to_header(),
+        "X-Bipolar-Decision-Id": decision.decision_id,
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+
+
+def _exhausted_messages_response(decision, failures, headers):
+    status = upstream.exhausted_status(failures)
+    if len(failures) == 1 and failures[0].kind == "fatal":
+        message = _sanitize_error(failures[0].message)
+    else:
+        message = _sanitize_error("Ningún destino respondió: " + upstream.failures_summary(failures, lambda s: s.label))
+    smart_router.report_outcome_sync(decision, "", False, status=status, error=message)
+    return JSONResponse(status_code=status, content=upstream.anthropic_error_body(status, message), headers={**headers, "X-Bipolar-Attempts": str(len(failures))})
+
+
+def _stream_messages(opened, stack, decision, started, usage_buf, message_id, truncated, headers):
+    async def generate():
+        try:
+            if opened.kind == "native":
+                async for chunk in _relay_native(opened.resp, usage_buf):
+                    yield chunk
+            else:
+                async for chunk in _relay_oai(opened.resp, message_id, opened.model, usage_buf):
+                    yield chunk
+            _record_usage(opened.step.provider.id, opened.model, usage_buf, truncated)
+            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
+        except Exception as e:
+            smart_router.report_outcome_sync(decision, opened.step.slot.health_key, False, error=str(e))
+            yield _sse_error(_sanitize_error(str(e)))
+        finally:
+            await opened.attempt_stack.aclose()
+            await stack.aclose()
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
+
+
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("/v1/messages")
@@ -328,247 +555,40 @@ async def messages_passthrough(request: Request):
 
     decision = await smart_router.decide(body, model, used, request.headers, surface="messages")
     active, routed_model, is_active_provider = decision.as_pick()
-    active_provider_id = active.id if active else "unknown"
-    target_key = f"provider:{active_provider_id}" if active else ""
-    # anthropic vía litellm SOLO si es el provider activo configurado (litellm
-    # corre con SU config); ruteado o failover → directo a api.anthropic.com
-    is_native = bool(active and (active.anthropic_native or (active.litellm_prefix == "anthropic" and not is_active_provider)))
-    is_anthropic = bool(active and active.litellm_prefix == "anthropic" and not is_native)
-    truncated = False
-
-    if ctx_window > 0 and used >= int(ctx_window * 0.9):
-        compressed = None
-        if settings.semantic_compression and active:
-            compressed = await compression_service.compress_messages(messages, active, model)
-        if compressed:
-            messages = compressed
-            log.info(
-                "semantic_compression_applied",
-                before_tokens=used,
-                after_tokens=token_service.count_tokens(messages),
-            )
-        else:
-            messages = token_service.truncate_messages(messages, ctx_window)
-        body["messages"] = messages
-        truncated = True
-
-    ctx_pct = int(used / ctx_window * 100) if ctx_window else 0
-    response_headers = {
-        "X-Context-Usage": f"{used}/{ctx_window} tokens ({ctx_pct}%)",
-        "X-Bipolar-Route": decision.to_header(),
-        "X-Bipolar-Decision-Id": decision.decision_id,
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no",
-    }
+    messages, truncated = await _compress_if_needed(body, messages, used, ctx_window, active, model, settings)
+    response_headers = _route_headers(decision, used, ctx_window)
     started = time.monotonic()
-    reported = {"done": False}
 
-    def _outcome(ok: bool, status: int | None = None, error: str = "") -> None:
-        if reported["done"]:
-            return
-        reported["done"] = True
-        smart_router.report_outcome_sync(decision, target_key, ok, latency_ms=(time.monotonic() - started) * 1000, status=status, error=error)
+    plan = decision.plan
+    if not plan and active is not None:
+        plan = [PlanStep(active, routed_model, credentials.credential_slots(active)[0], is_active_provider)]
+    if not plan:
+        return JSONResponse(status_code=502, content=upstream.anthropic_error_body(502, "Sin provider configurado"), headers=response_headers)
 
+    timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
+    stack = AsyncExitStack()
+    client = await stack.enter_async_context(httpx.AsyncClient(timeout=timeout))
+
+    async def open_attempt(step: PlanStep) -> upstream.Opened | upstream.Failed:
+        return await _open_attempt(client, step, body, request, settings, model)
+
+    try:
+        result = await upstream.attempt_plan(plan, open_attempt, lambda s: s.provider.id, smart_router.mark_step_health)
+    except Exception:
+        await stack.aclose()
+        raise
+
+    if not result.ok:
+        await stack.aclose()
+        return _exhausted_messages_response(decision, result.failures, response_headers)
+
+    opened: OpenUpstream = result.upstream
+    headers = {**response_headers, "X-Bipolar-Target": result.step.label, "X-Bipolar-Attempts": str(len(result.failures) + 1)}
+    smart_router.note_success(decision, result.step, body)
     usage_buf: dict = {"input_tokens": 0, "output_tokens": 0}
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
-    async def generate():
-        try:
-            timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
-            async with httpx.AsyncClient(timeout=timeout) as client:
-
-                if is_anthropic or is_native:
-                    if is_native:
-                        # Provider con /v1/messages nativo (llama-server, LM Studio >=0.4.1,
-                        # Ollama 2026+, api.anthropic.com): reenvío verbatim, solo se reescribe el model
-                        body["model"] = routed_model or active.active_model or model
-                        native_base = active.api_base.rstrip("/").removesuffix("/v1")
-                        target_url = f"{native_base}/v1/messages"
-                        forward_headers = {"Content-Type": "application/json"}
-                        native_key = ""
-                        if active.auth_env_var:
-                            native_key = env_value(active.auth_env_var)
-                        if native_key:
-                            forward_headers["x-api-key"] = native_key
-                    else:
-                        # Anthropic provider: passthrough to litellm /v1/messages
-                        target_url = f"{settings.proxy_url}/v1/messages"
-                        forward_headers = {
-                            "Authorization": f"Bearer {settings.proxy_api_key}",
-                            "Content-Type": "application/json",
-                        }
-                    for h in ("anthropic-version", "anthropic-beta"):
-                        if h in request.headers:
-                            forward_headers[h] = request.headers[h]
-
-                    async with client.stream(
-                        "POST", target_url,
-                        json=body, headers=forward_headers,
-                    ) as resp:
-                        if resp.status_code >= 400:
-                            raw = await resp.aread()
-                            try:
-                                err_msg = json.loads(raw).get("error", {}).get("message") or raw.decode()
-                            except Exception:
-                                err_msg = raw.decode(errors="replace")
-                            _outcome(False, resp.status_code, err_msg)
-                            yield _sse_error(_sanitize_error(err_msg))
-                            return
-                        async for line in resp.aiter_lines():
-                            if line.startswith("data: "):
-                                try:
-                                    ev = json.loads(line[6:])
-                                    etype = ev.get("type", "")
-                                    if etype == "message_start":
-                                        usage_buf["input_tokens"] = ev.get("message", {}).get("usage", {}).get("input_tokens", 0)
-                                    elif etype == "message_delta":
-                                        usage_buf["output_tokens"] = ev.get("usage", {}).get("output_tokens", 0)
-                                    elif etype == "message_stop":
-                                        _record_usage(active_provider_id, model, usage_buf, truncated)
-                                        _outcome(True)
-                                except Exception as e:
-                                    log.warning("event_parse_failed", error=str(e))
-                            # Yield ALL lines including empty ones — empty lines are SSE event separators
-                            yield f"{line}\n"
-                        # Respuesta no-SSE (cliente sin stream): el upstream respondió sin message_stop
-                        _outcome(True)
-
-                else:
-                    # Non-Anthropic: call provider directly with OAI format
-                    provider_model = routed_model or ((active.active_model or model) if active else model)
-                    max_tools = active.max_tools if active else 0
-                    model_info = active.model_info if active else {}
-                    is_claude = _is_claude_model(provider_model)
-                    # Capacidades dinámicas detectadas al seleccionar el modelo
-                    include_tools = model_info.get("supports_tools", is_claude)
-                    strip_images = not model_info.get("supports_vision", True)
-                    system_as_user = not model_info.get("supports_system_prompt", True)
-                    blocked_tools = set() if is_claude else {"Agent"}
-                    system_prefix = "" if is_claude else _NON_CLAUDE_SYSTEM_PREFIX
-                    oai_body = _anthropic_to_oai_request(
-                        body, provider_model, max_tools, blocked_tools, system_prefix,
-                        include_tools=include_tools,
-                        strip_images=strip_images,
-                        system_as_user=system_as_user,
-                    )
-
-                    # Cap max_tokens con los límites conocidos del modelo
-                    ctx_limit = model_info.get("context_window", 0)
-                    out_limit = model_info.get("max_output_tokens", 0)
-                    if (ctx_limit > 0 or out_limit > 0) and oai_body.get("max_tokens"):
-                        ctx_cap = max(512, ctx_limit - token_service.count_tokens(body.get("messages", [])) - 256) if ctx_limit > 0 else oai_body["max_tokens"]
-                        out_cap = out_limit if out_limit > 0 else oai_body["max_tokens"]
-                        oai_body["max_tokens"] = min(oai_body["max_tokens"], ctx_cap, out_cap)
-
-                    # Build provider URL directly (bypass litellm)
-                    if active and active.api_base:
-                        provider_url = providers_service.oai_chat_completions_url(active)
-                    else:
-                        provider_url = f"{settings.proxy_url}/v1/chat/completions"
-
-                    # Auth
-                    api_key = ""
-                    if active and active.auth_env_var:
-                        api_key = env_value(active.auth_env_var)
-                    if not api_key:
-                        api_key = "no-key"
-
-                    forward_headers = {
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    }
-                    if active and active.extra_headers:
-                        forward_headers.update(active.extra_headers)
-
-                    log.info(
-                        "oai_direct_request",
-                        provider=active_provider_id,
-                        url=provider_url,
-                        model=provider_model,
-                        msgs=len(oai_body.get("messages", [])),
-                        has_tools=bool(oai_body.get("tools")),
-                        num_tools=len(oai_body.get("tools", [])),
-                        ctx_limit=ctx_limit,
-                        max_tokens=oai_body.get("max_tokens"),
-                    )
-
-                    # Primera llamada — con retry automático si falla por context window
-                    retry_body: dict | None = None
-                    detected_ctx = 0
-
-                    async with client.stream(
-                        "POST", provider_url, json=oai_body, headers=forward_headers,
-                    ) as resp:
-                        if resp.status_code >= 400:
-                            raw = await resp.aread()
-                            try:
-                                err_msg = json.loads(raw).get("error", {}).get("message") or raw.decode()
-                            except Exception:
-                                err_msg = raw.decode(errors="replace")
-
-                            ctx_match = re.search(r'maximum context length is (\d+)', err_msg, re.IGNORECASE)
-                            out_match = re.search(r'maximum.*?(?:output|completion|generated).*?(?:tokens?|length).*?(\d+)', err_msg, re.IGNORECASE)
-                            if (ctx_match or out_match) and oai_body.get("max_tokens"):
-                                if ctx_match:
-                                    detected_ctx = int(ctx_match.group(1))
-                                    msg_tok_match = re.search(r'\((\d+) in the messages?', err_msg, re.IGNORECASE)
-                                    msg_tokens = int(msg_tok_match.group(1)) if msg_tok_match else token_service.count_tokens(body.get("messages", []))
-                                    new_max = max(512, detected_ctx - msg_tokens - 256)
-                                    if active:
-                                        _save_model_info(active, "context_window", detected_ctx)
-                                else:
-                                    new_max = int(out_match.group(1))
-                                    if active:
-                                        _save_model_info(active, "max_output_tokens", new_max)
-                                retry_body = {**oai_body, "max_tokens": new_max}
-                                log.info("limit_detected_retrying", new_max_tokens=new_max, error_snippet=err_msg[:120])
-                            else:
-                                log.error("provider_error", status=resp.status_code, provider=active_provider_id, error=_sanitize_error(err_msg))
-                                _outcome(False, resp.status_code, err_msg)
-                                yield _sse_error(_sanitize_error(err_msg))
-                                return
-                        else:
-                            async for chunk in _oai_stream_to_anthropic(resp.aiter_lines(), message_id, model, usage_buf):
-                                yield chunk
-
-                    # Retry con max_tokens ajustado
-                    if retry_body:
-                        async with client.stream(
-                            "POST", provider_url, json=retry_body, headers=forward_headers,
-                        ) as resp2:
-                            if resp2.status_code >= 400:
-                                raw2 = await resp2.aread()
-                                try:
-                                    err2 = json.loads(raw2).get("error", {}).get("message") or raw2.decode()
-                                except Exception:
-                                    err2 = raw2.decode(errors="replace")
-                                log.error("provider_error_after_retry", status=resp2.status_code, provider=active_provider_id)
-                                _outcome(False, resp2.status_code, err2)
-                                yield _sse_error(_sanitize_error(err2))
-                                return
-                            async for chunk in _oai_stream_to_anthropic(resp2.aiter_lines(), message_id, model, usage_buf):
-                                yield chunk
-
-                    _record_usage(active_provider_id, model, usage_buf, truncated)
-                    _outcome(True)
-
-        except httpx.ConnectError as e:
-            _outcome(False, None, f"connect error: {e}")
-            if is_native and active:
-                log.error("native_provider_unreachable", api_base=active.api_base)
-                yield _sse_error(
-                    f"Servidor local no responde en {active.api_base}. "
-                    "Inícialo desde Providers → llama.cpp (Start)."
-                )
-            else:
-                log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
-                yield _sse_error(_sanitize_error(str(e)))
-        except Exception as e:
-            _outcome(False, None, str(e))
-            log.error("messages_passthrough_error", error=_sanitize_error(str(e)))
-            yield _sse_error(_sanitize_error(str(e)))
-
-    return StreamingResponse(generate(), media_type="text/event-stream", headers=response_headers)
+    return _stream_messages(opened, stack, decision, started, usage_buf, message_id, truncated, headers)
 
 
 def _save_model_info(provider, key: str, value) -> None:

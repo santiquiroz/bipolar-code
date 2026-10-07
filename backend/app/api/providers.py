@@ -5,9 +5,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Literal, Optional
 from app.models.provider import Provider, RoutingRule
-from app.services import providers_service
+from app.services import credentials, health_service, providers_service
 from app.core.logging import get_logger
 from app.core.config import env_value, get_settings
+from app.services.settings_service import is_valid_env_key
 
 _PROVIDER_ID_RE = re.compile(r'^[a-z0-9_-]{1,64}$')
 _ALLOWED_URL_PREFIXES = ("https://", "http://localhost", "http://127.0.0.1")
@@ -44,6 +45,35 @@ def _safe_http_error(e: Exception) -> str:
         return "No se pudo conectar con el proveedor"
     return "Error inesperado al verificar la clave"
 
+_MAX_EXTRA_AUTH_VARS = 10
+
+
+def _validate_extra_env_vars(names, auth_env_var: str) -> None:
+    if not isinstance(names, list):
+        raise HTTPException(status_code=400, detail="extra_auth_env_vars debe ser una lista")
+    if len(names) > _MAX_EXTRA_AUTH_VARS:
+        raise HTTPException(status_code=400, detail="extra_auth_env_vars admite como máximo 10 variables")
+    if len(set(names)) != len(names):
+        raise HTTPException(status_code=400, detail="extra_auth_env_vars tiene nombres duplicados")
+    if auth_env_var and auth_env_var in names:
+        raise HTTPException(status_code=400, detail="extra_auth_env_vars no puede repetir auth_env_var")
+    for name in names:
+        if not isinstance(name, str) or not is_valid_env_key(name):
+            raise HTTPException(status_code=400, detail=f"Nombre de variable inválido: {name!r} (usar A-Z, 0-9 y _)")
+
+
+def _slot_status(slot) -> dict:
+    health = health_service.get(slot.health_key)
+    return {
+        "slot": slot.slot,
+        "env_var": slot.env_var,
+        "has_value": bool(env_value(slot.env_var)) if slot.env_var else False,
+        "health_key": slot.health_key,
+        "state": health.state,
+        "seconds_left": health_service.seconds_left(slot.health_key),
+        "last_signal": health.last_signal,
+    }
+
 log = get_logger(__name__)
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -55,6 +85,7 @@ class AddProviderRequest(BaseModel):
     api_base: str
     litellm_prefix: str = "openai"
     auth_env_var: str = ""
+    extra_auth_env_vars: list[str] = []
     extra_headers: dict = {}
     models_endpoint: Optional[str] = None
     models_auth_env_var: str = ""
@@ -70,6 +101,7 @@ class UpdateProviderRequest(BaseModel):
     api_base: Optional[str] = None
     litellm_prefix: Optional[str] = None
     auth_env_var: Optional[str] = None
+    extra_auth_env_vars: Optional[list[str]] = None
     extra_headers: Optional[dict] = None
     models_endpoint: Optional[str] = None
     models_auth_env_var: Optional[str] = None
@@ -126,6 +158,16 @@ def set_routing(body: RoutingUpdate):
     return result
 
 
+@router.get("/{provider_id}/credentials")
+def provider_credentials(provider_id: str):
+    provider = providers_service.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_id}' no encontrado")
+    slots = credentials.credential_slots(provider)
+    missing = [name for name in provider.extra_auth_env_vars if name and not env_value(name)]
+    return {"provider_id": provider_id, "slots": [_slot_status(s) for s in slots], "missing": missing}
+
+
 @router.get("/{provider_id}")
 def get_provider(provider_id: str):
     provider = providers_service.get_provider(provider_id)
@@ -140,6 +182,7 @@ def add_provider(body: AddProviderRequest):
     _validate_provider_id(body.id)
     _validate_url(body.api_base, "api_base")
     _validate_url(body.models_endpoint, "models_endpoint")
+    _validate_extra_env_vars(body.extra_auth_env_vars, body.auth_env_var)
     try:
         return providers_service.add_provider(Provider(**body.model_dump()))
     except ValueError as e:
@@ -150,6 +193,15 @@ def add_provider(body: AddProviderRequest):
 def update_provider(provider_id: str, body: UpdateProviderRequest):
     log.info("request_update_provider", id=provider_id)
     updates = body.model_dump(exclude_unset=True)
+    if "extra_auth_env_vars" in updates:
+        if body.auth_env_var is not None:
+            auth_ref = body.auth_env_var
+        else:
+            current = providers_service.get_provider(provider_id)
+            if not current:
+                raise HTTPException(status_code=404, detail=f"Provider '{provider_id}' no encontrado")
+            auth_ref = current.auth_env_var
+        _validate_extra_env_vars(updates["extra_auth_env_vars"], auth_ref)
     try:
         return providers_service.update_provider(provider_id, updates)
     except ValueError as e:

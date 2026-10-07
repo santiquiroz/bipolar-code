@@ -21,6 +21,8 @@ async def submit_job(req: JobRequest, request: Request):
         job = await broker.submit(req, depth_header=request.headers.get("x-bipolar-depth", ""))
     except broker.WorkspaceNotAllowed as e:
         raise HTTPException(400, str(e))
+    except broker.InvalidRequest as e:
+        raise HTTPException(400, str(e))
     except broker.DelegationDisabled as e:
         raise HTTPException(409 if str(e) != "too_many_jobs" else 429, str(e))
     except broker.NoAgentAvailable as e:

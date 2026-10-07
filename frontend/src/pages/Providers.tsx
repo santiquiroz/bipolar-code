@@ -6,6 +6,7 @@ import { Spinner } from '@/components/Spinner'
 import { AddProviderModal } from '@/components/AddProviderModal'
 import { NvidiaWizard } from '@/components/NvidiaWizard'
 import { LlamaCppPanel } from '@/components/LlamaCppPanel'
+import { CredentialPoolPanel } from '@/components/CredentialPoolPanel'
 import { RoutingPanel } from '@/components/RoutingPanel'
 import { SmartRoutingPanel } from '@/components/SmartRoutingPanel'
 import { useProviders, useSwitchProvider, useDeleteProvider } from '@/hooks/useProviders'
@@ -21,6 +22,7 @@ export function Providers() {
   const [showAdd, setShowAdd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [showNvidiaWizard, setShowNvidiaWizard] = useState(false)
+  const [showKeys, setShowKeys] = useState<string | null>(null)
 
   const nvidiaKeyConfigured = !!(envVars?.['NVIDIA_NIM_API_KEY'])
 
@@ -86,6 +88,15 @@ export function Providers() {
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
+                    {p.auth_env_var && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowKeys(showKeys === p.id ? null : p.id)}
+                      >
+                        Llaves
+                      </Button>
+                    )}
                     {!isActive && (
                       <Button
                         variant="secondary"
@@ -120,6 +131,7 @@ export function Providers() {
                   </div>
                 </div>
                 {p.id === 'llamacpp' && <LlamaCppPanel provider={p} />}
+                {showKeys === p.id && p.auth_env_var && <CredentialPoolPanel provider={p} />}
               </Card>
             )
           })}

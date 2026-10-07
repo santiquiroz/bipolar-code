@@ -2,11 +2,12 @@ import axios from 'axios'
 import type { ModelEntry, UsageStats } from '@/types'
 import type {
   Provider, ProviderRegistry, ProviderModel, LlamaDevicesResponse, LlamaStatus,
-  HFRepo, HFFile, HFDownload, LocalModel, RoutingConfig,
+  HFRepo, HFFile, HFDownload, LocalModel, RoutingConfig, CredentialsResponse,
 } from '@/types/provider'
 import type {
   AgentStatus, Classification, DecisionsSummary, DecisionRow, DelegationConfig, Job, JobRequest,
   RouteDecision, SseEvent, SmartConfigResponse, SmartRoutingConfig, CliAgent,
+  AccountInfo, LoginCommands,
 } from '@/types/smart'
 
 const STORAGE_KEY = 'bipolar_api_key'
@@ -73,6 +74,8 @@ export const providersApi = {
     api.get<{ models: ProviderModel[]; note?: string }>(`/providers/${provider_id}/models`).then(r => r.data),
   refreshToken: (provider_id: string) =>
     api.post<{ refreshed: boolean; note?: string; token_length?: number }>(`/providers/${provider_id}/refresh-token`).then(r => r.data),
+  credentials: (id: string) =>
+    api.get<CredentialsResponse>(`/providers/${id}/credentials`).then(r => r.data),
   testModel: (provider_id: string, model_id: string) =>
     api.get<{ accessible: boolean; reason?: string }>(`/providers/${provider_id}/test-model`, {
       params: { model: model_id },
@@ -168,6 +171,13 @@ export const smartApi = {
     api.get<DecisionsSummary>('/smart/decisions/summary', { params: { period } }).then(r => r.data),
   getAgents: (refresh = false) => api.get<{ agents: AgentStatus[] }>('/smart/agents', { params: { refresh } }).then(r => r.data),
   probeAgent: (id: string) => api.post<AgentStatus>(`/smart/agents/${encodeURIComponent(id)}/probe`).then(r => r.data),
+}
+
+export const accountsApi = {
+  list: () => api.get<{ accounts: AccountInfo[] }>('/accounts').then(r => r.data),
+  create: (base: string, label: string) =>
+    api.post<{ agent: CliAgent; login: LoginCommands }>('/accounts', { base, label }).then(r => r.data),
+  remove: (agentId: string) => api.delete(`/accounts/${encodeURIComponent(agentId)}`).then(r => r.data),
 }
 
 export const delegateApi = {

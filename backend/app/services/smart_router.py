@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from typing import Mapping, Optional
 
 from app.core.logging import get_logger
-from app.core.quota_signals import detect_signal
+from app.core.quota_signals import QuotaSignal, detect_signal
+from app.services.credentials import CredentialSlot, available_slots, credential_slots, provider_key
+from app.services.upstream import AttemptFailure
 from app.models.provider import Provider, ProviderRegistry
 from app.models.smart import TIER_ORDER, RouteTarget, tier_index
 from app.services import budget_service, decisions_log, health_service, providers_service
@@ -45,6 +47,18 @@ class Candidate:
 
 
 @dataclass
+class PlanStep:
+    provider: Provider
+    model: Optional[str]
+    slot: CredentialSlot
+    is_active: bool
+
+    @property
+    def label(self) -> str:
+        return f"{self.provider.id}#{self.slot.slot}"
+
+
+@dataclass
 class RouteDecision:
     decision_id: str
     surface: str
@@ -63,6 +77,7 @@ class RouteDecision:
     rejected: list[tuple[str, str]] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
     decision_ms: float = 0.0
+    plan: list["PlanStep"] = field(default_factory=list)
 
     @property
     def chosen_key(self) -> str:
@@ -199,6 +214,96 @@ def clear_sticky() -> None:
     _sticky.clear()
 
 
+# ── plan de ruta ─────────────────────────────────────────────────────────────
+
+PlanEntry = tuple[Provider, Optional[str], bool]
+
+
+def _steps_for(entry: PlanEntry, is_primary: bool) -> list[PlanStep]:
+    provider, model, is_active = entry
+    if not is_primary and not health_service.is_available(provider_key(provider.id)):
+        return []
+    return [PlanStep(provider, model, slot, is_active) for slot in available_slots(provider)]
+
+
+def build_plan(primary: Optional[PlanEntry], fallbacks: list[PlanEntry], max_steps: int) -> list[PlanStep]:
+    plan: list[PlanStep] = []
+    seen: set[str] = set()
+    entries = ([(primary, True)] if primary else []) + [(f, False) for f in fallbacks]
+    for entry, is_primary in entries:
+        if entry[0].id in seen:
+            continue
+        seen.add(entry[0].id)
+        plan.extend(_steps_for(entry, is_primary))
+        if len(plan) >= max_steps:
+            return plan[:max_steps]
+    if not plan and primary:
+        provider, model, is_active = primary
+        plan.append(PlanStep(provider, model, credential_slots(provider)[0], is_active))
+    return plan
+
+
+async def _registry_fallbacks(registry: ProviderRegistry) -> list[PlanEntry]:
+    by_id = {p.id: p for p in registry.providers}
+    entries: list[PlanEntry] = []
+    for pid in registry.fallback_provider_ids:
+        provider = by_id.get(pid)
+        if provider is None:
+            continue
+        if providers_service._is_local_base(provider.api_base) and not await providers_service._is_reachable(provider.api_base):
+            continue
+        entries.append((provider, None, provider.id == registry.active_provider_id))
+    return entries
+
+
+def _ranked_fallbacks(ranked: list[Candidate], chosen: Optional[Provider], registry: ProviderRegistry) -> list[PlanEntry]:
+    return [
+        (c.provider, c.model or None, c.provider.id == registry.active_provider_id)
+        for c in ranked
+        if chosen is None or c.provider.id != chosen.id
+    ]
+
+
+async def _attach_plan(decision: "RouteDecision", registry: ProviderRegistry, ranked: list[Candidate]) -> None:
+    primary = (decision.chosen_provider, decision.chosen_model, decision.is_active) if decision.chosen_provider else None
+    use_ranked = registry.smart.enabled and registry.smart.mode == "active"
+    fallbacks = (_ranked_fallbacks(ranked, decision.chosen_provider, registry) if use_ranked else [])
+    fallbacks += await _registry_fallbacks(registry)
+    decision.plan = build_plan(primary, fallbacks, registry.smart.max_failover_attempts)
+
+
+_STATUS_SIGNALS = {401: "auth", 403: "auth", 402: "quota_exhausted", 429: "rate_limit"}
+
+
+def _credential_signal(failure: AttemptFailure) -> QuotaSignal:
+    detected = detect_signal(failure.message or "", failure.status)
+    if detected:
+        return detected
+    kind = _STATUS_SIGNALS.get(failure.status or 0, "rate_limit")
+    return QuotaSignal(kind=kind, retry_after_s=None, excerpt=(failure.message or "")[:200])
+
+
+def mark_step_health(step: PlanStep, failure: AttemptFailure) -> None:
+    if failure.kind == "retry_credential":
+        health_service.mark_signal(step.slot.health_key, _credential_signal(failure))
+    elif failure.kind == "retry_provider":
+        signal = detect_signal(failure.message or "", failure.status)
+        if signal and signal.kind == "overloaded":
+            health_service.mark_signal(provider_key(step.provider.id), signal)
+        else:
+            health_service.mark_failure(provider_key(step.provider.id), failure.message or f"status {failure.status}")
+
+
+def note_success(decision: RouteDecision, step: PlanStep, body: dict) -> None:
+    if decision.mode != "active" or decision.chosen_provider is None:
+        return
+    if step.provider.id == decision.chosen_provider.id:
+        return
+    registry = providers_service.load_registry()
+    if registry.smart.sticky_tool_loops:
+        _sticky_put(conversation_key(body), step.provider.id, step.model or "")
+
+
 # ── decisión ─────────────────────────────────────────────────────────────────
 
 def _spawn(coro) -> None:
@@ -216,7 +321,7 @@ def _legacy_source(model_name: str, prompt_tokens: int) -> str:
 
 async def _smart_pick(
     registry: ProviderRegistry, cls: Classification, body: dict, surface: str, reasons: list[str]
-) -> tuple[Optional[Candidate], list[tuple[str, str]], str]:
+) -> tuple[Optional[Candidate], list[tuple[str, str]], str, list[Candidate]]:
     smart = registry.smart
     if smart.sticky_tool_loops and cls.signals.has_tool_results:
         hit = _sticky_get(conversation_key(body), smart.sticky_ttl_seconds)
@@ -226,7 +331,7 @@ async def _smart_pick(
                 sticky = Candidate(target=RouteTarget(provider_id=provider.id, model=hit[1]), provider=provider, model=hit[1])
                 if await _reject_reason(sticky, cls, registry, surface) is None:
                     reasons.append("sticky_conversation")
-                    return sticky, [], "sticky"
+                    return sticky, [], "sticky", []
                 reasons.append("sticky_broken")
     cands, rejected = candidates_for_tier(registry, cls.tier, reasons)
     survivors, more_rejected = await filter_candidates(cands, cls, registry, surface)
@@ -234,8 +339,8 @@ async def _smart_pick(
     ranked = rank_candidates(survivors)
     if not ranked:
         reasons.append("smart_no_candidate")
-        return None, rejected, "failover"
-    return ranked[0], rejected, "smart"
+        return None, rejected, "failover", []
+    return ranked[0], rejected, "smart", ranked
 
 
 async def decide(
@@ -267,11 +372,12 @@ async def decide(
     )
 
     if not smart.enabled:
+        await _attach_plan(decision, registry, [])
         decision.decision_ms = (time.perf_counter() - t0) * 1000
         return decision
 
     decision.mode = smart.mode
-    pick, rejected, pick_source = await _smart_pick(registry, cls, body, surface, reasons)
+    pick, rejected, pick_source, ranked = await _smart_pick(registry, cls, body, surface, reasons)
     decision.rejected = rejected
 
     explicit_rule = providers_service.resolve_route(model_name, prompt_tokens, tier=cls.tier)
@@ -287,6 +393,8 @@ async def decide(
         decision.is_active = pick.provider.id == registry.active_provider_id
         decision.source = pick_source
         decision.would_key, decision.would_model = legacy_key, legacy_model or ""
+
+    await _attach_plan(decision, registry, ranked)
 
     decision.decision_ms = (time.perf_counter() - t0) * 1000
     if not dry_run:
@@ -310,6 +418,8 @@ async def report_outcome(
     if target_key:
         if ok:
             health_service.mark_success(target_key, latency_ms)
+            if "#" in target_key:
+                health_service.mark_success(target_key.split("#", 1)[0], latency_ms)
         else:
             signal = detect_signal(error or "", status)
             if signal:

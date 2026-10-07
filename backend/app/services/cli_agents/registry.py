@@ -21,7 +21,7 @@ from app.core.quota_signals import detect_signal
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, account_has_login, child_env, exe_argv
 
 log = get_logger(__name__)
 
@@ -47,16 +47,18 @@ def known_paths(agent_id: str) -> list[Path]:
         "copilot": [local / "Microsoft" / "WinGet" / "Links" / "copilot.exe"],
         "ollama": [local / "Programs" / "Ollama" / "ollama.exe"],
         "cursor": [local / "cursor-agent" / "cursor-agent.cmd", _home() / ".local" / "bin" / "cursor-agent"],
+        "deepseek": [local / "Programs" / "DeepSeek Harness" / "resources" / "runtime" / "cli" / "bin" / "dsh.cmd"],
+        "muse": [local / "Programs" / "muse" / "muse.cmd"],
     }.get(agent_id, [])
 
 
 def resolve_exe(agent: CliAgent) -> str:
     if agent.exe_path:
         return agent.exe_path if Path(agent.exe_path).exists() else ""
-    found = shutil.which(BINARIES[agent.id])
+    found = shutil.which(BINARIES[agent.base])
     if found and not found.lower().endswith(".ps1"):
         return found
-    for candidate in known_paths(agent.id):
+    for candidate in known_paths(agent.base):
         if candidate and candidate.exists():
             return str(candidate)
     return found or ""
@@ -184,6 +186,46 @@ async def _probe_cursor(exe: str, status: AgentStatus) -> None:
     status.default_model = status.default_model or "auto"
 
 
+async def _probe_deepseek(exe: str, status: AgentStatus) -> None:
+    adapter = DeepseekAdapter()
+    argv, extra_env = adapter.launcher(exe)
+    rc, out, err = await run_capture(argv + ["--version"], timeout=40, env=child_env(os.environ, extra_env))
+    if rc == 0:
+        status.version = _version_from(out or err)
+    else:
+        status.error = (err or out or f"exit {rc}").strip()[:200]
+    status.auth = "ok" if adapter.has_credentials() else "auth_error"
+    status.quota = {"provider": adapter.provider()}
+
+
+def _muse_sandbox_status(text: str) -> str:
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "status":
+            return value.strip()
+    return "unknown"
+
+
+async def _probe_muse(exe: str, status: AgentStatus) -> None:
+    adapter = MuseAdapter()
+    argv = adapter.bin_for(exe)
+    rc, out, err = await run_capture(argv + ["--version"], timeout=40)
+    if rc == 0:
+        status.version = _version_from(out or err)
+    else:
+        status.error = (err or out or f"exit {rc}").strip()[:200]
+    status.auth = "ok" if adapter.signed_in() else "auth_error"
+    status.quota = {"sandbox": await _muse_sandbox(argv)}
+
+
+async def _muse_sandbox(argv: list[str]) -> str:
+    # Si el chequeo lanza en Windows, quota queda sin sandbox y el broker falla cerrado.
+    if sys.platform != "win32":
+        return "n/a"
+    _, out, err = await run_capture(argv + ["sandbox", "windows", "check"], timeout=40)
+    return _muse_sandbox_status(out or err)
+
+
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -208,17 +250,29 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
     status.installed = bool(exe)
     status.exe = exe
     try:
-        if agent.id == "ollama":
+        if agent.base == "ollama":
             await _probe_ollama(status)
             status.installed = status.installed or status.auth == "ok"
         elif exe:
-            if agent.id == "cursor":
+            if agent.is_account:
+                status.version, status.error = await _probe_version(exe)
+                login = account_has_login(agent)
+                if login is False:
+                    status.auth = "auth_error"
+                    status.error = "sin login en la carpeta de la cuenta"
+                elif login is True:
+                    status.auth = "ok"
+            elif agent.base == "cursor":
                 await _probe_cursor(exe, status)
+            elif agent.base == "deepseek":
+                await _probe_deepseek(exe, status)
+            elif agent.base == "muse":
+                await _probe_muse(exe, status)
             else:
                 status.version, status.error = await _probe_version(exe)
-            if agent.id == "codex":
+            if agent.base == "codex" and not agent.is_account:
                 status.auth = await _probe_codex_auth(exe)
-            elif agent.id == "antigravity":
+            elif agent.base == "antigravity" and not agent.is_account:
                 await _probe_antigravity(exe, status)
     except Exception as e:  # el sondeo nunca debe tumbar la API
         status.error = str(e)[:200]
@@ -228,7 +282,7 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
 
 
 def _with_runtime(status: AgentStatus, agent: CliAgent) -> AgentStatus:
-    key = AntigravityAdapter.pool_key(agent.default_model) if agent.id == "antigravity" else agent.key
+    key = AntigravityAdapter.pool_key(agent.default_model) if agent.base == "antigravity" else agent.key
     health = health_service.get(key)
     return status.model_copy(update={
         "state": health.state, "seconds_left": health_service.seconds_left(key),

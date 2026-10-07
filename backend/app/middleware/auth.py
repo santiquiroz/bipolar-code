@@ -7,10 +7,7 @@ from starlette.responses import JSONResponse
 def _is_public(path: str) -> bool:
     if path in {"/api/health"}:
         return True
-    # archivos estáticos y SPA
-    if not path.startswith("/api") and not path.startswith("/v1"):
-        return True
-    return False
+    return not path.startswith(("/api", "/v1", "/mcp"))
 
 
 def _extract_key(request: Request) -> str:

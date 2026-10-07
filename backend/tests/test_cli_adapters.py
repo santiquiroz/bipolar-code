@@ -229,3 +229,394 @@ def test_workspace_path_with_metachars_rejected():
 @pytest.mark.parametrize("tier,effort", [("trivial", "low"), ("simple", "low"), ("standard", "medium"), ("complex", "high")])
 def test_effort_for_tier(tier, effort):
     assert ad.effort_for_tier(tier) == effort
+
+
+# ── DeepSeek Harness (dsh) ───────────────────────────────────────────────────
+
+@pytest.fixture
+def dsh_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    return tmp_path / "dsh-home"
+
+
+def _dsh_layout(tmp_path):
+    """Instalación de Electron: el shim dsh.cmd apunta al cli.js dentro de app.asar."""
+    root = tmp_path / "DeepSeek Harness"
+    (root / "DeepSeek Harness.exe").parent.mkdir(parents=True, exist_ok=True)
+    (root / "DeepSeek Harness.exe").touch()
+    resources = root / "resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    (resources / "app.asar").touch()
+    exe = resources / "runtime" / "cli" / "bin" / "dsh.cmd"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.touch()
+    return root, exe
+
+
+def _dsh_build(tmp_path, exe, model="deepseek-v4-pro", job_id="jobdsh"):
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
+    return ad.DeepseekAdapter().build(_agent("deepseek"), str(exe), job_id, "haz X", model, workspace, "complex", 900), workspace
+
+
+def test_deepseek_build_uses_electron_launcher_and_model_patch(tmp_path, dsh_env):
+    root, exe = _dsh_layout(tmp_path)
+    spec, workspace = _dsh_build(tmp_path, exe)
+    argv = spec.argv
+
+    assert argv[0] == str(root / "DeepSeek Harness.exe")
+    assert argv[1] == "--expose-internals"
+    cli_js = Path(argv[2])
+    assert cli_js.as_posix().endswith("dsh-desktop-host/lib/cli.js")
+    assert "resources/app.asar" in cli_js.as_posix()
+    assert argv[argv.index("--profile") + 1] == "headless"
+    assert "--json" in argv and argv[-1] == "-"
+    assert spec.env["ELECTRON_RUN_AS_NODE"] == "1"
+    assert spec.env["DSH_PERMISSION_MODE"] == "workspace-write"
+    assert spec.stdin_payload.decode("utf-8") == "haz X" + ad.TASK_CONSTRAINTS
+    assert spec.pointer_file is None
+    assert spec.cwd == str(workspace)
+
+    patch = Path(argv[argv.index("--patch") + 1])
+    assert patch == workspace / ".bipolar" / "jobs" / "jobdsh" / "dsh-model.patch.yml"
+    assert patch.exists()
+    content = patch.read_text(encoding="utf-8")
+    assert "provider: deepseek-account" in content
+    assert "model: deepseek-v4-pro" in content
+    assert "DEEPSEEK_API_KEY" not in content and "sk-" not in content
+
+
+def test_deepseek_foreign_exe_skips_electron_launcher(tmp_path, dsh_env):
+    exe = tmp_path / "dsh.exe"
+    exe.touch()
+    spec, _ = _dsh_build(tmp_path, exe, model="deepseek-flash")
+    assert spec.argv[0] == str(exe)
+    assert "ELECTRON_RUN_AS_NODE" not in spec.env
+
+
+def test_deepseek_empty_model_falls_back_to_default(tmp_path, dsh_env):
+    root, exe = _dsh_layout(tmp_path)
+    spec, _ = _dsh_build(tmp_path, exe, model="")
+    patch = Path(spec.argv[spec.argv.index("--patch") + 1])
+    assert "model: deepseek-flash" in patch.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("model", ["!!js process.exit()", "deepseek-flash\nprovider: x", "a b"])
+def test_deepseek_rejects_unsafe_model(tmp_path, dsh_env, model):
+    root, exe = _dsh_layout(tmp_path)
+    with pytest.raises(ad.AdapterUnsafe):
+        _dsh_build(tmp_path, exe, model=model)
+
+
+@pytest.mark.parametrize("arg", ["--patch=x.yml", "--profile"])
+def test_deepseek_dangerous_extra_args_rejected(arg):
+    with pytest.raises(ad.AdapterUnsafe):
+        ad.validate_extra_args([arg])
+
+
+def _write_dsh_credentials(home: Path) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".credentials.yaml").write_text("  deepseek-account-platform/default:\n    token: secret\n", encoding="utf-8")
+
+
+def test_deepseek_account_credentials_win_over_api_key(tmp_path, monkeypatch):
+    home = tmp_path / "dsh-home"
+    _write_dsh_credentials(home)
+    monkeypatch.setenv("DSH_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    adapter = ad.DeepseekAdapter()
+    assert adapter.provider() == "deepseek-account"
+    assert adapter.has_credentials() is True
+
+
+def test_deepseek_api_key_only_is_official_provider(tmp_path, monkeypatch):
+    home = tmp_path / "dsh-home"
+    home.mkdir()
+    monkeypatch.setenv("DSH_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-abc")
+    adapter = ad.DeepseekAdapter()
+    assert adapter.provider() == "deepseek-official"
+    assert adapter.has_credentials() is True
+
+
+def test_deepseek_without_credentials(tmp_path, monkeypatch):
+    home = tmp_path / "dsh-home"
+    home.mkdir()
+    monkeypatch.setenv("DSH_HOME", str(home))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    adapter = ad.DeepseekAdapter()
+    assert adapter.provider() == "deepseek-account"
+    assert adapter.has_credentials() is False
+
+
+def test_deepseek_env_passes_own_secret_but_not_other_secrets(tmp_path, monkeypatch, dsh_env):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    root, exe = _dsh_layout(tmp_path)
+    spec, _ = _dsh_build(tmp_path, exe, model="deepseek-flash")
+    assert spec.env["DEEPSEEK_API_KEY"] == "sk-ds"
+    assert "OPENAI_API_KEY" not in spec.env
+
+
+def test_deepseek_env_drops_api_key_when_account_signed_in(tmp_path, monkeypatch, dsh_env):
+    dsh_env.mkdir(parents=True, exist_ok=True)
+    (dsh_env / ".credentials.yaml").write_text("  deepseek-account-platform/default:\n    token: t\n", encoding="utf-8")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    _, exe = _dsh_layout(tmp_path)
+    spec, _ = _dsh_build(tmp_path, exe, model="deepseek-flash")
+    assert "DEEPSEEK_API_KEY" not in spec.env
+
+
+def _dsh_run(*, turn_error=None, final_text="final answer"):
+    lines = [
+        {"type": "session", "sessionId": "session-abc", "cwd": "C:\\ws"},
+        {"type": "status", "phase": "turn_start", "turn": 1},
+        {"type": "tool_call", "callId": "c1", "tool": "write", "input": {"file_path": "hello.txt", "content": "ok"}},
+        {"type": "tool_result", "callId": "c1", "status": "completed", "result": "Created file"},
+        {"type": "status", "phase": "step_end", "turn": 1, "step": 1, "usage": {"inputTokens": 12538, "outputTokens": 164}},
+        {"type": "status", "phase": "step_end", "turn": 1, "step": 2, "usage": {"inputTokens": 183, "outputTokens": 325}},
+        {"type": "status", "phase": "turn_end", "turn": 1,
+         "reason": turn_error or {"kind": "completed"}},
+        {"type": "final", "text": final_text},
+    ]
+    return "\n".join(json.dumps(line) for line in lines)
+
+
+def test_deepseek_parse_completed_run():
+    result = ad.DeepseekAdapter().parse(_dsh_run(), "", 0, None)
+    assert result.text == "final answer"
+    assert result.structured_error is False
+    assert result.usage == {"input_tokens": 12721, "output_tokens": 489}
+    assert result.session_id == "session-abc"
+
+
+def test_deepseek_parse_failed_turn_reports_structured_error():
+    out = _dsh_run(turn_error={"kind": "error", "error": {"message": "llm-deepseek: no API key", "code": "MISSING_CREDENTIAL"}},
+                   final_text="")
+    result = ad.DeepseekAdapter().parse(out, "", 1, None)
+    assert result.structured_error is True
+    assert result.text == "MISSING_CREDENTIAL: llm-deepseek: no API key"
+
+
+def test_deepseek_parse_error_event():
+    result = ad.DeepseekAdapter().parse(json.dumps({"type": "error", "message": "boom"}), "", 0, None)
+    assert result.structured_error is True and result.text == "boom"
+
+
+def test_deepseek_parse_falls_back_to_stderr():
+    result = ad.DeepseekAdapter().parse("", "dsh: crashed", 1, None)
+    assert result.structured_error is True and result.text == "dsh: crashed"
+
+
+def test_deepseek_parse_ignores_step_end_without_usage():
+    out = "\n".join([
+        json.dumps({"type": "status", "phase": "step_end", "turn": 1, "step": 1, "usage": {"inputTokens": 10, "outputTokens": 2}}),
+        json.dumps({"type": "status", "phase": "step_end", "turn": 1, "step": 2}),
+    ])
+    assert ad.DeepseekAdapter().parse(out, "", 0, None).usage == {"input_tokens": 10, "output_tokens": 2}
+
+
+@pytest.fixture
+def muse_env(tmp_path, monkeypatch):
+    config_dir = tmp_path / "muse-config"
+    monkeypatch.setenv("MUSE_CONFIG_DIR", str(config_dir))
+    monkeypatch.delenv("META_API_KEY", raising=False)
+    return config_dir
+
+
+def _muse_layout(tmp_path):
+    root = tmp_path / "muse"
+    root.mkdir()
+    shim = root / "muse.cmd"
+    shim.touch()
+    binary = root / "muse-bin-1.4.3-R5018.1.exe"
+    binary.touch()
+    (root / ".muse-version").write_text("1.4.3-R5018.1\n", encoding="utf-8")
+    return shim, binary
+
+
+def _muse_build(tmp_path, exe, model="", tier="standard", **overrides):
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
+    spec = ad.MuseAdapter().build(
+        _agent("muse", **overrides), str(exe), "jobmuse", "haz X", model, workspace, tier, 900,
+    )
+    return spec, workspace
+
+
+@pytest.mark.parametrize("tier,effort", [("trivial", "low"), ("simple", "low"), ("standard", "medium"), ("complex", "high")])
+def test_muse_build_uses_binary_pointer_and_fixed_safety_flags(tmp_path, muse_env, tier, effort):
+    shim, binary = _muse_layout(tmp_path)
+    spec, workspace = _muse_build(tmp_path, shim, tier=tier)
+    pointer = workspace / ".bipolar" / "jobs" / "jobmuse" / "task.md"
+    assert spec.argv == [
+        str(binary), "exec", "--json", "--prompt-file", str(pointer),
+        "--workspace", str(workspace), "--approval-mode", "never", "--approval-judge", "off",
+        "--no-foreign-personal-context", "--user-input-auto-resolve", "--max-model-steps", "60",
+        "--reasoning-effort", effort,
+    ]
+    assert spec.pointer_file == pointer
+    assert pointer.read_text(encoding="utf-8") == "haz X" + ad.TASK_CONSTRAINTS
+    assert (workspace / ".bipolar" / ".gitignore").read_text() == "*\n"
+    assert spec.cwd == str(workspace)
+    assert spec.stdin_payload is None
+    assert "haz X" not in " ".join(spec.argv)
+
+
+def test_muse_build_adds_valid_model_and_safe_extra_args(tmp_path, muse_env):
+    shim, _ = _muse_layout(tmp_path)
+    spec, _ = _muse_build(tmp_path, shim, model="meta-model-v1", extra_args=["--verbose"])
+    assert spec.argv[-3:] == ["--model", "meta-model-v1", "--verbose"]
+
+
+@pytest.mark.parametrize("version", [None, "missing-version"])
+def test_muse_binary_falls_back_to_lexicographically_greatest(tmp_path, version):
+    shim, binary = _muse_layout(tmp_path)
+    newest = shim.parent / "muse-bin-9.0.exe"
+    newest.touch()
+    version_file = shim.parent / ".muse-version"
+    if version is None:
+        version_file.unlink()
+    else:
+        version_file.write_text(version, encoding="utf-8")
+    assert ad.MuseAdapter().bin_for(str(shim)) == [str(newest)]
+
+
+def test_muse_named_version_wins_over_greatest_binary(tmp_path):
+    shim, binary = _muse_layout(tmp_path)
+    (shim.parent / "muse-bin-9.0.exe").touch()
+    assert ad.MuseAdapter().bin_for(str(shim)) == [str(binary)]
+
+
+def test_muse_shim_without_binary_uses_exe_argv(tmp_path):
+    shim = tmp_path / "muse.cmd"
+    shim.touch()
+    assert ad.MuseAdapter().bin_for(str(shim)) == ad.exe_argv(str(shim))
+
+
+def test_muse_non_shim_executable_uses_exe_argv(tmp_path):
+    shim, _ = _muse_layout(tmp_path)
+    exe = shim.parent / "other.exe"
+    exe.touch()
+    assert ad.MuseAdapter().bin_for(str(exe)) == ad.exe_argv(str(exe))
+
+
+def test_muse_shim_name_is_case_insensitive(tmp_path):
+    shim, binary = _muse_layout(tmp_path)
+    upper_shim = shim.parent / "MUSE.CMD"
+    assert ad.MuseAdapter().bin_for(str(upper_shim)) == [str(binary)]
+
+
+def test_muse_binary_resolves_shim_symlink_first(tmp_path):
+    shim, binary = _muse_layout(tmp_path)
+    link = tmp_path / "muse-link.cmd"
+    try:
+        link.symlink_to(shim)
+    except OSError:
+        pytest.skip("El sistema no permite crear symlinks")
+    assert ad.MuseAdapter().bin_for(str(link)) == [str(binary)]
+
+
+@pytest.mark.parametrize("model", ["--yolo", "a b", "!!x"])
+def test_muse_build_rejects_unsafe_model(tmp_path, muse_env, model):
+    shim, _ = _muse_layout(tmp_path)
+    with pytest.raises(ad.AdapterUnsafe, match="model_not_allowed"):
+        _muse_build(tmp_path, shim, model=model)
+
+
+@pytest.mark.parametrize("arg", ["--disable-sandbox", "--trust-workspace", "--approval-mode=never", "--workspace=x", "--prompt-file=x", "--permission-profile=x"])
+def test_muse_build_rejects_dangerous_extra_args(tmp_path, muse_env, arg):
+    shim, _ = _muse_layout(tmp_path)
+    with pytest.raises(ad.AdapterUnsafe):
+        _muse_build(tmp_path, shim, extra_args=[arg])
+
+
+@pytest.mark.parametrize("api_key", [None, "meta-secret"])
+def test_muse_env_passes_own_key_only_when_set(tmp_path, monkeypatch, muse_env, clean_env, api_key):
+    if api_key:
+        monkeypatch.setenv("META_API_KEY", api_key)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    shim, _ = _muse_layout(tmp_path)
+    spec, _ = _muse_build(tmp_path, shim)
+    assert spec.env.get("META_API_KEY") == api_key
+    for name in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "SOME_PASSWORD"):
+        assert name not in spec.env
+
+
+def test_muse_env_marks_workspace_as_git_safe_directory(tmp_path, muse_env):
+    shim, _ = _muse_layout(tmp_path)
+    spec, workspace = _muse_build(tmp_path, shim)
+    assert spec.env["GIT_CONFIG_COUNT"] == "1"
+    assert spec.env["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert spec.env["GIT_CONFIG_VALUE_0"] == str(workspace).replace("\\", "/")
+
+
+@pytest.mark.parametrize("field", ["access_token", "api_key"])
+def test_muse_signed_in_with_auth_file(muse_env, field):
+    muse_env.mkdir()
+    (muse_env / "auth.json").write_text(json.dumps({"providers": {"meta": {field: "secret"}}}), encoding="utf-8")
+    assert ad.MuseAdapter().config_dir() == muse_env
+    assert ad.MuseAdapter().signed_in() is True
+
+
+def test_muse_default_config_dir_is_under_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("MUSE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert ad.MuseAdapter().config_dir() == tmp_path / ".config" / "muse"
+
+
+@pytest.mark.parametrize("content", ["invalid-json", "[]", "{}", '{"providers":null}', '{"providers":{"meta":null}}', '{"providers":{"meta":{"access_token":"","api_key":""}}}'])
+def test_muse_signed_in_rejects_missing_or_malformed_credentials(muse_env, content):
+    muse_env.mkdir()
+    (muse_env / "auth.json").write_text(content, encoding="utf-8")
+    assert ad.MuseAdapter().signed_in() is False
+
+
+def test_muse_api_key_takes_priority_over_malformed_auth_file(muse_env, monkeypatch):
+    muse_env.mkdir()
+    (muse_env / "auth.json").write_text("invalid-json", encoding="utf-8")
+    monkeypatch.setenv("META_API_KEY", "meta-secret")
+    assert ad.MuseAdapter().signed_in() is True
+
+
+def _muse_run(terminal="completed", **payload):
+    records = [
+        {"stream": {"kind": "session", "id": "session-muse"}, "payload_type": "run.model.configured", "payload": {"model_id": "meta/model-v1"}},
+        {"stream": {"kind": "session", "id": "session-muse"}, "payload_type": "run.terminal.finished", "payload": {"terminal": terminal, **payload}},
+    ]
+    return "\n".join(json.dumps(record) for record in records)
+
+
+@pytest.mark.parametrize("returncode", [0, None])
+def test_muse_parse_completed_terminal(returncode):
+    result = ad.MuseAdapter().parse(_muse_run(text="listo"), "noise", returncode, None)
+    assert result.text == "listo"
+    assert result.structured_error is False
+    assert result.usage == {"input_tokens": 0, "output_tokens": 0}
+    assert result.session_id == "session-muse"
+
+
+def test_muse_parse_failed_terminal_reason():
+    result = ad.MuseAdapter().parse(_muse_run("failed", reason="rate limit exceeded"), "", 0, None)
+    assert result.text == "rate limit exceeded"
+    assert result.structured_error is True
+
+
+def test_muse_parse_completed_terminal_with_failed_process():
+    result = ad.MuseAdapter().parse(_muse_run(text="listo"), "", 1, None)
+    assert result.text == "listo"
+    assert result.structured_error is True
+
+
+def test_muse_parse_missing_terminal_falls_back_to_stderr():
+    result = ad.MuseAdapter().parse("", "muse: crashed", 1, None)
+    assert result.text == "muse: crashed"
+    assert result.structured_error is True
+    assert result.session_id == ""
+
+
+def test_muse_parse_missing_terminal_is_error_even_with_zero_returncode():
+    result = ad.MuseAdapter().parse(json.dumps({"payload_type": "run.model.configured", "payload": {"model_id": "meta/default"}}), "", 0, None)
+    assert result.structured_error is True

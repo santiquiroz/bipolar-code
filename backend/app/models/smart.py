@@ -5,13 +5,15 @@ sin cambios y `smart.enabled=False` reproduce el comportamiento previo.
 """
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse")
+
+AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse)(-[a-z0-9]{1,24})?$"
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -53,13 +55,17 @@ class SmartRoutingConfig(BaseModel):
     sticky_ttl_seconds: int = 1800
     skip_cooling_providers: bool = True
     respect_capabilities: bool = True
+    max_failover_attempts: int = Field(default=4, ge=1, le=10)
 
     def policy_for(self, tier: str) -> Optional[TierPolicy]:
         return next((p for p in self.tiers if p.tier == tier), None)
 
 
 class CliAgent(BaseModel):
-    id: AgentId
+    id: str = Field(pattern=AGENT_ID_PATTERN)
+    adapter: str = ""
+    account_dir: str = ""
+    account_label: str = ""
     name: str = ""
     enabled: bool = False
     exe_path: str = ""
@@ -81,6 +87,23 @@ class CliAgent(BaseModel):
     def key(self) -> str:
         return f"cli:{self.id}"
 
+    @model_validator(mode="after")
+    def _fill_adapter(self) -> "CliAgent":
+        prefix = self.id.split("-", 1)[0]
+        if self.adapter and self.adapter != prefix:
+            raise ValueError("adapter debe coincidir con el prefijo del id")
+        if not self.adapter and "-" in self.id:
+            self.adapter = prefix
+        return self
+
+    @property
+    def base(self) -> str:
+        return self.adapter or self.id.split("-", 1)[0]
+
+    @property
+    def is_account(self) -> bool:
+        return bool(self.account_dir)
+
     def model_for(self, tier: str, requested: str = "") -> str:
         return requested or self.model_by_tier.get(tier, "") or self.default_model
 
@@ -89,14 +112,20 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["ollama", "copilot", "cursor", "antigravity", "claude"],
-        "simple": ["copilot", "cursor", "antigravity", "codex", "claude"],
-        "standard": ["codex", "claude", "antigravity", "copilot", "cursor"],
-        "complex": ["codex", "claude", "antigravity"],
+        "trivial": ["muse", "ollama", "copilot", "cursor", "antigravity", "claude", "deepseek"],
+        "simple": ["muse", "copilot", "cursor", "antigravity", "codex", "claude", "deepseek"],
+        "standard": ["muse", "codex", "claude", "antigravity", "copilot", "cursor", "deepseek"],
+        "complex": ["muse", "codex", "claude", "antigravity", "deepseek"],
     })
     max_parallel_jobs: int = 3
     max_attempts: int = 3
     job_retention: int = 200
+    thinkers: list[str] = Field(default_factory=lambda: ["claude", "codex"])
+    account_exhausted_pct: int = Field(default=98, ge=50, le=100)
+    allow_request_verify: bool = False
+    review_default: bool = True
+    verify_timeout_s: int = Field(default=600, ge=30, le=3600)
+    review_timeout_s: int = Field(default=900, ge=60, le=3600)
 
 
 DEFAULT_CLI_AGENTS: list[dict] = [
@@ -128,6 +157,16 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     {
         "id": "cursor", "name": "Cursor Agent CLI", "supported_tiers": ["trivial", "simple", "standard"],
         "default_model": "auto", "quota_reset": "none", "cost_weight": 0.5, "priority": 55, "timeout_s": 600,
+    },
+    {
+        "id": "deepseek", "name": "DeepSeek Harness (dsh)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
+        "default_model": "deepseek-flash",
+        "model_by_tier": {"standard": "deepseek-v4-pro", "complex": "deepseek-v4-pro"},
+        "quota_reset": "none", "cost_weight": 0.3, "priority": 90, "timeout_s": 900,
+    },
+    {
+        "id": "muse", "name": "Muse (Meta)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
+        "quota_reset": "none", "cost_weight": 0.4, "priority": 5, "timeout_s": 900,
     },
 ]
 

@@ -1,8 +1,8 @@
 """
 Adaptadores por CLI: construyen la línea de comando (argv en lista, nunca shell) y
 parsean la salida. Los flags de seguridad son constantes: no se pueden desactivar
-desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex)
-o por un archivo puntero dentro del workspace (claude, copilot, agy, cursor).
+desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex, dsh)
+o por un archivo puntero dentro del workspace (claude, copilot, agy, cursor, muse).
 """
 import json
 import os
@@ -14,7 +14,19 @@ from typing import Mapping, Optional
 
 from app.models.smart import CliAgent, tier_index
 
-BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama", "cursor": "cursor-agent"}
+BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
+            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse"}
+DSH_ACCOUNT_RECORD = "deepseek-account-platform/default:"
+DSH_CLI_PARTS = ("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
+MODEL_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+DSH_MODEL_PATCH = (
+    "- id: agent-default-model\n"
+    '  name: "@deepseek-ai/dsh-agent-default-model"\n'
+    "  config:\n"
+    "    provider: {provider}\n"
+    "    model: {model}\n"
+    "    reasoningEffort: high\n"
+)
 CURSOR_CRITICAL_DENY = (
     "Shell(git push)", "Shell(git reset)", "Shell(git checkout)", "Shell(git commit)",
     "Shell(rm)", "Shell(bash)", "Shell(powershell)", "Write(**/.git/**)",
@@ -30,7 +42,8 @@ CURSOR_PRELOAD = "\n".join((
 
 DANGEROUS_ARG_RE = re.compile(
     r"dangerously|bypass|--yolo|--allow-all|full-auto|danger-full-access|--permission-mode|--sandbox"
-    r"|--approve|--add-dir|--cd\b|^-C$|--autopilot|--allow-tool|--allowedTools",
+    r"|--approve|--add-dir|--cd\b|^-C$|--autopilot|--allow-tool|--allowedTools|--patch|--profile"
+    r"|--disable-|--trust-workspace|--approval|--workspace|--prompt-file|--permission-profile",
     re.I,
 )
 SAFE_ARG_RE = re.compile(r"^--?[A-Za-z0-9][\w-]*(=[\w./:,-]*)?$")
@@ -39,11 +52,15 @@ POSIX_PATH_RE = re.compile(r"^/[^\x00-\x1f]*$")
 
 TASK_CONSTRAINTS = (
     "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
-    "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, gemini, ollama, bipolar). "
+    "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
     "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
     "Deja los cambios en el working tree y termina con la lista de archivos tocados."
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
+READ_ONLY_CONSTRAINTS = (
+    "\n\nRestricciones: ejecución de solo lectura. No edites archivos ni ejecutes comandos que cambien el repositorio; "
+    "responde solo con texto. No invoques otros CLIs de IA."
+)
 POINTER_PROMPT = (
     "Read the file {rel} in this workspace and do exactly what it says. Relative paths in it are relative "
     "to the workspace root, not to that file's folder. Do not modify or delete that file."
@@ -62,8 +79,34 @@ ENV_FIXED = {
     "CI": "1", "NO_COLOR": "1",
 }
 SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
-ENV_BLOCKLIST = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_API_BASE")
+ENV_BLOCKLIST = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_API_BASE",
+                 "CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "CURSOR_CONFIG_DIR")
+# cursor queda fuera: su CURSOR_CONFIG_DIR es la carpeta con la deny list y una cuenta la pisaría
+ACCOUNT_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "deepseek": "DSH_HOME"}
+CREDENTIAL_FILES = {"claude": ".credentials.json", "codex": "auth.json", "deepseek": ".credentials.yaml"}
 ARGV_PROMPT_MAX = 24_000
+
+
+def supports_accounts(base: str) -> bool:
+    return base in ACCOUNT_ENV
+
+
+def supports_read_only(base: str) -> bool:
+    adapter = ADAPTERS.get(base)
+    return bool(adapter and getattr(adapter, "supports_read_only", False))
+
+
+def account_env(agent: CliAgent) -> dict[str, str]:
+    if not agent.account_dir or not supports_accounts(agent.base):
+        return {}
+    return {ACCOUNT_ENV[agent.base]: agent.account_dir}
+
+
+def account_has_login(agent: CliAgent) -> Optional[bool]:
+    marker = CREDENTIAL_FILES.get(agent.base)
+    if not agent.account_dir or marker is None:
+        return None
+    return (Path(agent.account_dir) / marker).exists()
 
 
 class AdapterUnsafe(Exception):
@@ -100,6 +143,12 @@ def validate_extra_args(args: list[str]) -> list[str]:
     return list(args or [])
 
 
+def validate_model(model: str) -> str:
+    if not MODEL_SLUG_RE.fullmatch(model):
+        raise AdapterUnsafe(f"model_not_allowed:{model[:40]}")
+    return model
+
+
 def validate_path_argv(path: str) -> str:
     pattern = WIN_PATH_RE if sys.platform == "win32" else POSIX_PATH_RE
     if not pattern.match(path):
@@ -110,12 +159,11 @@ def validate_path_argv(path: str) -> str:
 def child_env(base: Mapping[str, str], extra: Optional[dict] = None) -> dict:
     env = {k: v for k, v in base.items() if k in ENV_ALLOWLIST or k.upper() in ENV_ALLOWLIST}
     env.update(ENV_FIXED)
-    for key, value in (extra or {}).items():
-        env[key] = value
     for key in list(env):
         upper = key.upper()
-        if upper in ENV_BLOCKLIST or (upper.endswith(SECRET_SUFFIXES) and key not in (extra or {})):
+        if upper in ENV_BLOCKLIST or upper.endswith(SECRET_SUFFIXES):
             env.pop(key, None)
+    env.update(extra or {})
     return env
 
 
@@ -188,16 +236,18 @@ def _jsonl(text: str) -> list[dict]:
 class ClaudeAdapter:
     id = "claude"
     prompt_via = "pointer"
+    supports_read_only = True
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
         pointer, rel = write_pointer(workspace, job_id, task)
         argv = exe_argv(exe) + [
             "-p", POINTER_PROMPT.format(rel=rel),
             "--output-format", "json",
-            "--permission-mode", "acceptEdits",
-            "--disallowedTools", "Task,Agent,WebFetch,WebSearch",
+            "--permission-mode", "plan" if read_only else "acceptEdits",
+            "--disallowedTools", "Task,Agent,WebFetch,WebSearch,Edit,Write,MultiEdit,NotebookEdit,Bash" if read_only else "Task,Agent,WebFetch,WebSearch",
             "--max-turns", "50",
+            "--setting-sources", "project,local", "--strict-mcp-config",
             "--add-dir", ws,
         ]
         if model:
@@ -221,21 +271,23 @@ class ClaudeAdapter:
 class CodexAdapter:
     id = "codex"
     prompt_via = "stdin"
+    supports_read_only = True
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
         out_dir = workspace / POINTER_DIR / job_id
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / "last.md"
         argv = exe_argv(exe) + [
-            "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--color", "never", "--json",
+            "exec", "--sandbox", "read-only" if read_only else "workspace-write", "--skip-git-repo-check", "--color", "never", "--json",
             "-C", ws, "-o", validate_path_argv(str(out_file)),
         ]
         if model:
             argv += ["-m", model]
         argv += validate_extra_args(agent.extra_args)
         argv.append("-")
-        return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, stdin_payload=(task + TASK_CONSTRAINTS).encode("utf-8"),
+        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
+        return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, stdin_payload=(task + constraints).encode("utf-8"),
                           out_file=out_file, timeout_s=timeout_s, redacted=redact(argv, len(task)))
 
     def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
@@ -261,10 +313,13 @@ class CodexAdapter:
 class CopilotAdapter:
     id = "copilot"
     prompt_via = "pointer"
+    supports_read_only = False
     DENY = ("shell(rm)", "shell(rmdir)", "shell(del)", "shell(Remove-Item)", "shell(git push)",
             "shell(git reset)", "shell(git clean)", "shell(git checkout)")
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        if read_only:
+            raise AdapterUnsafe("read_only_unsupported")
         ws = validate_path_argv(str(workspace))
         pointer, rel = write_pointer(workspace, job_id, task)
         argv = exe_argv(exe) + [
@@ -300,6 +355,7 @@ class CopilotAdapter:
 class AntigravityAdapter:
     id = "antigravity"
     prompt_via = "pointer"
+    supports_read_only = False
 
     @staticmethod
     def settings_path() -> Path:
@@ -318,7 +374,9 @@ class AntigravityAdapter:
     def pool_key(model: str) -> str:
         return "cli:antigravity#gemini" if (not model or model.startswith("gemini")) else "cli:antigravity#claude"
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        if read_only:
+            raise AdapterUnsafe("read_only_unsupported")
         if not self.deny_list_present():
             raise AdapterUnsafe("agy_deny_list_missing")
         ws = validate_path_argv(str(workspace))
@@ -358,6 +416,7 @@ class AntigravityAdapter:
 class CursorAdapter:
     id = "cursor"
     prompt_via = "pointer"
+    supports_read_only = True
 
     def config_dir(self) -> Path:
         return Path(os.environ["CURSOR_RESCUE_HOME"]) if "CURSOR_RESCUE_HOME" in os.environ else Path.home() / ".cursor-rescue"
@@ -405,7 +464,7 @@ class CursorAdapter:
             path.write_text(CURSOR_PRELOAD, encoding="utf-8")
         return path
 
-    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int) -> LaunchSpec:
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         if not self.deny_list_present():
             raise AdapterUnsafe("cursor_deny_list_missing")
         ws = validate_path_argv(str(workspace))
@@ -426,8 +485,10 @@ class CursorAdapter:
             argv = exe_argv(exe)
         argv += [
             "-p", POINTER_PROMPT.format(rel=rel), "--output-format", "json", "--trust",
-            "--workspace", ws, "--force", "--model", model or "auto",
+            "--workspace", ws,
         ]
+        argv += ["--mode", "ask"] if read_only else ["--force"]
+        argv += ["--model", model or "auto"]
         argv += validate_extra_args(agent.extra_args)
         return LaunchSpec(argv=argv, env=child_env(os.environ, extra_env), cwd=ws, pointer_file=pointer,
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
@@ -443,12 +504,209 @@ class CursorAdapter:
         )
 
 
+def _dsh_usage(events: list[dict]) -> dict:
+    steps = [ev.get("usage") or {} for ev in events if ev.get("type") == "status" and ev.get("phase") == "step_end"]
+    return {"input_tokens": sum(int(u.get("inputTokens") or 0) for u in steps),
+            "output_tokens": sum(int(u.get("outputTokens") or 0) for u in steps)}
+
+
+def _dsh_turn_error(event: dict) -> str:
+    reason = event.get("reason") if event.get("phase") == "turn_end" else None
+    if not isinstance(reason, dict) or reason.get("kind") == "completed":
+        return ""
+    error = reason.get("error") or {}
+    return f"{error.get('code') or reason.get('kind')}: {error.get('message') or ''}".strip()
+
+
+def _dsh_error(events: list[dict]) -> str:
+    for ev in reversed(events):
+        if ev.get("type") == "error":
+            return str(ev.get("message") or "error")
+        if ev.get("type") == "status" and ev.get("phase") == "turn_end":
+            return _dsh_turn_error(ev)
+    return ""
+
+
+def _last_field(events: list[dict], kind: str, key: str) -> str:
+    return next((str(ev.get(key) or "") for ev in reversed(events) if ev.get("type") == kind), "")
+
+
+class DeepseekAdapter:
+    id = "deepseek"
+    prompt_via = "stdin"
+    supports_read_only = True
+
+    @staticmethod
+    def home() -> Path:
+        return Path(os.environ["DSH_HOME"]) if "DSH_HOME" in os.environ else Path.home() / ".dsh"
+
+    def account_signed_in(self) -> bool:
+        try:
+            return DSH_ACCOUNT_RECORD in (self.home() / ".credentials.yaml").read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return False
+
+    def has_credentials(self) -> bool:
+        return self.account_signed_in() or "DEEPSEEK_API_KEY" in os.environ
+
+    def provider(self) -> str:
+        return "deepseek-official" if not self.account_signed_in() and "DEEPSEEK_API_KEY" in os.environ else "deepseek-account"
+
+    @staticmethod
+    def bundle_for(exe: str) -> Optional[tuple[Path, Path]]:
+        path = Path(exe).resolve()
+        if path.name.lower() != "dsh.cmd" or len(path.parents) < 5:
+            return None
+        root = path.parents[4]
+        app = root / "DeepSeek Harness.exe"
+        if not app.is_file() or not (root / "resources" / "app.asar").is_file():
+            return None
+        return app, root.joinpath(*DSH_CLI_PARTS)
+
+    def launcher(self, exe: str) -> tuple[list[str], dict]:
+        extra_env = {"DSH_HOME": os.environ["DSH_HOME"]} if "DSH_HOME" in os.environ else {}
+        if self.provider() == "deepseek-official":
+            extra_env["DEEPSEEK_API_KEY"] = os.environ["DEEPSEEK_API_KEY"]
+        bundle = self.bundle_for(exe)
+        if not bundle:
+            return exe_argv(exe), extra_env
+        # dsh.cmd solo hace esto; llamarlo directo evita que cmd.exe re-parsee el argv.
+        extra_env["ELECTRON_RUN_AS_NODE"] = "1"
+        return [str(bundle[0]), "--expose-internals", str(bundle[1])], extra_env
+
+    def write_patch(self, job_dir: Path, model: str) -> Path:
+        # El patch es YAML con tags !!js ejecutables: el modelo nunca entra sin validar.
+        model = validate_model(model)
+        patch = job_dir / "dsh-model.patch.yml"
+        patch.write_text(DSH_MODEL_PATCH.format(provider=self.provider(), model=model), encoding="utf-8")
+        return patch
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        ws = validate_path_argv(str(workspace))
+        job_dir = workspace / POINTER_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        patch = self.write_patch(job_dir, model or agent.default_model or "deepseek-flash")
+        argv, extra_env = self.launcher(exe)
+        extra_env["DSH_PERMISSION_MODE"] = "read-only" if read_only else "workspace-write"
+        argv += ["--profile", "headless", "--patch", validate_path_argv(str(patch)), "--json"]
+        argv += validate_extra_args(agent.extra_args)
+        argv.append("-")
+        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
+        return LaunchSpec(argv=argv, env=child_env(os.environ, extra_env), cwd=ws,
+                          stdin_payload=(task + constraints).encode("utf-8"),
+                          timeout_s=timeout_s, redacted=redact(argv, len(task)))
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        events = _jsonl(stdout)
+        error = _dsh_error(events)
+        return AdapterResult(
+            text=_last_field(events, "final", "text") or error or stderr.strip(),
+            structured_error=bool(error) or returncode not in (0, None),
+            usage=_dsh_usage(events),
+            session_id=_last_field(events, "session", "sessionId"),
+        )
+
+
+def _muse_version_bin(folder: Path) -> Optional[Path]:
+    try:
+        version = (folder / ".muse-version").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    binary = folder / f"muse-bin-{version}.exe"
+    return binary if binary.parent == folder and binary.is_file() else None
+
+
+def _muse_terminal(records: list[dict]) -> dict:
+    return next((record.get("payload") or {} for record in reversed(records)
+                 if str(record.get("payload_type") or "").startswith("run.terminal.")), {})
+
+
+def _muse_session(records: list[dict]) -> str:
+    streams = [record.get("stream") or {} for record in records]
+    return next((str(stream.get("id") or "") for stream in streams if stream.get("kind") == "session"), "")
+
+
+class MuseAdapter:
+    id = "muse"
+    prompt_via = "pointer"
+    supports_read_only = True
+
+    @staticmethod
+    def bin_for(exe: str) -> list[str]:
+        path = Path(exe).resolve()
+        if path.name.lower() != "muse.cmd":
+            return exe_argv(exe)
+        binary = _muse_version_bin(path.parent)
+        if binary:
+            return [str(binary)]
+        binaries = sorted(binary for binary in path.parent.glob("muse-bin-*.exe") if binary.is_file())
+        return [str(binaries[-1])] if binaries else exe_argv(exe)
+
+    @staticmethod
+    def config_dir() -> Path:
+        return Path(os.environ["MUSE_CONFIG_DIR"]) if "MUSE_CONFIG_DIR" in os.environ else Path.home() / ".config" / "muse"
+
+    def signed_in(self) -> bool:
+        if os.environ.get("META_API_KEY"):
+            return True
+        try:
+            auth = json.loads((self.config_dir() / "auth.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return False
+        return _muse_auth_present(auth)
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        ws = validate_path_argv(str(workspace))
+        extra_args = validate_extra_args(agent.extra_args)
+        model = validate_model(model) if model else ""
+        pointer, _ = write_pointer(workspace, job_id, task)
+        argv = self.bin_for(exe) + [
+            "exec", "--json", "--prompt-file", validate_path_argv(str(pointer)), "--workspace", ws,
+            "--approval-mode", "never", "--approval-judge", "off", "--no-foreign-personal-context",
+            "--user-input-auto-resolve", "--max-model-steps", "60", "--reasoning-effort", effort_for_tier(tier),
+        ]
+        if read_only:
+            argv += ["--disable-write", "--disable-shell"]
+        if model:
+            argv += ["--model", model]
+        argv += extra_args
+        extra = {"META_API_KEY": os.environ["META_API_KEY"]} if "META_API_KEY" in os.environ else {}
+        # El shell de Muse corre como otro usuario de Windows: sin safe.directory, git rechaza el repo por "dubious ownership".
+        extra.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory",
+                      "GIT_CONFIG_VALUE_0": ws.replace("\\", "/")})
+        return LaunchSpec(argv=argv, env=child_env(os.environ, extra), cwd=ws, pointer_file=pointer,
+                          timeout_s=timeout_s, redacted=redact(argv, len(task)))
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        records = _jsonl(stdout)
+        terminal = _muse_terminal(records)
+        return AdapterResult(
+            text=str(terminal.get("text") or terminal.get("reason") or stderr.strip()),
+            structured_error=terminal.get("terminal") != "completed" or returncode not in (0, None),
+            usage={"input_tokens": 0, "output_tokens": 0}, session_id=_muse_session(records),
+        )
+
+
+def _muse_auth_present(auth: object) -> bool:
+    if not isinstance(auth, dict):
+        return False
+    providers = auth.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    meta = providers.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    return bool(meta.get("access_token") or meta.get("api_key"))
+
+
 ADAPTERS = {
     "claude": ClaudeAdapter(),
     "codex": CodexAdapter(),
     "copilot": CopilotAdapter(),
     "antigravity": AntigravityAdapter(),
     "cursor": CursorAdapter(),
+    "deepseek": DeepseekAdapter(),
+    "muse": MuseAdapter(),
 }
 
 
