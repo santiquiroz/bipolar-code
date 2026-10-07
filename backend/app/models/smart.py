@@ -122,6 +122,10 @@ class DelegationConfig(BaseModel):
     job_retention: int = 200
     thinkers: list[str] = Field(default_factory=lambda: ["claude", "codex"])
     account_exhausted_pct: int = Field(default=98, ge=50, le=100)
+    allow_request_verify: bool = False
+    review_default: bool = True
+    verify_timeout_s: int = Field(default=600, ge=30, le=3600)
+    review_timeout_s: int = Field(default=900, ge=60, le=3600)
 
 
 DEFAULT_CLI_AGENTS: list[dict] = [
