@@ -1,6 +1,7 @@
 """/v1/messages: failover entre llaves y providers antes del primer byte."""
 import json
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -147,3 +148,18 @@ def test_upstream_stream_is_closed_after_relay(harness):
     resp = client.post("/v1/messages", json=BODY)
     assert resp.status_code == 200
     assert winner.closed
+
+
+def test_aread_failure_closes_stream_and_fails_over(harness):
+    client, install = harness
+
+    class FailingAread(FakeResp):
+        async def aread(self):
+            raise httpx.ReadError("x")
+
+    first = FailingAread(500, body=b"oops")
+    install({P1: [first], P2: [FakeResp(200, OK_LINES)]})
+    resp = client.post("/v1/messages", json=BODY)
+    assert resp.status_code == 200
+    assert first.closed is True
+    assert resp.headers["x-bipolar-target"] == "p2#0"

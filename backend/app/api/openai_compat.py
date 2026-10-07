@@ -106,14 +106,14 @@ def _exhausted_response(decision, failures: list, route_headers: dict) -> JSONRe
 async def _open_stream(client: httpx.AsyncClient, attempt_stack: AsyncExitStack, url: str, headers: dict, payload: dict):
     try:
         resp = await attempt_stack.enter_async_context(client.stream("POST", url, json=payload, headers=headers))
-    except httpx.HTTPError as e:
+        if resp.status_code >= 400:
+            raw = await resp.aread()
+            await attempt_stack.aclose()
+            return upstream.Failed(resp.status_code, _error_message(raw.decode(errors="replace")))
+        return upstream.Opened(resp)
+    except Exception as e:
         await attempt_stack.aclose()
         return upstream.Failed(None, str(e), e)
-    if resp.status_code >= 400:
-        raw = await resp.aread()
-        await attempt_stack.aclose()
-        return upstream.Failed(resp.status_code, _error_message(raw.decode(errors="replace")))
-    return upstream.Opened(resp)
 
 
 async def _open_attempt_plain(client: httpx.AsyncClient, step: PlanStep, body: dict, settings):

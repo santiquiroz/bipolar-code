@@ -24,6 +24,7 @@ INSTRUCTIONS = (
 _PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 _DEFAULT_PROTOCOL = "2025-06-18"
 _TIERS = ("trivial", "simple", "standard", "complex")
+MAX_BATCH = 20
 
 TOOLS: list[dict] = [
     {
@@ -282,7 +283,16 @@ async def _run_notification(handler: Callable[[dict], Awaitable[dict]], params: 
         pass
 
 
-async def handle_message(msg: dict) -> Optional[dict]:
+def _without_wait(params: dict, method: str) -> dict:
+    if method != "tools/call" or params.get("name") not in ("delegate", "job_status"):
+        return params
+    args = params.get("arguments")
+    if not isinstance(args, dict):
+        return params
+    return {**params, "arguments": {**args, "wait_s": 0}}
+
+
+async def handle_message(msg: dict, in_batch: bool = False) -> Optional[dict]:
     msg_id = msg.get("id")
     try:
         method = msg.get("method")
@@ -292,9 +302,11 @@ async def handle_message(msg: dict) -> Optional[dict]:
         params = params if isinstance(params, dict) else {}
         handler = _METHODS.get(method)
         if "id" not in msg:
-            if handler is not None:
+            if method.startswith("notifications/") and handler is not None:
                 await _run_notification(handler, params)
             return None
+        if in_batch:
+            params = _without_wait(params, method)
         if handler is None:
             return _error(msg_id, -32601, "method not found")
         return {"jsonrpc": "2.0", "id": msg_id, "result": await handler(params)}
@@ -308,7 +320,7 @@ async def _handle_batch(items: list) -> list:
         if not isinstance(item, dict):
             responses.append(_error(None, -32600, "invalid request"))
             continue
-        resp = await handle_message(item)
+        resp = await handle_message(item, in_batch=True)
         if resp is not None:
             responses.append(resp)
     return responses
@@ -326,6 +338,8 @@ async def mcp_post(request: Request):
             return Response(status_code=202)
         return JSONResponse(resp)
     if isinstance(body, list):
+        if len(body) > MAX_BATCH:
+            return JSONResponse(_error(None, -32600, "batch demasiado grande"))
         responses = await _handle_batch(body)
         if not responses:
             return Response(status_code=202)

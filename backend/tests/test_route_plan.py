@@ -118,3 +118,12 @@ def test_mark_step_health_ignores_fatal(env):
     (step,) = smart_router.build_plan((a, None, True), [], max_steps=4)
     smart_router.mark_step_health(step, AttemptFailure(step, "fatal", 400, "bad request"))
     assert health_service.get("provider:a").total_failed == 0
+
+
+@pytest.mark.asyncio
+async def test_report_outcome_success_on_slot_clears_provider_failures(env):
+    health_service.mark_failure("provider:a", "boom1")
+    health_service.mark_failure("provider:a", "boom2")
+    assert health_service.get("provider:a").consecutive_failures == 2
+    await smart_router.report_outcome(None, "provider:a#A_KEY", True)
+    assert health_service.get("provider:a").consecutive_failures == 0

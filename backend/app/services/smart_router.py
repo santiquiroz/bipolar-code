@@ -418,6 +418,8 @@ async def report_outcome(
     if target_key:
         if ok:
             health_service.mark_success(target_key, latency_ms)
+            if "#" in target_key:
+                health_service.mark_success(target_key.split("#", 1)[0], latency_ms)
         else:
             signal = detect_signal(error or "", status)
             if signal:

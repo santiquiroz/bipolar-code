@@ -108,6 +108,47 @@ def test_wait_s_out_of_range_is_tool_error(client):
     assert result["isError"] is True and "wait_s" in result["content"][0]["text"]
 
 
+def test_tools_call_without_id_is_ignored(client, monkeypatch):
+    called = []
+
+    async def boom_submit(*a, **k):
+        called.append(True)
+        raise AssertionError("broker.submit no debe llamarse sin id")
+
+    monkeypatch.setattr(broker, "submit", boom_submit)
+    resp = _rpc(client, "tools/call",
+                {"name": "delegate", "arguments": {"task": "x", "workspace": "C:/r"}},
+                id_=None)
+    assert resp.status_code == 202 and resp.content == b""
+    assert called == []
+
+
+def test_batch_too_large_returns_single_error(client):
+    batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(21)]
+    resp = client.post("/mcp", json=batch)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error"]["code"] == -32600
+    assert "batch demasiado grande" in body["error"]["message"]
+
+
+def test_batch_forces_wait_s_to_zero(client, monkeypatch):
+    job = Job(id="j1", created_at="t", status="running", tier="standard", agent_id="muse")
+
+    async def boom_wait(*a, **k):
+        raise AssertionError("broker.wait_job no debe llamarse en batch")
+
+    monkeypatch.setattr(broker, "wait_job", boom_wait)
+    monkeypatch.setattr(broker, "get_job", lambda job_id: job if job_id == "j1" else None)
+    batch = [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "job_status", "arguments": {"job_id": "j1", "wait_s": 30}}}]
+    resp = client.post("/mcp", json=batch)
+    assert resp.status_code == 200
+    body = resp.json()[0]
+    assert body["result"]["isError"] is False
+    assert body["result"]["structuredContent"]["job_id"] == "j1"
+
+
 @pytest.mark.asyncio
 async def test_wait_job_returns_running_on_timeout(monkeypatch):
     job = Job(id="slow", created_at="t", status="running")

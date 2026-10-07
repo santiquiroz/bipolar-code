@@ -413,14 +413,14 @@ def _context_retry_body(err_msg: str, oai_body: dict, body: dict, provider) -> d
 async def _open_stream(client: httpx.AsyncClient, attempt_stack: AsyncExitStack, url: str, headers: dict, payload: dict) -> upstream.Opened | upstream.Failed:
     try:
         resp = await attempt_stack.enter_async_context(client.stream("POST", url, json=payload, headers=headers))
-    except httpx.HTTPError as e:
+        if resp.status_code >= 400:
+            raw = await resp.aread()
+            await attempt_stack.aclose()
+            return upstream.Failed(resp.status_code, _error_message(raw))
+        return upstream.Opened(resp)
+    except Exception as e:
         await attempt_stack.aclose()
         return upstream.Failed(None, str(e), e)
-    if resp.status_code >= 400:
-        raw = await resp.aread()
-        await attempt_stack.aclose()
-        return upstream.Failed(resp.status_code, _error_message(raw))
-    return upstream.Opened(resp)
 
 
 def _is_native_step(step: PlanStep) -> bool:
