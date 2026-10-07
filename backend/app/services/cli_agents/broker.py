@@ -793,6 +793,18 @@ def job_output(job_id: str) -> Optional[str]:
     return "\n".join(f"[{ev.get('stream', ev.get('event'))}] {ev.get('text', ev.get('status', ''))}" for ev in rt.lines)
 
 
+async def wait_job(job_id: str, timeout_s: float) -> Optional[Job]:
+    rt = _jobs.get(job_id)
+    if rt is None:
+        return None
+    if rt.task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(rt.task), timeout_s)
+        except asyncio.TimeoutError:
+            pass
+    return get_job(job_id)
+
+
 async def cancel(job_id: str) -> Optional[Job]:
     rt = _jobs.get(job_id)
     if rt is None:

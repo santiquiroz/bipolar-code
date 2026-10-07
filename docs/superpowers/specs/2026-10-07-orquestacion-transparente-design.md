@@ -219,7 +219,7 @@ Por cada trabajador W que el broker elige (el mismo que hoy, Muse primero):
 
 `POST /mcp`: JSON-RPC 2.0 sobre Streamable HTTP, respondiendo con `application/json` (sin SSE). `GET /mcp` devuelve 405. Métodos:
 
-- `initialize`: responde la versión de protocolo del cliente si es conocida (`2025-06-18`, `2025-03-26`, `2024-11-05`) o la más reciente, con `capabilities: {tools: {}}` y `serverInfo` = bipolar-code con su versión. Entrega `Mcp-Session-Id`.
+- `initialize`: responde la versión de protocolo del cliente si es conocida (`2025-06-18`, `2025-03-26`, `2024-11-05`) o la más reciente, con `capabilities: {tools: {}}` y `serverInfo` = bipolar-code con su versión. No guarda sesión ni entrega `Mcp-Session-Id`: en Streamable HTTP el id de sesión es opcional y el servidor responde cada request sin estado.
 - `notifications/initialized` (y cualquier notificación): 202 sin cuerpo.
 - `ping`: `{}`.
 - `tools/list` y `tools/call`.

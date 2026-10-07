@@ -10,6 +10,7 @@ from app.api import proxy, models, usage, chat as chat_router
 from app.api import settings as settings_router
 from app.api import providers as providers_router
 from app.api import messages as messages_router
+from app.api import mcp as mcp_router
 from app.api import pricing as pricing_router
 from app.api import llamacpp as llamacpp_router
 from app.api import openai_compat as openai_compat_router
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(providers_router.router, prefix="/api")
     app.include_router(chat_router.router, prefix="/api")
     app.include_router(messages_router.router)
+    app.include_router(mcp_router.router)
     app.include_router(pricing_router.router, prefix="/api")
     app.include_router(llamacpp_router.router, prefix="/api")
     app.include_router(openai_compat_router.router)
