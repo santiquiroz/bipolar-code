@@ -21,7 +21,7 @@ from app.core.quota_signals import detect_signal
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, account_has_login, child_env, exe_argv
 
 log = get_logger(__name__)
 
@@ -254,7 +254,15 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
             await _probe_ollama(status)
             status.installed = status.installed or status.auth == "ok"
         elif exe:
-            if agent.base == "cursor":
+            if agent.is_account:
+                status.version, status.error = await _probe_version(exe)
+                login = account_has_login(agent)
+                if login is False:
+                    status.auth = "auth_error"
+                    status.error = "sin login en la carpeta de la cuenta"
+                elif login is True:
+                    status.auth = "ok"
+            elif agent.base == "cursor":
                 await _probe_cursor(exe, status)
             elif agent.base == "deepseek":
                 await _probe_deepseek(exe, status)
@@ -262,9 +270,9 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
                 await _probe_muse(exe, status)
             else:
                 status.version, status.error = await _probe_version(exe)
-            if agent.base == "codex":
+            if agent.base == "codex" and not agent.is_account:
                 status.auth = await _probe_codex_auth(exe)
-            elif agent.base == "antigravity":
+            elif agent.base == "antigravity" and not agent.is_account:
                 await _probe_antigravity(exe, status)
     except Exception as e:  # el sondeo nunca debe tumbar la API
         status.error = str(e)[:200]

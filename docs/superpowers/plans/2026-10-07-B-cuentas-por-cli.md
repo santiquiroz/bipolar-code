@@ -502,7 +502,6 @@ Run: `cd backend && python -m pytest tests/test_quota_signals_claude.py tests/te
 | claude | `$env:CLAUDE_CONFIG_DIR='<dir>'; claude` (y luego `/login`) | `CLAUDE_CONFIG_DIR='<dir>' claude` |
 | codex | `$env:CODEX_HOME='<dir>'; codex login` | `CODEX_HOME='<dir>' codex login` |
 | deepseek | `$env:DSH_HOME='<dir>'; dsh` | `DSH_HOME='<dir>' dsh` |
-| cursor | `$env:CURSOR_CONFIG_DIR='<dir>'; cursor-agent login` | `CURSOR_CONFIG_DIR='<dir>' cursor-agent login` |
 
   El dict es `{"powershell": ..., "bash": ..., "note": ...}`. La nota de claude es "Dentro de Claude Code ejecuta /login con la cuenta que quieras asociar."
 - `delete_account`: solo para entradas con `account_dir`. Las quita de `cli_agents`, de cada lista de `tier_order` y de `thinkers`, y llama `health_service.reset(f"cli:{id}")`. No toca la carpeta.

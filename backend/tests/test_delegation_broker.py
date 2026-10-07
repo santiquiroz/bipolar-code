@@ -395,3 +395,16 @@ async def test_unexpected_exception_kills_live_child_process(env, monkeypatch):
     job = await _wait(job.id)
     assert job.status == "failed" and broker._jobs[job.id].proc is None
     assert await asyncio.wait_for(spawned["proc"].wait(), timeout=5) is not None
+
+
+@pytest.mark.asyncio
+async def test_account_job_launch_env_has_account_config_dir(env, monkeypatch, tmp_path):
+    account_dir = tmp_path / "accounts" / "claude-2"
+    account_dir.mkdir(parents=True)
+    env["registry"].cli_agents.append(CliAgent(id="claude-2", account_dir=str(account_dir), enabled=True))
+    run, calls = _fake_subprocess([_claude_ok()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    job = await broker.submit(JobRequest(task="implementa el endpoint", workspace=str(env["workspace"]), agent_id="claude-2"))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.agent_id == "claude-2"
+    assert calls[0].env["CLAUDE_CONFIG_DIR"] == str(account_dir)

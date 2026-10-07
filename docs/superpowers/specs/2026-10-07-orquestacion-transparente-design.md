@@ -127,7 +127,7 @@ Cada adaptador declara `account_env`: la variable que apunta su CLI a otra carpe
 | claude | `CLAUDE_CONFIG_DIR` | `.credentials.json` |
 | codex | `CODEX_HOME` | `auth.json` |
 | deepseek (dsh) | `DSH_HOME` | `.credentials.yaml` |
-| cursor | `CURSOR_CONFIG_DIR` | (sin verificación: `auth = unknown`) |
+| cursor | — | no admite cuentas: su `CURSOR_CONFIG_DIR` es la carpeta con la deny list del plugin y una cuenta la pisaría (decidido en la revisión de B2) |
 | muse, copilot, antigravity, ollama | — | no admiten cuentas extra hasta verificar su mecanismo |
 
 Con `account_dir` definido, el hijo recibe esa variable vía `child_env(..., extra=...)`. bipolar **nunca lee** los archivos de credenciales; solo comprueba que existen.
@@ -248,7 +248,7 @@ Los errores de herramienta van como `result.isError = true` con texto explicativ
 1. Consulta `GET /api/accounts/pick?adapter=claude` (llave desde el `.env` del config dir). Solo cuentan las cuentas con `account_dir`: la carpeta del sistema es el perfil proxy.
 2. **Modo cuenta**: sincroniza el perfil espejo (abajo) y lanza `claude` con `CLAUDE_CONFIG_DIR=<account_dir>`, pasando todos los argumentos.
 3. **Modo proxy** (todas las cuentas agotadas o ninguna configurada): lanza `claude` con `ANTHROPIC_BASE_URL=http://localhost:8000` y `ANTHROPIC_API_KEY=<ui_api_key>` solo para ese proceso. Claude Code sigue funcionando con lo que tenga bipolar.
-4. `-Continue` (experimental): copia el transcript más reciente del proyecto actual desde la cuenta usada la última vez y ejecuta `claude --resume <ruta>`. Si falla, abre una sesión nueva y avisa. El formato del transcript es interno de Claude Code y puede cambiar.
+4. `--bc-continue` (experimental): copia el transcript más reciente del proyecto actual desde la cuenta usada la última vez a la carpeta de la cuenta actual y ejecuta `claude --resume <id de sesión>` (el stem del transcript; en la versión 2.1.293 `--resume` recibe un id, no una ruta). Si no hay transcript previo para este directorio, abre una sesión nueva y avisa. El formato del transcript es interno de Claude Code y puede cambiar. Los flags propios del lanzador llevan el prefijo `--bc-` (`--bc-continue`, `--bc-no-mirror`, `--bc-dry-run`); el resto de argumentos pasa intacto a `claude`.
 5. Recuerda la última cuenta usada en `<config_dir>/accounts/.last`.
 6. Si bipolar no responde, abre `claude` normal, sin variables.
 

@@ -75,8 +75,29 @@ ENV_FIXED = {
     "CI": "1", "NO_COLOR": "1",
 }
 SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
-ENV_BLOCKLIST = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_API_BASE")
+ENV_BLOCKLIST = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_API_BASE",
+                 "CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "CURSOR_CONFIG_DIR")
+# cursor queda fuera: su CURSOR_CONFIG_DIR es la carpeta con la deny list y una cuenta la pisaría
+ACCOUNT_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "deepseek": "DSH_HOME"}
+CREDENTIAL_FILES = {"claude": ".credentials.json", "codex": "auth.json", "deepseek": ".credentials.yaml"}
 ARGV_PROMPT_MAX = 24_000
+
+
+def supports_accounts(base: str) -> bool:
+    return base in ACCOUNT_ENV
+
+
+def account_env(agent: CliAgent) -> dict[str, str]:
+    if not agent.account_dir or not supports_accounts(agent.base):
+        return {}
+    return {ACCOUNT_ENV[agent.base]: agent.account_dir}
+
+
+def account_has_login(agent: CliAgent) -> Optional[bool]:
+    marker = CREDENTIAL_FILES.get(agent.base)
+    if not agent.account_dir or marker is None:
+        return None
+    return (Path(agent.account_dir) / marker).exists()
 
 
 class AdapterUnsafe(Exception):
@@ -129,12 +150,11 @@ def validate_path_argv(path: str) -> str:
 def child_env(base: Mapping[str, str], extra: Optional[dict] = None) -> dict:
     env = {k: v for k, v in base.items() if k in ENV_ALLOWLIST or k.upper() in ENV_ALLOWLIST}
     env.update(ENV_FIXED)
-    for key, value in (extra or {}).items():
-        env[key] = value
     for key in list(env):
         upper = key.upper()
-        if upper in ENV_BLOCKLIST or (upper.endswith(SECRET_SUFFIXES) and key not in (extra or {})):
+        if upper in ENV_BLOCKLIST or upper.endswith(SECRET_SUFFIXES):
             env.pop(key, None)
+    env.update(extra or {})
     return env
 
 
@@ -217,6 +237,7 @@ class ClaudeAdapter:
             "--permission-mode", "acceptEdits",
             "--disallowedTools", "Task,Agent,WebFetch,WebSearch",
             "--max-turns", "50",
+            "--setting-sources", "project,local", "--strict-mcp-config",
             "--add-dir", ws,
         ]
         if model:

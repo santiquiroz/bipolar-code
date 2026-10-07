@@ -27,7 +27,7 @@ from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import health_service, providers_service, usage_tracker
 from app.services.cli_agents import registry as agents_registry
-from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, adapter_for
+from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -395,6 +395,7 @@ async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: i
         return AttemptOutcome(ok=False, error="not_installed")
     try:
         spec = adapter_for(agent.base).build(agent, exe, rt.job.id, rt.request.task, model, rt.workspace, rt.job.tier, timeout_s)
+        spec.env.update(account_env(agent))
     except AdapterUnsafe as e:
         return AttemptOutcome(ok=False, error=str(e))
     _emit(rt, {"event": "status", "status": "running", "agent_id": agent.id, "model": model, "argv": spec.redacted})
