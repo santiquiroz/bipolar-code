@@ -55,10 +55,10 @@ def known_paths(agent_id: str) -> list[Path]:
 def resolve_exe(agent: CliAgent) -> str:
     if agent.exe_path:
         return agent.exe_path if Path(agent.exe_path).exists() else ""
-    found = shutil.which(BINARIES[agent.id])
+    found = shutil.which(BINARIES[agent.base])
     if found and not found.lower().endswith(".ps1"):
         return found
-    for candidate in known_paths(agent.id):
+    for candidate in known_paths(agent.base):
         if candidate and candidate.exists():
             return str(candidate)
     return found or ""
@@ -250,21 +250,21 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
     status.installed = bool(exe)
     status.exe = exe
     try:
-        if agent.id == "ollama":
+        if agent.base == "ollama":
             await _probe_ollama(status)
             status.installed = status.installed or status.auth == "ok"
         elif exe:
-            if agent.id == "cursor":
+            if agent.base == "cursor":
                 await _probe_cursor(exe, status)
-            elif agent.id == "deepseek":
+            elif agent.base == "deepseek":
                 await _probe_deepseek(exe, status)
-            elif agent.id == "muse":
+            elif agent.base == "muse":
                 await _probe_muse(exe, status)
             else:
                 status.version, status.error = await _probe_version(exe)
-            if agent.id == "codex":
+            if agent.base == "codex":
                 status.auth = await _probe_codex_auth(exe)
-            elif agent.id == "antigravity":
+            elif agent.base == "antigravity":
                 await _probe_antigravity(exe, status)
     except Exception as e:  # el sondeo nunca debe tumbar la API
         status.error = str(e)[:200]
@@ -274,7 +274,7 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
 
 
 def _with_runtime(status: AgentStatus, agent: CliAgent) -> AgentStatus:
-    key = AntigravityAdapter.pool_key(agent.default_model) if agent.id == "antigravity" else agent.key
+    key = AntigravityAdapter.pool_key(agent.default_model) if agent.base == "antigravity" else agent.key
     health = health_service.get(key)
     return status.model_copy(update={
         "state": health.state, "seconds_left": health_service.seconds_left(key),

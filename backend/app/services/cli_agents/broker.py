@@ -141,7 +141,7 @@ def scratch_dir(job_id: str) -> Path:
 # ── elección de agente ───────────────────────────────────────────────────────
 
 def _pool_key(agent: CliAgent, model: str) -> str:
-    return AntigravityAdapter.pool_key(model) if agent.id == "antigravity" else agent.key
+    return AntigravityAdapter.pool_key(model) if agent.base == "antigravity" else agent.key
 
 
 def _muse_sandbox_verified(status: Optional[AgentStatus]) -> bool:
@@ -161,11 +161,11 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
         return "tier_unsupported"
     if status is not None and status.auth == "auth_error":
         return "auth_error"
-    if agent.id == "muse" and not _muse_sandbox_verified(status):
+    if agent.base == "muse" and not _muse_sandbox_verified(status):
         return "muse_sandbox_not_ready"
-    if agent.id == "antigravity" and not AntigravityAdapter().deny_list_present():
+    if agent.base == "antigravity" and not AntigravityAdapter().deny_list_present():
         return "agy_deny_list_missing"
-    if agent.id == "cursor" and not CursorAdapter().deny_list_present():
+    if agent.base == "cursor" and not CursorAdapter().deny_list_present():
         return "cursor_deny_list_missing"
     health = health_service.get(_pool_key(agent, model))
     if health.state != "available":
@@ -388,13 +388,13 @@ async def _run_ollama(rt: JobRuntime, agent: CliAgent, model: str, task: str, ti
 
 
 async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: int) -> AttemptOutcome:
-    if agent.id == "ollama":
+    if agent.base == "ollama":
         return await _run_ollama(rt, agent, model, rt.request.task, timeout_s)
     exe = agents_registry.resolve_exe(agent)
     if not exe:
         return AttemptOutcome(ok=False, error="not_installed")
     try:
-        spec = adapter_for(agent.id).build(agent, exe, rt.job.id, rt.request.task, model, rt.workspace, rt.job.tier, timeout_s)
+        spec = adapter_for(agent.base).build(agent, exe, rt.job.id, rt.request.task, model, rt.workspace, rt.job.tier, timeout_s)
     except AdapterUnsafe as e:
         return AttemptOutcome(ok=False, error=str(e))
     _emit(rt, {"event": "status", "status": "running", "agent_id": agent.id, "model": model, "argv": spec.redacted})
@@ -408,7 +408,7 @@ async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: i
                 pass
     if timed_out:
         return AttemptOutcome(ok=False, returncode=rc, error="timeout", timed_out=True)
-    result = adapter_for(agent.id).parse(stdout, stderr, rc, spec.out_file)
+    result = adapter_for(agent.base).parse(stdout, stderr, rc, spec.out_file)
     signal = signal_from_attempt(rc, stdout, stderr, result.structured_error)
     ok = rc == 0 and not result.structured_error and signal is None
     return AttemptOutcome(ok=ok, returncode=rc, signal=signal, result=result, error="" if ok else (result.text[-300:] or f"exit {rc}"))
@@ -543,7 +543,7 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             if outcome.signal.kind == "auth":
                 job.status, job.error = "auth_error", outcome.signal.excerpt
                 break
-            if agent.id == "antigravity" and agent.alt_model_on_quota and not alt_pool_tried and rt.request.model == "":
+            if agent.base == "antigravity" and agent.alt_model_on_quota and not alt_pool_tried and rt.request.model == "":
                 alt_pool_tried = True
                 model = agent.alt_model_on_quota
                 continue

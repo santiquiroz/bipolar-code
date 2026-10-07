@@ -5,13 +5,15 @@ sin cambios y `smart.enabled=False` reproduce el comportamiento previo.
 """
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
 AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse"]
 AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse")
+
+AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse)(-[a-z0-9]{1,24})?$"
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -60,7 +62,10 @@ class SmartRoutingConfig(BaseModel):
 
 
 class CliAgent(BaseModel):
-    id: AgentId
+    id: str = Field(pattern=AGENT_ID_PATTERN)
+    adapter: str = ""
+    account_dir: str = ""
+    account_label: str = ""
     name: str = ""
     enabled: bool = False
     exe_path: str = ""
@@ -82,6 +87,23 @@ class CliAgent(BaseModel):
     def key(self) -> str:
         return f"cli:{self.id}"
 
+    @model_validator(mode="after")
+    def _fill_adapter(self) -> "CliAgent":
+        prefix = self.id.split("-", 1)[0]
+        if self.adapter and self.adapter != prefix:
+            raise ValueError("adapter debe coincidir con el prefijo del id")
+        if not self.adapter and "-" in self.id:
+            self.adapter = prefix
+        return self
+
+    @property
+    def base(self) -> str:
+        return self.adapter or self.id.split("-", 1)[0]
+
+    @property
+    def is_account(self) -> bool:
+        return bool(self.account_dir)
+
     def model_for(self, tier: str, requested: str = "") -> str:
         return requested or self.model_by_tier.get(tier, "") or self.default_model
 
@@ -98,6 +120,8 @@ class DelegationConfig(BaseModel):
     max_parallel_jobs: int = 3
     max_attempts: int = 3
     job_retention: int = 200
+    thinkers: list[str] = Field(default_factory=lambda: ["claude", "codex"])
+    account_exhausted_pct: int = Field(default=98, ge=50, le=100)
 
 
 DEFAULT_CLI_AGENTS: list[dict] = [
