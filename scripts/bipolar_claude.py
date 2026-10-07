@@ -15,6 +15,7 @@ from typing import Callable, Optional
 MIRROR_DIRS = ("skills", "agents", "commands", "rules", "hooks", "plugins")
 PROXY_ENV_KEYS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 DEFAULT_URL = "http://127.0.0.1:8000"
+AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 
 def default_config_dir(environ: Mapping[str, str]) -> Path:
@@ -51,7 +52,7 @@ def project_slug(cwd: Path) -> str:
 
 
 def statusline_command(python_exe: str, reporter: Path, agent_id: str, original: Optional[str]) -> str:
-    cmd = f'"{python_exe}" "{reporter}" --agent-id {agent_id}'
+    cmd = f'"{python_exe}" "{reporter}" --agent-id "{agent_id}"'
     if original:
         escaped = original.replace('"', '\\"')
         cmd += f' --then "{escaped}"'
@@ -155,18 +156,42 @@ def fetch_pick(url: str, key: str, timeout: float = 3.0, opener=urllib.request.u
     return data if isinstance(data, dict) else None
 
 
-def launch_plan(pick: Optional[dict], key: str, base_url: str) -> tuple[dict, str]:
+def _valid_account_dir(path_str, config_dir) -> Optional[Path]:
+    if not isinstance(path_str, (str, os.PathLike)):
+        return None
+    try:
+        candidate = Path(path_str).resolve()
+        base = (config_dir / "accounts").resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
+    if candidate == base or not candidate.is_relative_to(base):
+        return None
+    return candidate
+
+
+def _valid_agent_id(agent_id) -> bool:
+    return isinstance(agent_id, str) and AGENT_ID_RE.match(agent_id) is not None
+
+
+def launch_plan(pick: Optional[dict], key: str, base_url: str, config_dir: Optional[Path] = None) -> tuple[dict, str]:
     if pick is None:
         return {}, "plain"
     if pick.get("mode") == "account" and pick.get("account_dir"):
+        if config_dir is not None and _valid_account_dir(pick["account_dir"], config_dir) is None:
+            return {}, "plain"
+        if pick.get("agent_id") is not None and not _valid_agent_id(pick["agent_id"]):
+            return {}, "plain"
         return {"CLAUDE_CONFIG_DIR": pick["account_dir"]}, "account"
     if pick.get("mode") == "proxy":
-        return {"ANTHROPIC_BASE_URL": pick.get("base_url") or base_url, "ANTHROPIC_API_KEY": key}, "proxy"
+        return {"ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_API_KEY": key}, "proxy"
     return {}, "plain"
 
 
 def make_link(src: Path, dst: Path) -> None:
     if os.name == "nt":
+        for part in (str(src), str(dst)):
+            if any(c in part for c in "&|<>^%\"!"):
+                raise OSError("ruta con caracteres no admitidos para mklink")
         subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(dst), str(src)],
             check=True,
@@ -180,8 +205,13 @@ def _apply_plan(plan: list[tuple[str, Path, Path]], link_fn: Callable[[Path, Pat
     warnings: list[str] = []
     for kind, src, dst in plan:
         if kind == "link":
-            link_fn(src, dst)
+            try:
+                link_fn(src, dst)
+            except OSError as exc:
+                warnings.append(f"{dst.name}: no se pudo crear el enlace ({exc})")
         elif kind == "copy":
+            if dst.is_symlink():
+                dst.unlink()
             shutil.copy2(src, dst)
         else:
             warnings.append(f"{dst.name}: ya existe un directorio real; se deja sin tocar")
@@ -301,7 +331,16 @@ def _continue_args(config_dir: Path, pick: Optional[dict], mode: str, dry_run: b
     except (OSError, ValueError):
         last = {}
     if isinstance(last, dict) and last.get("agent_id") and last.get("account_dir"):
-        prev_dir = Path(last["account_dir"])
+        raw_prev = last["account_dir"]
+        home_claude = Path.home() / ".claude"
+        try:
+            same_as_home = Path(raw_prev) == home_claude or Path(raw_prev).resolve() == home_claude.resolve()
+        except (OSError, ValueError, RuntimeError, TypeError):
+            same_as_home = False
+        if _valid_account_dir(raw_prev, config_dir) is not None or same_as_home:
+            prev_dir = Path(raw_prev)
+        else:
+            prev_dir = home_claude
     else:
         prev_dir = Path.home() / ".claude"
     if mode == "account" and pick:
@@ -359,7 +398,13 @@ def main(argv: list[str], environ: Mapping[str, str], run=subprocess.call, opene
     key = read_api_key(config_dir, environ)
     url = environ.get("BIPOLAR_URL", DEFAULT_URL)
     pick = fetch_pick(url, key, opener=opener)
-    env_updates, mode = launch_plan(pick, key, url)
+    if isinstance(pick, dict) and pick.get("mode") == "account":
+        if _valid_account_dir(pick.get("account_dir"), config_dir) is None or (
+            pick.get("agent_id") is not None and not _valid_agent_id(pick.get("agent_id"))
+        ):
+            print("cuenta con carpeta inválida; se abre claude normal", file=out)
+            pick = None
+    env_updates, mode = launch_plan(pick, key, url, config_dir)
     mirror = mode == "account" and not flags["no_mirror"]
     if flags["dry_run"]:
         if flags["bc_continue"]:

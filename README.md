@@ -232,6 +232,7 @@ Gateway + UI en `:8000`, config en el volumen `bipolar-data`. `llama-server` NO 
 - Fuera de la LAN: VPN. No abras el puerto al internet público.
 - `/mcp` es plano de control, igual que `/api`: exige la API key y respeta el mismo filtro de redes (`CONTROL_PLANE_ALLOWED_CIDRS`).
 - Los comandos de `verify` corren en tu host sin shell y con entorno mínimo, pero **fuera de cualquier sandbox** y con tu usuario. Como mitigaciones, el workspace debe estar en la lista permitida y `allow_request_verify` viene **apagado** en instalaciones nuevas.
+- Ojo con lo que implica: verificar es **ejecutar código que el agente delegado pudo modificar**. `pytest` carga el `conftest.py` del repo, `npm test` corre los scripts de `package.json`, y un script del propio repo puede haber sido reescrito por el agente. Los agentes trabajan dentro de su sandbox, pero la verificación corre afuera. Delega con `verify` solo en repos y agentes en los que confíes, y revisa el diff antes de ejecutar cualquier cosa por tu cuenta.
 
 ---
 

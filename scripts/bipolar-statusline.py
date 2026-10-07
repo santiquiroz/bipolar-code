@@ -2,14 +2,19 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TextIO
 
 WINDOWS = ("five_hour", "5h"), ("seven_day", "7d")
+
+
+AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 
 def build_report(data: dict) -> dict:
@@ -72,9 +77,9 @@ def main(argv: list[str], stdin: TextIO, stdout: TextIO, post: Callable[[str, di
         data = {}
     try:
         report = build_report(data)
-        if report["rate_limits"]:
+        if report["rate_limits"] and AGENT_ID_RE.match(args.agent_id or ""):
             config_dir = Path(args.config_dir) if args.config_dir else _default_config_dir(os.environ)
-            post(f"{args.url.rstrip('/')}/api/accounts/{args.agent_id}/usage", report,
+            post(f"{args.url.rstrip('/')}/api/accounts/{urllib.parse.quote(args.agent_id, safe='')}/usage", report,
                  api_key(config_dir, os.environ))
     except Exception:
         pass

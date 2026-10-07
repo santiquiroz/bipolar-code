@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "bipolar_claude.py"
 
 
@@ -29,7 +31,7 @@ def test_mirrored_settings_strips_proxy_and_wraps_statusline():
     out = bc.mirrored_settings(user, cmd)
     assert out["env"] == {"FOO": "1"}
     assert out["statusLine"] == {"type": "command", "command": cmd}
-    assert "--agent-id claude-2" in cmd and '--then "node mine.js"' in cmd
+    assert '--agent-id "claude-2"' in cmd and '--then "node mine.js"' in cmd
     assert out["theme"] == "dark"
     assert user["env"]["ANTHROPIC_BASE_URL"] == "http://x"
 
@@ -116,7 +118,7 @@ def test_launch_plan_modes():
     bc = _load()
     assert bc.launch_plan(None, "k", "http://b") == ({}, "plain")
     assert bc.launch_plan({"mode": "account", "account_dir": "C:/a", "agent_id": "claude-2"}, "k", "http://b") == ({"CLAUDE_CONFIG_DIR": "C:/a"}, "account")
-    env, mode = bc.launch_plan({"mode": "proxy"}, "k", "http://b")
+    env, mode = bc.launch_plan({"mode": "proxy", "base_url": "http://evil"}, "k", "http://b")
     assert mode == "proxy" and env == {"ANTHROPIC_BASE_URL": "http://b", "ANTHROPIC_API_KEY": "k"}
 
 
@@ -226,3 +228,138 @@ def test_dry_run_account_has_no_side_effects(tmp_path, monkeypatch):
     assert not (tmp_path / "accounts" / ".last").exists()
     report = json.loads(out.getvalue().strip().splitlines()[-1])
     assert report["mode"] == "account" and report["mirror"] is True and report["args"] == ["-p", "hola"]
+
+
+def test_valid_account_dir_only_under_accounts(tmp_path):
+    bc = _load()
+    acct = tmp_path / "accounts" / "claude-2"
+    acct.mkdir(parents=True)
+    assert bc._valid_account_dir(str(acct), tmp_path) is not None
+    assert bc._valid_account_dir(str(tmp_path / "home" / ".claude"), tmp_path) is None
+    assert bc._valid_account_dir(str(tmp_path / "accounts"), tmp_path) is None
+    assert bc._valid_account_dir("", tmp_path) is None
+    assert bc.launch_plan({"mode": "account", "agent_id": "claude-2",
+                           "account_dir": str(tmp_path / "home" / ".claude")}, "k", "http://b", tmp_path) == ({}, "plain")
+
+
+def test_main_account_dir_outside_accounts_is_plain_without_writes(tmp_path, monkeypatch):
+    bc = _load()
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    monkeypatch.setattr(bc.Path, "home", lambda: home)
+    out = io.StringIO()
+
+    def run(*a, **k):
+        raise AssertionError("dry-run no debe lanzar claude")
+
+    rc = bc.main(["--bc-dry-run", "-p", "hola"], {"LITELLM_CONFIG_DIR": str(tmp_path), "BIPOLAR_API_KEY": "k"},
+                 run=run, opener=_pick_opener({"mode": "account", "agent_id": "claude-2",
+                                               "account_dir": str(home / ".claude")}), out=out)
+    assert rc == 0
+    report = json.loads(out.getvalue().strip().splitlines()[-1])
+    assert report["mode"] == "plain" and report["mirror"] is False
+    assert "cuenta con carpeta inválida; se abre claude normal" in out.getvalue()
+    assert not (tmp_path / "accounts" / ".last").exists()
+    assert not (home / ".claude" / "settings.json").exists()
+
+
+def test_continue_ignores_last_outside_accounts(tmp_path, monkeypatch):
+    bc = _load()
+    evil = tmp_path / "evil"
+    folder = evil / "projects" / bc.project_slug(Path.cwd())
+    folder.mkdir(parents=True)
+    (folder / "sess-evil.jsonl").write_text('{"x":1}\n', encoding="utf-8")
+    new = tmp_path / "accounts" / "claude-3"
+    new.mkdir(parents=True)
+    (tmp_path / "accounts" / ".last").write_text(
+        json.dumps({"agent_id": "claude-2", "account_dir": str(evil)}), encoding="utf-8")
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    out, seen = io.StringIO(), {}
+    bc.main(["--bc-continue", "--bc-no-mirror"], {"LITELLM_CONFIG_DIR": str(tmp_path), "BIPOLAR_API_KEY": "k"},
+            run=lambda argv, env=None: seen.setdefault("argv", argv) and 0,
+            opener=_pick_opener({"mode": "account", "agent_id": "claude-3", "account_dir": str(new)}), out=out)
+    assert "--resume" not in seen["argv"] and "nueva" in out.getvalue()
+    assert not (new / "projects" / bc.project_slug(Path.cwd()) / "sess-evil.jsonl").exists()
+
+
+def test_agent_id_regex():
+    bc = _load()
+    assert bc.AGENT_ID_RE.match("claude-2")
+    assert not bc.AGENT_ID_RE.match("EVIL!!")
+    assert not bc.AGENT_ID_RE.match("")
+
+
+def test_main_invalid_agent_id_is_plain(tmp_path, monkeypatch):
+    bc = _load()
+    acct = tmp_path / "accounts" / "claude-2"
+    acct.mkdir(parents=True)
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    assert bc.launch_plan({"mode": "account", "agent_id": "EVIL!!",
+                           "account_dir": str(acct)}, "k", "http://b") == ({}, "plain")
+    out = io.StringIO()
+    rc = bc.main(["--bc-dry-run", "--bc-no-mirror"], {"LITELLM_CONFIG_DIR": str(tmp_path), "BIPOLAR_API_KEY": "k"},
+                 run=lambda *a, **k: 99,
+                 opener=_pick_opener({"mode": "account", "agent_id": "EVIL!!", "account_dir": str(acct)}), out=out)
+    assert rc == 0
+    report = json.loads(out.getvalue().strip().splitlines()[-1])
+    assert report["mode"] == "plain"
+    assert "inválid" in out.getvalue()
+
+
+def test_statusline_command_quotes_agent_id():
+    bc = _load()
+    cmd = bc.statusline_command("python", Path("/r/bipolar-statusline.py"), "claude-2", None)
+    assert '--agent-id "claude-2"' in cmd
+
+
+def test_make_link_rejects_shell_metachars(tmp_path, monkeypatch):
+    bc = _load()
+    monkeypatch.setattr(bc.os, "name", "nt")
+    calls = []
+    monkeypatch.setattr(bc.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(OSError, match="ruta con caracteres no admitidos para mklink"):
+        bc.make_link(tmp_path / "a&b", tmp_path / "dst")
+    with pytest.raises(OSError, match="ruta con caracteres no admitidos para mklink"):
+        bc.make_link(tmp_path / "src", tmp_path / "d|st")
+    assert calls == []
+
+
+def test_apply_mirror_link_error_warns_and_continues(tmp_path, monkeypatch):
+    bc = _load()
+    user, acct = tmp_path / "user", tmp_path / "acct"
+    (user / "skills").mkdir(parents=True)
+    (user / "agents").mkdir(parents=True)
+    (user / "settings.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    attempted = []
+
+    def link(src, dst):
+        attempted.append(dst.name)
+        if dst.name == "skills":
+            raise OSError("ruta con caracteres no admitidos para mklink")
+
+    warnings = bc.apply_mirror(user, acct, "cmd", link=link)
+    assert any("skills" in w for w in warnings)
+    assert "agents" in attempted
+    settings = json.loads((acct / "settings.json").read_text(encoding="utf-8"))
+    assert settings["statusLine"]["command"] == "cmd"
+
+
+def test_copy_unlinks_symlink_destination(tmp_path, monkeypatch):
+    bc = _load()
+    user, acct = tmp_path / "user", tmp_path / "acct"
+    user.mkdir(parents=True)
+    acct.mkdir(parents=True)
+    (user / "CLAUDE.md").write_text("reglas nuevas", encoding="utf-8")
+    real = tmp_path / "real.md"
+    real.write_text("original", encoding="utf-8")
+    dst = acct / "CLAUDE.md"
+    try:
+        os.symlink(real, dst)
+    except OSError:
+        pytest.skip("sin permiso para crear symlinks")
+    monkeypatch.setattr(bc.Path, "home", lambda: tmp_path / "home")
+    bc.apply_mirror(user, acct, "cmd", link=lambda s, d: None)
+    assert not dst.is_symlink()
+    assert dst.read_text(encoding="utf-8") == "reglas nuevas"
+    assert real.read_text(encoding="utf-8") == "original"

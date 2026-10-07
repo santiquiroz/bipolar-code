@@ -56,3 +56,21 @@ def test_without_rate_limits_does_not_post(tmp_path):
     sl.main(["--agent-id", "claude-2", "--config-dir", str(tmp_path)], io.StringIO(json.dumps({"model": {"display_name": "X"}})),
             io.StringIO(), lambda *a: calls.append(a))
     assert calls == []
+
+
+def test_agent_id_regex():
+    sl = _load()
+    assert sl.AGENT_ID_RE.match("claude-2")
+    assert not sl.AGENT_ID_RE.match("../evil")
+    assert not sl.AGENT_ID_RE.match("EVIL")
+    assert not sl.AGENT_ID_RE.match("")
+
+
+def test_invalid_agent_id_skips_post_but_prints(tmp_path):
+    sl = _load()
+    calls, out = [], io.StringIO()
+    rc = sl.main(["--agent-id", "../evil", "--config-dir", str(tmp_path)], io.StringIO(json.dumps(DATA)), out,
+                 lambda url, payload, key: calls.append((url, payload, key)))
+    assert rc == 0
+    assert calls == []
+    assert out.getvalue().strip() == "Opus 4.6 · 5h 42% · 7d 13%"
