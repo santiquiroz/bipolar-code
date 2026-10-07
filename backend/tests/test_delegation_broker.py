@@ -151,23 +151,23 @@ def _full_statuses(registry: ProviderRegistry) -> dict[str, AgentStatus]:
 
 
 @pytest.mark.parametrize("tier", ["trivial", "simple", "standard", "complex"])
-def test_choose_agent_prefers_deepseek_in_every_tier(env, tier):
+def test_choose_agent_prefers_muse_in_every_tier(env, tier):
     registry = _full_registry()
     agent, _, reasons, _ = broker.choose_agent(tier, registry, _full_statuses(registry))
-    assert agent is not None and agent.id == "deepseek"
-    assert reasons == [f"agent:deepseek:{tier}"]
+    assert agent is not None and agent.id == "muse"
+    assert reasons == [f"agent:muse:{tier}"]
 
 
 @pytest.mark.parametrize("tier, expected", [
-    ("trivial", "muse"), ("simple", "muse"), ("standard", "muse"), ("complex", "codex"),
+    ("trivial", "copilot"), ("simple", "copilot"), ("standard", "codex"), ("complex", "codex"),
 ])
-def test_choose_agent_uses_muse_lane_when_deepseek_excluded(env, tier, expected):
+def test_choose_agent_uses_second_lane_when_muse_excluded(env, tier, expected):
     registry = _full_registry()
     agent, _, reasons, skipped = broker.choose_agent(
-        tier, registry, _full_statuses(registry), exclude=("deepseek",))
+        tier, registry, _full_statuses(registry), exclude=("muse",))
     assert agent is not None and agent.id == expected
     assert reasons == [f"agent:{expected}:{tier}"]
-    assert ("deepseek", "already_tried") in skipped
+    assert ("muse", "already_tried") in skipped
 
 
 @pytest.mark.parametrize("sandbox", ["missing", "not_ready", "error", ""])
@@ -204,7 +204,7 @@ def test_choose_agent_skips_deepseek_on_auth_error(env):
     registry = _full_registry()
     statuses = _full_statuses(registry)
     statuses["deepseek"] = AgentStatus(id="deepseek", installed=True, auth="auth_error")
-    agent, _, _, skipped = broker.choose_agent("complex", registry, statuses)
+    agent, _, _, skipped = broker.choose_agent("complex", registry, statuses, preferred="deepseek", exclude=("muse",))
     assert ("deepseek", "auth_error") in skipped
     assert agent is not None and agent.id == "codex"
 

@@ -209,13 +209,10 @@ def load_registry() -> ProviderRegistry:
         return ProviderRegistry(providers=[Provider(**d) for d in _DEFAULTS])
 
 
-def _place_seeded_agent(agent_id: str, tier: str, order: list[str]) -> list[str]:
-    if agent_id == "deepseek":
+def _place_seeded_agent(agent_id: str, order: list[str]) -> list[str]:
+    if agent_id == "muse":
         return [agent_id] + order
-    if tier == "complex":
-        return order + [agent_id]
-    index = order.index("deepseek") + 1 if "deepseek" in order else 0
-    return order[:index] + [agent_id] + order[index:]
+    return order + [agent_id]
 
 
 def _seed_agent_order(registry: ProviderRegistry, existing: set[str], agent_id: str) -> None:
@@ -226,7 +223,7 @@ def _seed_agent_order(registry: ProviderRegistry, existing: set[str], agent_id: 
         return
     # La posición inicial se migra solo al sembrar el agente; después el orden es del usuario.
     registry.delegation.tier_order = {
-        tier: _place_seeded_agent(agent_id, tier, order) for tier, order in orders.items()
+        tier: _place_seeded_agent(agent_id, order) for tier, order in orders.items()
     }
 
 

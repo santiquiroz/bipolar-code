@@ -89,10 +89,10 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["deepseek", "muse", "ollama", "copilot", "cursor", "antigravity", "claude"],
-        "simple": ["deepseek", "muse", "copilot", "cursor", "antigravity", "codex", "claude"],
-        "standard": ["deepseek", "muse", "codex", "claude", "antigravity", "copilot", "cursor"],
-        "complex": ["deepseek", "codex", "claude", "antigravity", "muse"],
+        "trivial": ["muse", "ollama", "copilot", "cursor", "antigravity", "claude", "deepseek"],
+        "simple": ["muse", "copilot", "cursor", "antigravity", "codex", "claude", "deepseek"],
+        "standard": ["muse", "codex", "claude", "antigravity", "copilot", "cursor", "deepseek"],
+        "complex": ["muse", "codex", "claude", "antigravity", "deepseek"],
     })
     max_parallel_jobs: int = 3
     max_attempts: int = 3
@@ -133,11 +133,11 @@ DEFAULT_CLI_AGENTS: list[dict] = [
         "id": "deepseek", "name": "DeepSeek Harness (dsh)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
         "default_model": "deepseek-flash",
         "model_by_tier": {"standard": "deepseek-v4-pro", "complex": "deepseek-v4-pro"},
-        "quota_reset": "none", "cost_weight": 0.3, "priority": 5, "timeout_s": 900,
+        "quota_reset": "none", "cost_weight": 0.3, "priority": 90, "timeout_s": 900,
     },
     {
         "id": "muse", "name": "Muse (Meta)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
-        "quota_reset": "none", "cost_weight": 0.4, "priority": 8, "timeout_s": 900,
+        "quota_reset": "none", "cost_weight": 0.4, "priority": 5, "timeout_s": 900,
     },
 ]
 
