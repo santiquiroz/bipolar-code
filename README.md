@@ -224,6 +224,22 @@ docker compose up -d --build
 
 Gateway + UI en `:8000`, config en el volumen `bipolar-data`. `llama-server` NO va dentro (necesita las GPUs del host): córrelo en el host y apunta el provider llamacpp a `http://host.docker.internal:4002`.
 
+## Arranque con Windows (sin iniciar sesión)
+
+Para que bipolar arranque al encender el PC, sin esperar a que alguien inicie sesión, y para que lo alcance un servicio dentro de WSL:
+
+```powershell
+# PowerShell como administrador; pide tu contraseña de Windows una vez
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
+```
+
+El script:
+- Registra la tarea `bipolar-code backend` con dos disparadores, al encender y al iniciar sesión. La tarea corre con tu cuenta y tu contraseña, así las credenciales del llavero de Windows (gh, Copilot) funcionan. Se reinicia hasta 3 veces si falla.
+- Crea una regla de firewall que **bloquea el puerto 8000 salvo** desde loopback y la red de WSL (`172.16.0.0/12`).
+- Reinicia bipolar con la tarea nueva.
+
+Para que WSL lo alcance, el lanzador (`C:\litellm\start-bipolar.ps1`) debe usar `--host 0.0.0.0`. Desde WSL, Windows es la puerta de enlace: `curl http://$(ip route show default | awk '{print $3}'):8000/api/health`.
+
 ## Seguridad
 
 - Todo (`/api/*`, `/v1/*` y `/mcp`) exige tu API key — nada queda anónimo en la LAN.
