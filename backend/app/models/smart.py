@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field, model_validator
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "anthropic"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "anthropic")
 
-AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse)(-[a-z0-9]{1,24})?$"
+AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse|anthropic)(-[a-z0-9]{1,24})?$"
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -81,6 +81,7 @@ class CliAgent(BaseModel):
     cooldown_s: int = 900
     quota_reset: QuotaReset = "none"
     max_credits: int = 0
+    max_monthly_usd: float = Field(default=0, ge=0)
     extra_args: list[str] = Field(default_factory=list)
 
     @property
@@ -112,15 +113,15 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["muse", "ollama", "copilot", "cursor", "antigravity", "claude", "deepseek"],
-        "simple": ["muse", "copilot", "cursor", "antigravity", "codex", "claude", "deepseek"],
-        "standard": ["muse", "codex", "claude", "antigravity", "copilot", "cursor", "deepseek"],
-        "complex": ["muse", "codex", "claude", "antigravity", "deepseek"],
+        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "deepseek"],
+        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "deepseek"],
+        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "deepseek"],
+        "complex": ["anthropic", "muse", "codex", "claude", "antigravity", "deepseek"],
     })
     max_parallel_jobs: int = 3
     max_attempts: int = 3
     job_retention: int = 200
-    thinkers: list[str] = Field(default_factory=lambda: ["claude", "codex"])
+    thinkers: list[str] = Field(default_factory=lambda: ["anthropic", "claude", "codex"])
     account_exhausted_pct: int = Field(default=98, ge=50, le=100)
     allow_request_verify: bool = False
     review_default: bool = True
@@ -129,6 +130,15 @@ class DelegationConfig(BaseModel):
 
 
 DEFAULT_CLI_AGENTS: list[dict] = [
+    {
+        "id": "anthropic", "name": "Anthropic API (créditos Max)",
+        "supported_tiers": ["trivial", "simple", "standard", "complex"],
+        "model_by_tier": {"trivial": "claude-haiku-5-5", "simple": "claude-haiku-5-5",
+                          "standard": "claude-sonnet-5-5", "complex": "claude-opus-5-5"},
+        "default_model": "claude-sonnet-5-5", "priority": 0, "cost_weight": 0.1,
+        "agentic": True, "quota_reset": "none", "cooldown_s": 21600,
+        "timeout_s": 900, "max_monthly_usd": 200,
+    },
     {
         "id": "claude", "name": "Claude Code", "supported_tiers": ["simple", "standard", "complex"],
         "quota_reset": "5h", "cost_weight": 1.0, "priority": 40,

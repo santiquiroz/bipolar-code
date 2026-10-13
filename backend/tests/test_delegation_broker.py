@@ -140,7 +140,7 @@ def test_choose_agent_skips_cooling_and_busy(env):
 def _full_registry() -> ProviderRegistry:
     return ProviderRegistry(
         active_provider_id="copilot", providers=[],
-        cli_agents=_agents(*AGENT_IDS),
+        cli_agents=_agents(*(aid for aid in AGENT_IDS if aid != "anthropic")),
         delegation=DelegationConfig(enabled=True),
     )
 

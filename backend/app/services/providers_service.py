@@ -210,7 +210,7 @@ def load_registry() -> ProviderRegistry:
 
 
 def _place_seeded_agent(agent_id: str, order: list[str]) -> list[str]:
-    if agent_id == "muse":
+    if agent_id in ("muse", "anthropic"):
         return [agent_id] + order
     return order + [agent_id]
 
@@ -238,6 +238,9 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
             seeded.append(f"cli:{defaults['id']}")
     _seed_agent_order(registry, existing, "deepseek")
     _seed_agent_order(registry, existing, "muse")
+    _seed_agent_order(registry, existing, "anthropic")
+    if "anthropic" not in existing and "anthropic" not in registry.delegation.thinkers:
+        registry.delegation.thinkers.insert(0, "anthropic")
     if not registry.smart.tiers and registry.providers:
         registry.smart.tiers = default_tier_table({p.id for p in registry.providers})
         seeded.append("smart.tiers")

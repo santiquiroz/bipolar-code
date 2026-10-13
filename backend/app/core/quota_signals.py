@@ -12,7 +12,7 @@ SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded"]
 RATE_LIMIT_RE = re.compile(r"rate.?limit|\b429\b|too many requests|slow down", re.I)
 EXHAUSTED_RE = re.compile(
     r"quota|usage limit|insufficient_quota|resource_exhausted|out of (?:ai )?credits"
-    r"|credits? (?:limit|exhausted)|weekly limit|hit your limit|hit your (?:\w+ )?limit|limit reached|insufficient balance",
+    r"|credit balance (?:is )?too low|credit_balance_too_low|credits? (?:limit|exhausted)|weekly limit|hit your limit|hit your (?:\w+ )?limit|limit reached|insufficient balance",
     re.I,
 )
 AUTH_RE = re.compile(

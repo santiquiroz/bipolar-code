@@ -25,7 +25,7 @@ from app.core.utils import sanitize_error
 from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
-from app.services import health_service, providers_service, usage_tracker
+from app.services import budget_service, health_service, providers_service, usage_tracker
 from app.services.cli_agents import registry as agents_registry, reviewer, verifier
 from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
@@ -174,6 +174,11 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
         return "tier_unsupported"
     if status is not None and status.auth == "auth_error":
         return "auth_error"
+    if agent.base == "anthropic" and status is not None and status.error and status.auth == "unknown":
+        return "probe_error"
+    spend = (status.quota or {}).get("month_spend_usd", 0) if status is not None else 0
+    if agent.max_monthly_usd > 0 and spend >= agent.max_monthly_usd:
+        return "monthly_budget"
     if agent.base == "muse" and not _muse_sandbox_verified(status):
         return "muse_sandbox_not_ready"
     if agent.base == "antigravity" and not AntigravityAdapter().deny_list_present():
@@ -476,6 +481,8 @@ def _write_log(rt: JobRuntime) -> str:
 
 
 async def _record(job: Job) -> None:
+    if job.agent_id.split("-", 1)[0] == "anthropic":
+        return
     try:
         await usage_tracker.record(f"cli:{job.agent_id}", job.model or "default", job.tokens_in, job.tokens_out, job.cost_usd, False)
     except Exception as e:
@@ -483,6 +490,10 @@ async def _record(job: Job) -> None:
 
 
 def _apply_signal(agent: CliAgent, model: str, signal: QuotaSignal) -> None:
+    if agent.base == "anthropic" and signal.kind == "quota_exhausted":
+        signal = QuotaSignal(signal.kind, agent.cooldown_s, signal.excerpt)
+    if agent.base == "anthropic" and signal.kind == "rate_limit" and signal.retry_after_s is None:
+        signal = QuotaSignal(signal.kind, 60, signal.excerpt)
     health_service.mark_signal(_pool_key(agent, model), signal, cooldown_s=agent.cooldown_s, quota_reset=agent.quota_reset)
     agents_registry.invalidate(agent.id)
 
@@ -535,6 +546,33 @@ def _work_count(job: Job) -> int:
     return sum(1 for a in job.attempts if a.kind == "work" and not a.detail.get("revision"))
 
 
+async def _monthly_budget_reached(agent: CliAgent) -> bool:
+    if agent.max_monthly_usd <= 0:
+        return False
+    spend = await budget_service.spend_since(budget_service.provider_id_of(agent.key),
+                                            budget_service.window_start("month").isoformat())
+    return spend["cost_usd"] >= agent.max_monthly_usd
+
+
+async def _record_anthropic_attempt(agent: CliAgent, model: str, outcome: AttemptOutcome) -> None:
+    if agent.base != "anthropic" or outcome.result is None:
+        return
+    usage = outcome.result.usage
+    try:
+        await usage_tracker.record(budget_service.provider_id_of(agent.key), model,
+                                   int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0),
+                                   usage.get("cost_usd"), False)
+    except Exception as error:
+        log.warning("agent_usage_record_failed", agent=agent.id, error=sanitize_error(str(error)))
+    budget_service.clear_cache()
+
+
+async def _refresh_budget_statuses(registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
+    for agent in registry.cli_agents:
+        if agent.id in statuses and agent.max_monthly_usd > 0:
+            statuses[agent.id] = await agents_registry.refresh_monthly_spend(statuses[agent.id], agent)
+
+
 async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: CliAgent, model: str) -> AttemptOutcome:
     job = rt.job
     _, agent_sem = _sems(registry, agent.id)
@@ -545,7 +583,11 @@ async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: C
     agents_registry.adjust_running(agent.id, +1)
     try:
         async with agent_sem:
-            outcome = await _run_attempt(rt, agent, model, rt.request.timeout_s or agent.timeout_s, task=rt.current_task)
+            if await _monthly_budget_reached(agent):
+                outcome = AttemptOutcome(ok=False, error="monthly_budget")
+            else:
+                outcome = await _run_attempt(rt, agent, model, rt.request.timeout_s or agent.timeout_s, task=rt.current_task)
+            await _record_anthropic_attempt(agent, model, outcome)
     finally:
         agents_registry.adjust_running(agent.id, -1)
     attempt.finished_at, attempt.duration_s, attempt.returncode = _now(), round(time.monotonic() - t0, 2), outcome.returncode
@@ -581,7 +623,11 @@ async def _run_attempt_guarded(rt: JobRuntime, registry: ProviderRegistry, agent
     agents_registry.adjust_running(agent.id, +1)
     try:
         async with agent_sem:
-            return await _run_attempt(rt, agent, model, timeout_s, task=task, read_only=read_only)
+            if await _monthly_budget_reached(agent):
+                return AttemptOutcome(ok=False, error="monthly_budget")
+            outcome = await _run_attempt(rt, agent, model, timeout_s, task=task, read_only=read_only)
+            await _record_anthropic_attempt(agent, model, outcome)
+            return outcome
     finally:
         agents_registry.adjust_running(agent.id, -1)
 
@@ -601,6 +647,10 @@ async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, 
     return outcome
 
 
+def _review_model(agent: CliAgent, tier: str) -> str:
+    return "claude-sonnet-5-5" if agent.base == "anthropic" else agent.model_for(tier)
+
+
 def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAgent, tier: str) -> list:
     agents = {a.id: a for a in registry.cli_agents}
     candidates = []
@@ -608,7 +658,7 @@ def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAg
         cand = agents.get(thinker_id)
         if cand is None or cand.id == worker.id or not supports_read_only(cand.base):
             continue
-        if _reject_agent(cand, tier, "task", statuses.get(thinker_id), cand.model_for(tier), False):
+        if _reject_agent(cand, tier, "task", statuses.get(thinker_id), _review_model(cand, tier), False):
             continue
         candidates.append(cand)
     candidates.sort(key=lambda c: c.base == worker.base)
@@ -617,13 +667,14 @@ def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAg
 
 async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, worker: CliAgent, checks: list):
     job = rt.job
+    await _refresh_budget_statuses(registry, statuses)
     candidates = _review_candidates(registry, statuses, worker, job.tier)
     if not candidates:
         return None
     diff = reviewer.collect_diff(rt.workspace, _files_touched(rt.workspace, rt.status_before))
     prompt = reviewer.review_prompt(rt.request.task, diff, checks)
     for cand in candidates:
-        model_cand = cand.model_for(job.tier)
+        model_cand = _review_model(cand, job.tier)
         outcome = await _run_attempt_guarded(rt, registry, cand, model_cand, registry.delegation.review_timeout_s, prompt, read_only=True)
         verdict = reviewer.parse_verdict(outcome.result.text) if outcome.ok and outcome.result else None
         job.attempts.append(Attempt(agent_id=cand.id, model=model_cand, started_at=_now(), finished_at=_now(),
@@ -705,6 +756,7 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
         return None
     history.append(f"{agent.id}: {gate.reason}")
     tried.append(agent.id)
+    await _refresh_budget_statuses(registry, statuses)
     nxt, nxt_model = _escalation_target(rt, registry, statuses, tried)
     if nxt is None or _work_count(job) >= max(1, registry.delegation.max_attempts):
         job.status, job.error = "failed", gate.reason[:300]
@@ -713,6 +765,15 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
     _emit(rt, {"event": "escalated", "from": agent.id, "to": nxt.id, "reason": gate.reason[:300]})
     rt.current_task = reviewer.escalation_task(rt.request.task, history)
     return nxt, nxt_model
+
+
+async def _next_available_agent(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, tried: list) -> tuple:
+    await _refresh_budget_statuses(registry, statuses)
+    agent, model, reasons, skipped = choose_agent(rt.job.tier, registry, statuses, exclude=tuple(tried),
+                                                 mode=rt.request.mode, model_override=rt.request.model)
+    rt.job.reasons += reasons
+    rt.job.skipped += [list(skip) for skip in skipped]
+    return agent, model
 
 
 async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
@@ -741,7 +802,13 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             if outcome.signal is None:
                 job.status, job.error = "failed", outcome.error
                 health_service.mark_failure(_pool_key(agent, model), outcome.error)
-                break
+                if agent.base != "anthropic" or rt.request.agent_id:
+                    break
+                tried.append(agent.id)
+                agent, model = await _next_available_agent(rt, registry, statuses, tried)
+                if agent is not None:
+                    job.status = "running"
+                continue
             _apply_signal(agent, model, outcome.signal)
             _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt})
             if outcome.signal.kind == "auth":
@@ -752,14 +819,13 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 model = agent.alt_model_on_quota
                 continue
             tried.append(agent.id)
+            failure_status = "failed" if agent.base == "anthropic" and outcome.signal.kind == "overloaded" else "quota"
             if rt.request.agent_id:
-                job.status, job.error = "quota", outcome.signal.excerpt
+                job.status, job.error = failure_status, outcome.signal.excerpt
                 break
-            agent, model, more_reasons, skipped = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode=rt.request.mode, model_override=rt.request.model)
-            job.reasons += more_reasons
-            job.skipped += [list(s) for s in skipped]
+            agent, model = await _next_available_agent(rt, registry, statuses, tried)
             if agent is None:
-                job.status, job.error = "quota", outcome.signal.excerpt
+                job.status, job.error = failure_status, outcome.signal.excerpt
         if job.status == "running":
             job.status, job.error = "failed", job.error or "max_attempts"
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
+from app.core.config import env_value
 from app.models.smart import CliAgent, tier_index
 
 BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
@@ -265,6 +266,51 @@ class ClaudeAdapter:
             usage={"input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0),
                    "cost_usd": obj.get("total_cost_usd")},
             session_id=str(obj.get("session_id") or ""),
+        )
+
+
+class AnthropicAdapter:
+    id = "anthropic"
+    prompt_via = "stdin"
+    supports_read_only = True
+    MAX_TURNS = {"trivial": 15, "simple": 30, "standard": 60, "complex": 120}
+    MAX_BUDGET_USD = {"trivial": 0.5, "simple": 1, "standard": 3, "complex": 8}
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        ws = validate_path_argv(str(workspace))
+        if agent.extra_args:
+            raise AdapterUnsafe("anthropic_extra_args_not_allowed")
+        key = env_value("ANTHROPIC_CREDITS_API_KEY")
+        if not key:
+            raise AdapterUnsafe("falta ANTHROPIC_CREDITS_API_KEY")
+        runner = validate_path_argv(str(Path(__file__).with_name("anthropic_runner.py").resolve()))
+        argv = [sys.executable, runner, "--model", validate_model(model or agent.default_model),
+                "--cwd", ws, "--max-turns", str(self.MAX_TURNS[tier]),
+                "--max-budget-usd", str(self.MAX_BUDGET_USD[tier])]
+        if read_only:
+            argv.append("--read-only")
+        env = child_env(os.environ, {"ANTHROPIC_API_KEY": key,
+                                   "CLAUDE_CONFIG_DIR": str(Path.home() / ".bipolar" / "anthropic-sdk")})
+        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
+        return LaunchSpec(argv=argv, env=env, cwd=ws, stdin_payload=(task + constraints).encode("utf-8"),
+                          timeout_s=timeout_s, redacted=redact(argv, len(task)))
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        obj = _last_json_object(stdout)
+        if obj is None or "is_error" not in obj:
+            return AdapterResult(text=stderr.strip() or stdout.strip(), structured_error=True)
+        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+        error = str(obj.get("error") or "")
+        text = str(obj.get("text") or "")
+        if error:
+            text = "\n".join(part for part in (text, error) if part)
+        status = obj.get("api_error_status")
+        if status:
+            text = f"{text}\nAPI Error: {status}".strip()
+        return AdapterResult(
+            text=text, structured_error=bool(obj.get("is_error") or error) or returncode not in (0, None),
+            usage={"input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0),
+                   "cost_usd": obj.get("total_cost_usd")}, session_id=str(obj.get("session_id") or ""),
         )
 
 
@@ -700,6 +746,7 @@ def _muse_auth_present(auth: object) -> bool:
 
 
 ADAPTERS = {
+    "anthropic": AnthropicAdapter(),
     "claude": ClaudeAdapter(),
     "codex": CodexAdapter(),
     "copilot": CopilotAdapter(),

@@ -34,7 +34,7 @@ def test_legacy_registry_without_new_fields_loads():
     raw = {"cli_agents": [{"id": "claude", "enabled": True}, {"id": "muse"}], "delegation": {"enabled": True}}
     registry = ProviderRegistry(**raw)
     assert [a.base for a in registry.cli_agents] == ["claude", "muse"]
-    assert registry.delegation.thinkers == ["claude", "codex"]
+    assert registry.delegation.thinkers == ["anthropic", "claude", "codex"]
     assert registry.delegation.account_exhausted_pct == 98
 
 

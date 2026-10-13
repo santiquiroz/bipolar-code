@@ -7,9 +7,9 @@ const saveMutate = vi.fn()
 vi.mock('@/hooks/useSmart', () => ({
   useSmartConfig: () => ({ data: {
     delegation: { enabled: true, workspace_allowlist: ['C:\\\\work'], tier_order: { trivial: [], simple: [], standard: [], complex: [] }, max_parallel_jobs: 3, max_attempts: 3, job_retention: 200, thinkers: ['claude'], account_exhausted_pct: 98, allow_request_verify: true, review_default: true, verify_timeout_s: 600, review_timeout_s: 900 },
-    cli_agents: [{ id: 'claude', name: 'Claude Code', enabled: true, default_model: 'sonnet', timeout_s: 600, max_credits: 0, quota_reset: '5h', model_by_tier: {}, alt_model_on_quota: '', exe_path: '', supported_tiers: [], agentic: true, priority: 1, cost_weight: 1, max_concurrency: 1, cooldown_s: 60, extra_args: [] }],
+    cli_agents: [{ id: 'claude', name: 'Claude Code', enabled: true, default_model: 'sonnet', timeout_s: 600, max_credits: 0, max_monthly_usd: 200, quota_reset: '5h', model_by_tier: {}, alt_model_on_quota: '', exe_path: '', supported_tiers: [], agentic: true, priority: 1, cost_weight: 1, max_concurrency: 1, cooldown_s: 60, extra_args: [] }],
   }, isLoading: false }),
-  useAgents: () => ({ data: { agents: [{ id: 'claude', installed: true, version: '1.0', auth: 'ok', state: 'available', seconds_left: 0, quota: {}, default_model: 'sonnet', exe: '', last_signal: '', last_excerpt: '', running: 0, checked_at: '', error: '' }] } }),
+  useAgents: () => ({ data: { agents: [{ id: 'claude', installed: true, version: '1.0', auth: 'ok', state: 'available', seconds_left: 0, quota: { month_spend_usd: 12.5, max_monthly_usd: 200 }, default_model: 'sonnet', exe: '', last_signal: '', last_excerpt: '', running: 0, checked_at: '', error: '' }] } }),
   useSaveSmartConfig: () => ({ mutate: saveMutate, isPending: false }),
   useProbeAgent: () => ({ mutate: vi.fn(), isPending: false }),
   useResetHealth: () => ({ mutate: vi.fn() }),
@@ -57,4 +57,13 @@ describe('Agents', () => {
     expect(body.delegation.allow_request_verify).toBe(true)
     expect(body.delegation.max_parallel_jobs).toBe(5)
   })
+  it('saves the monthly limit and shows monthly spend', () => {
+    saveMutate.mockClear()
+    render(<Agents />)
+    expect(screen.getByText('Gasto del mes: $12.50 / $200.00')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Tope mensual USD de Claude Code'), { target: { value: '100' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }))
+    expect(saveMutate.mock.calls[0][0].cli_agents[0].max_monthly_usd).toBe(100)
+  })
+
 })

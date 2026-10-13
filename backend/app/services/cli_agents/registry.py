@@ -3,6 +3,7 @@ Detección y sondeo de agentes CLI: binario, versión y, cuando el CLI lo permit
 gastar cuota, autenticación y cuota (agy expone /usage y /model en print mode).
 """
 import asyncio
+import importlib
 import json
 import os
 import re
@@ -14,13 +15,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import anthropic
 import httpx
 
+from app.core.config import env_value
 from app.core.logging import get_logger
-from app.core.quota_signals import detect_signal
+from app.core.quota_signals import QuotaSignal, cooldown_from_header, detect_signal
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
-from app.services import health_service
+from app.services import budget_service, health_service
 from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, account_has_login, child_env, exe_argv
 
 log = get_logger(__name__)
@@ -53,6 +56,12 @@ def known_paths(agent_id: str) -> list[Path]:
 
 
 def resolve_exe(agent: CliAgent) -> str:
+    if agent.base == "anthropic":
+        try:
+            importlib.import_module("claude_agent_sdk")
+        except ImportError:
+            return ""
+        return sys.executable
     if agent.exe_path:
         return agent.exe_path if Path(agent.exe_path).exists() else ""
     found = shutil.which(BINARIES[agent.base])
@@ -241,10 +250,73 @@ async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:1
         status.error = f"ollama unreachable: {e.__class__.__name__}"
 
 
+def _anthropic_request(api_key: str) -> None:
+    with anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=15, base_url="https://api.anthropic.com") as client:
+        client.messages.create(model="claude-haiku-5-5", max_tokens=1,
+                               messages=[{"role": "user", "content": "ok"}])
+
+
+def _anthropic_probe_error(agent: CliAgent, status: AgentStatus, error: Exception) -> None:
+    status.error = str(error)[:200]
+    if isinstance(error, anthropic.AuthenticationError):
+        status.auth = "auth_error"
+        return
+    if isinstance(error, anthropic.BadRequestError) and "credit balance" in str(error).lower():
+        status.auth = "ok"
+        signal = QuotaSignal("quota_exhausted", agent.cooldown_s, "credit balance too low")
+        health_service.mark_signal(agent.key, signal, cooldown_s=agent.cooldown_s)
+        return
+    if isinstance(error, anthropic.RateLimitError):
+        status.auth = "ok"
+        headers = getattr(getattr(error, "response", None), "headers", {})
+        seconds = cooldown_from_header(headers.get("retry-after"), 60)
+        signal = QuotaSignal("rate_limit", seconds, "429 rate limit")
+        health_service.mark_signal(agent.key, signal, cooldown_s=seconds)
+
+
+async def _probe_anthropic(agent: CliAgent, status: AgentStatus, force: bool = False) -> None:
+    api_key = env_value("ANTHROPIC_CREDITS_API_KEY")
+    if not api_key:
+        status.auth = "auth_error"
+        status.error = "falta ANTHROPIC_CREDITS_API_KEY"
+        return
+    health = health_service.get(agent.key)
+    if not force and health.state in ("exhausted", "cooling"):
+        status.auth = "ok"
+        status.error = health.last_excerpt
+        return
+    try:
+        await asyncio.to_thread(_anthropic_request, api_key)
+    except Exception as error:
+        _anthropic_probe_error(agent, status, error)
+        return
+    status.auth = "ok"
+    health_service.mark_success(agent.key)
+
+
+async def refresh_monthly_spend(status: AgentStatus, agent: CliAgent) -> AgentStatus:
+    if agent.base != "anthropic" and agent.max_monthly_usd <= 0:
+        return status
+    spend = await budget_service.spend_since(budget_service.provider_id_of(agent.key),
+                                            budget_service.window_start("month").isoformat())
+    quota = {**status.quota, "month_spend_usd": spend["cost_usd"], "max_monthly_usd": agent.max_monthly_usd}
+    return status.model_copy(update={"quota": quota})
+
+
+def _probe_cache_ttl(agent: CliAgent, status: AgentStatus) -> float:
+    if agent.base != "anthropic":
+        return PROBE_TTL_SECONDS
+    if status.state == "exhausted":
+        return status.seconds_left
+    if status.state == "cooling":
+        return min(PROBE_TTL_SECONDS, status.seconds_left)
+    return PROBE_TTL_SECONDS
+
+
 async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
     hit = _cache.get(agent.id)
-    if hit and not force and time.monotonic() - hit[0] < PROBE_TTL_SECONDS:
-        return _with_runtime(hit[1], agent)
+    if hit and not force and time.monotonic() - hit[0] < _probe_cache_ttl(agent, hit[1]):
+        return await refresh_monthly_spend(_with_runtime(hit[1], agent), agent)
     status = AgentStatus(id=agent.id, checked_at=datetime.now(timezone.utc).isoformat(), default_model=agent.default_model)
     exe = resolve_exe(agent)
     status.installed = bool(exe)
@@ -254,7 +326,9 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
             await _probe_ollama(status)
             status.installed = status.installed or status.auth == "ok"
         elif exe:
-            if agent.is_account:
+            if agent.base == "anthropic":
+                await _probe_anthropic(agent, status, force=force)
+            elif agent.is_account:
                 status.version, status.error = await _probe_version(exe)
                 login = account_has_login(agent)
                 if login is False:
@@ -277,8 +351,9 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
     except Exception as e:  # el sondeo nunca debe tumbar la API
         status.error = str(e)[:200]
         log.warning("agent_probe_failed", agent=agent.id, error=str(e))
+    status = _with_runtime(status, agent)
     _cache[agent.id] = (time.monotonic(), status)
-    return _with_runtime(status, agent)
+    return await refresh_monthly_spend(status, agent)
 
 
 def _with_runtime(status: AgentStatus, agent: CliAgent) -> AgentStatus:

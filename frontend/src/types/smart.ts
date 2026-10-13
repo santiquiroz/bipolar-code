@@ -1,5 +1,5 @@
 export type Tier = 'trivial' | 'simple' | 'standard' | 'complex'
-export type AgentId = 'claude' | 'codex' | 'copilot' | 'antigravity' | 'ollama' | 'cursor' | 'deepseek' | 'muse'
+export type AgentId = 'anthropic' | 'claude' | 'codex' | 'copilot' | 'antigravity' | 'ollama' | 'cursor' | 'deepseek' | 'muse'
 export type QuotaReset = 'none' | '5h' | 'daily' | 'weekly'
 
 export interface RouteTarget { provider_id: string; model: string }
@@ -42,6 +42,7 @@ export interface CliAgent {
   cooldown_s: number
   quota_reset: QuotaReset
   max_credits: number
+  max_monthly_usd: number
   extra_args: string[]
 }
 export interface DelegationConfig {
@@ -68,7 +69,7 @@ export interface AgentStatus {
   seconds_left: number
   last_signal: string
   last_excerpt: string
-  quota: Record<string, { remaining_fraction?: number; reset_time?: string; name?: string; models?: string[]; context_capped?: boolean }>
+  quota: Record<string, number | { remaining_fraction?: number; reset_time?: string; name?: string; models?: string[]; context_capped?: boolean }>
   default_model: string
   deny_list_present?: boolean | null
   running: number
