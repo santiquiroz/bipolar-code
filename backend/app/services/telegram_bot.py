@@ -61,7 +61,7 @@ def chunk_text(text: str, limit: int = 4096) -> list[str]:
 def build_chat_body(
     history: list[dict],
     user_text: str,
-    model: str = "claude-sonnet-4-6",
+    model: str = "claude-sonnet-5-5",
 ) -> dict:
     """Construye el cuerpo OpenAI para una conversación de Telegram."""
     return {

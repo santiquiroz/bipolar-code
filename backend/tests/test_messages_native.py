@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.models.provider import Provider
+from app.services import usage_service
 
 
 @pytest.fixture
@@ -14,6 +15,33 @@ def client():
     from app.core.config import get_settings
     api_key = get_settings().ui_api_key
     return TestClient(app, headers={"x-api-key": api_key})
+
+
+def test_models_returns_anthropic_pricing_ids_in_order(client):
+    response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "object": "list",
+        "data": [
+            {"id": model, "object": "model", "created": 0, "owned_by": "anthropic"}
+            for model in usage_service.ANTHROPIC_PRICING
+        ],
+    }
+
+
+def test_models_reads_ids_from_pricing_table(client, monkeypatch):
+    monkeypatch.setattr(usage_service, "ANTHROPIC_PRICING", {
+        "claude-test-first": {"input": 1.0, "output": 2.0},
+        "claude-test-second": {"input": 3.0, "output": 4.0},
+    })
+
+    response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert [model["id"] for model in response.json()["data"]] == [
+        "claude-test-first", "claude-test-second",
+    ]
 
 
 def _native_provider(api_base: str = "http://127.0.0.1:4002") -> Provider:

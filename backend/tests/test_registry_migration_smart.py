@@ -1,5 +1,6 @@
 """Compatibilidad del registro: un providers.json viejo carga con defaults y se siembran agentes/tiers."""
 import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -32,6 +33,36 @@ def _legacy_json() -> dict:
         "routing_rules": [{"pattern": "haiku", "provider_id": "ollama"}],
         "fallback_provider_ids": ["copilot"],
     }
+
+
+@pytest.mark.parametrize("active_model, expected", [
+    ("claude-sonnet-4-6", "claude-sonnet-5-5"),
+    ("claude-opus-5-5", "claude-opus-5-5"),
+])
+def test_anthropic_active_model_migration_preserves_user_choices(config_dir, monkeypatch, active_model, expected):
+    providers_service.load_registry()
+    registry = providers_service.load_registry()
+    anthropic = next(provider for provider in registry.providers if provider.id == "anthropic")
+    anthropic.active_model = active_model
+    copilot = next(provider for provider in registry.providers if provider.id == "copilot")
+    copilot.active_model = "claude-sonnet-4.6"
+    providers_service.save_registry(registry)
+    save = Mock(wraps=providers_service.save_registry)
+    monkeypatch.setattr(providers_service, "save_registry", save)
+
+    migrated = providers_service.load_registry()
+
+    assert next(provider for provider in migrated.providers if provider.id == "anthropic").active_model == expected
+    assert next(provider for provider in migrated.providers if provider.id == "copilot").active_model == "claude-sonnet-4.6"
+    assert save.call_count == int(active_model != expected)
+    persisted = ProviderRegistry(**json.loads((config_dir / "providers.json").read_text(encoding="utf-8")))
+    assert next(provider for provider in persisted.providers if provider.id == "anthropic").active_model == expected
+    save.reset_mock()
+
+    reloaded = providers_service.load_registry()
+
+    assert next(provider for provider in reloaded.providers if provider.id == "anthropic").active_model == expected
+    save.assert_not_called()
 
 
 def test_legacy_registry_loads_with_defaults_and_seeds(config_dir):

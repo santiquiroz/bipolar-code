@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
-from app.services import compression_service, credentials, providers_service, smart_router, token_service, upstream, usage_tracker
+from app.services import compression_service, credentials, providers_service, smart_router, token_service, upstream, usage_service, usage_tracker
 from app.services.pricing_service import estimate_cost
 from app.services.smart_router import PlanStep
 
@@ -619,13 +619,6 @@ async def list_models_anthropic():
         "object": "list",
         "data": [
             {"id": m, "object": "model", "created": 0, "owned_by": "anthropic"}
-            for m in [
-                "claude-opus-4-20250514",
-                "claude-sonnet-4-20250514",
-                "claude-haiku-4-20250514",
-                "claude-3-opus-20240229",
-                "claude-3-5-sonnet-20241022",
-                "claude-3-haiku-20240307",
-            ]
+            for m in usage_service.ANTHROPIC_PRICING
         ],
     }

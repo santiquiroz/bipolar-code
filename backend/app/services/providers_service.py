@@ -34,7 +34,7 @@ _LITELLM_IDENTITY = ProcessIdentity(
 )
 
 # Aliases que el proxy siempre expone — las herramientas externas (Claude Code, etc.) los usan
-PROXY_ALIASES = ["claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o"]
+PROXY_ALIASES = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o"]
 
 _DEFAULTS: list[dict] = [
     {
@@ -62,7 +62,7 @@ _DEFAULTS: list[dict] = [
         "api_base": "https://api.anthropic.com",
         "litellm_prefix": "anthropic",
         "auth_env_var": "ANTHROPIC_API_KEY",
-        "active_model": "claude-sonnet-4-6",
+        "active_model": "claude-sonnet-5-5",
         "use_chat_completions_for_anthropic": True,
     },
     {
@@ -195,6 +195,8 @@ def load_registry() -> ProviderRegistry:
         for i, p in enumerate(registry.providers):
             if p.id in defaults_by_id:
                 patches = _new_default_fields(p, defaults_by_id[p.id])
+                if p.id == "anthropic" and p.active_model == "claude-sonnet-4-6":
+                    patches["active_model"] = "claude-sonnet-5-5"
                 if patches:
                     registry.providers[i] = p.model_copy(update=patches)
                     patched.append(p.id)

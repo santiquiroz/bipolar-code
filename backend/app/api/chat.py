@@ -35,7 +35,7 @@ async def chat_completions(body: ChatRequest):
 
     if is_anthropic:
         # Anthropic: pasar por litellm que ya maneja el formato
-        model = "claude-sonnet-4-6"
+        model = providers_service.PROXY_ALIASES[0]
         url = f"{settings.proxy_url}/v1/chat/completions"
         forward_headers = {"Authorization": f"Bearer {settings.proxy_api_key}"}
     else:

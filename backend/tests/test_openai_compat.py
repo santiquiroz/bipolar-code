@@ -46,7 +46,7 @@ def test_resolve_target_anthropic_provider_goes_through_litellm():
     url, headers, model = resolve_target(_step(provider), settings)
     assert url == f"{settings.proxy_url}/v1/chat/completions"
     assert headers["Authorization"] == f"Bearer {settings.proxy_api_key}"
-    assert model == "claude-sonnet-4-6"
+    assert model == "claude-sonnet-5-5"
 
 
 def test_resolve_target_includes_extra_headers():

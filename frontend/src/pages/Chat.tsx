@@ -205,7 +205,7 @@ function ContextBar({ usage }: { usage: ContextUsage }) {
 
 // ── Chat Page ─────────────────────────────────────────────────────────────────
 
-const FALLBACK_MODELS = ['claude-sonnet-4-6', 'claude-opus-4-6', 'gpt-4o']
+const FALLBACK_MODELS = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-sonnet-4-6', 'claude-opus-4-6', 'gpt-4o']
 const DEFAULT_MODEL = FALLBACK_MODELS[0]
 const MAX_IMAGES = 5
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024

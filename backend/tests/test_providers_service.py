@@ -11,8 +11,11 @@ from app.services.providers_service import (
 )
 
 
-def test_proxy_aliases_not_empty():
-    assert len(PROXY_ALIASES) > 0
+def test_proxy_aliases_preserve_compatibility_and_current_default():
+    assert PROXY_ALIASES == [
+        "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1",
+        "claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o",
+    ]
 
 
 def test_defaults_have_required_fields():

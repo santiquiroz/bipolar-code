@@ -42,7 +42,7 @@ def test_chunk_text_empty_text_returns_empty_list():
 def test_build_chat_body_uses_default_model():
     body = telegram_bot.build_chat_body([], "hola")
 
-    assert body["model"] == "claude-sonnet-4-6"
+    assert body["model"] == "claude-sonnet-5-5"
 
 
 def test_build_chat_body_prepends_history_before_new_user_message():
