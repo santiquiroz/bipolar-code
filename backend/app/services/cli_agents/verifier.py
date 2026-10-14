@@ -12,7 +12,7 @@ from typing import Optional
 
 import psutil
 
-from app.services.cli_agents.adapters import child_env, exe_argv
+from app.services.cli_agents.adapters import exe_argv, verify_env
 
 OUTPUT_TAIL_CHARS = 8000
 
@@ -73,7 +73,7 @@ async def _run_one(command: str, workspace: Path, timeout_s: int) -> CheckResult
         kwargs["start_new_session"] = True
     try:
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(workspace), env=child_env(os.environ),
+            *argv, cwd=str(workspace), env=verify_env(os.environ),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **kwargs)
     except OSError as e:

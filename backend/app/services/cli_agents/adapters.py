@@ -167,6 +167,15 @@ def child_env(base: Mapping[str, str], extra: Optional[dict] = None) -> dict:
     return env
 
 
+def verify_env(base: Mapping[str, str]) -> dict:
+    # verify lo corre bipolar en el host, no el agente: necesita el entorno completo de la máquina
+    # (ProgramFiles(x86) para vswhere, variables de toolchains); solo se quitan los secretos
+    env = {k: v for k, v in base.items()
+           if k.upper() not in ENV_BLOCKLIST and not k.upper().endswith(SECRET_SUFFIXES)}
+    env.update(ENV_FIXED)
+    return env
+
+
 def exe_argv(exe: str) -> list[str]:
     """Un shim .cmd/.bat de npm solo corre vía cmd.exe; el resto del argv queda fijo."""
     lower = exe.lower()
