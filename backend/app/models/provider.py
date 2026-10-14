@@ -41,7 +41,7 @@ class Provider(BaseModel):
     anthropic_native: bool = False
 
     # Config de lanzamiento para providers locales gestionados (llama.cpp):
-    # {exe_path, model_path, ctx_size, split_mode, tensor_split, ngl, extra_args}
+    # {exe_path, model_path, ctx_size, split_mode, tensor_split, ngl, extra_args, devices}
     local_launch: dict = {}
 
 

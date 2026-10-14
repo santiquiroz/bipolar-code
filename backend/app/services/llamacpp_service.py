@@ -28,6 +28,21 @@ _LLAMA_SERVER_NAMES = ("llama-server",)
 # Heurística KV cache: ~40 KiB/token cubre modelos GQA 30-80B en q8 KV.
 _KV_MIB_PER_TOKEN = 0.04
 _MODEL_OVERHEAD_FACTOR = 1.15
+# Las iGPU reportan memoria compartida como VRAM y acapararían el tensor-split.
+_INTEGRATED_GPU_PATTERNS = (
+    r"radeon\(tm\) graphics$",
+    r"radeon graphics$",
+    r"\b(uhd|iris|hd) graphics\b",
+    r"radeon \d{3}m\b",
+    r"vega \d+ graphics",
+    r"adreno",
+    r"mali",
+)
+_INTEGRATED_GPU_RE = re.compile(
+    "|".join(f"(?:{p})" for p in _INTEGRATED_GPU_PATTERNS), re.IGNORECASE
+)
+# Si --list-devices declara el tipo de dispositivo, manda sobre la heurística.
+_DEVICE_TYPE_RE = re.compile(r"\b(integrated|discrete)\b", re.IGNORECASE)
 
 _DEVICE_LINE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s+(.+?)\s+\((\d+)\s+MiB,\s+(\d+)\s+MiB free\)"
@@ -61,14 +76,58 @@ def parse_devices(output: str) -> list[dict]:
         m = _DEVICE_LINE.match(line)
         if not m:
             continue
+        backend_name, index = m.group(1), int(m.group(2))
+        name = m.group(3).strip()
         devices.append({
-            "index": int(m.group(2)),
-            "backend": m.group(1),
-            "name": m.group(3).strip(),
+            "id": f"{backend_name}{index}",
+            "index": index,
+            "backend": backend_name,
+            "name": name,
+            "integrated": _is_integrated(line, name),
             "vram_total_mib": int(m.group(4)),
             "vram_free_mib": int(m.group(5)),
         })
     return devices
+
+
+def _is_integrated(line: str, name: str) -> bool:
+    type_match = _DEVICE_TYPE_RE.search(line)
+    if type_match:
+        return type_match.group(1).lower() == "integrated"
+    return bool(_INTEGRATED_GPU_RE.search(name))
+
+
+def _device_id(device: dict):
+    if device.get("id"):
+        return device["id"]
+    if device.get("backend") is not None and device.get("index") is not None:
+        return f"{device['backend']}{device['index']}"
+    return None
+
+
+def select_devices(devices: list[dict], setting="auto") -> list[dict]:
+    """Filtra y ordena los dispositivos según local_launch["devices"].
+
+    "auto" (o ausente): descarta las integradas salvo que todas lo sean.
+    lista: respeta su orden e ignora los ids desconocidos; si no casa
+    ninguno, equivale a "auto".
+    """
+    if not isinstance(setting, list):
+        non_integrated = [d for d in devices if not d.get("integrated", False)]
+        return non_integrated or list(devices)
+    by_id = {}
+    for device in devices:
+        device_id = _device_id(device)
+        if device_id is not None:
+            by_id[device_id] = device
+    wanted = [str(item) for item in setting]
+    unknown = [item for item in wanted if item not in by_id]
+    if unknown:
+        log.warning("llamacpp_unknown_devices", unknown=unknown)
+    matched = [by_id[item] for item in wanted if item in by_id]
+    if not matched:
+        return select_devices(devices, "auto")
+    return matched
 
 
 def list_devices(exe: str) -> list[dict]:
@@ -131,10 +190,16 @@ def build_cmdline(provider: Provider, devices: list[dict]) -> list[str]:
         "--slots",
     ]
 
-    if len(devices) > 1:
+    selected = select_devices(devices, launch.get("devices", "auto"))
+    selected_ids = [_device_id(d) for d in selected]
+    listed_ids = [_device_id(d) for d in devices]
+    if selected and all(selected_ids) and all(listed_ids) and selected_ids != listed_ids:
+        cmd += ["--device", ",".join(selected_ids)]
+
+    if len(selected) > 1:
         cmd += ["--split-mode", split_mode]
         split = launch.get("tensor_split", "auto")
-        ratios = compute_tensor_split(devices) if split == "auto" else [float(x) for x in split]
+        ratios = compute_tensor_split(selected) if split == "auto" else [float(x) for x in split]
         if ratios:
             cmd += ["--tensor-split", ",".join(str(r) for r in ratios)]
 
@@ -203,9 +268,10 @@ async def start_llamacpp(provider: Provider) -> dict:
         return {**current, "already_running": True}
 
     devices = list_devices(exe)
+    selected = select_devices(devices, provider.local_launch.get("devices", "auto"))
     fit = None
     if not router_mode:
-        fit = estimate_fit(model_path, int(provider.local_launch.get("ctx_size", 32768)), devices)
+        fit = estimate_fit(model_path, int(provider.local_launch.get("ctx_size", 32768)), selected)
         if devices and not fit["fits"]:
             log.warning("model_may_not_fit", **fit)
 
@@ -213,7 +279,7 @@ async def start_llamacpp(provider: Provider) -> dict:
     out_log = _config_dir() / "llamacpp-out.log"
     err_log = _config_dir() / "llamacpp-err.log"
     _spawn_detached(cmd, out_log, err_log)
-    log.info("llamacpp_started", cmd=" ".join(cmd), devices=len(devices), fit=fit)
+    log.info("llamacpp_started", cmd=" ".join(cmd), devices=len(devices), selected=[_device_id(d) for d in selected], fit=fit)
     return {"started": True, "cmdline": cmd, "devices": devices, "fit": fit}
 
 

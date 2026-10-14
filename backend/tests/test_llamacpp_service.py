@@ -31,16 +31,20 @@ def test_parse_devices_returns_expected_device_fields():
 
     assert devices == [
         {
+            "id": "Vulkan0",
             "index": 0,
             "backend": "Vulkan",
             "name": "AMD Radeon AI PRO R9700",
+            "integrated": False,
             "vram_total_mib": 32768,
             "vram_free_mib": 31900,
         },
         {
+            "id": "Vulkan1",
             "index": 1,
             "backend": "Vulkan",
             "name": "AMD Radeon RX 7800 XT",
+            "integrated": False,
             "vram_total_mib": 16384,
             "vram_free_mib": 16100,
         },
