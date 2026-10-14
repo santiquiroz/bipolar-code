@@ -217,7 +217,7 @@ _TOOL_HANDLERS: dict[str, Callable[[dict], Awaitable[dict]]] = {
 
 def _broker_error_text(error: Exception) -> str:
     if isinstance(error, broker.NoAgentAvailable):
-        return "no_agent_available: " + "; ".join(error.reasons)
+        return broker.no_agent_text(error.reasons, error.skipped)
     return str(error)
 
 

@@ -167,6 +167,7 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     {
         "id": "muse", "name": "Muse (Meta)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
         "quota_reset": "none", "cost_weight": 0.4, "priority": 5, "timeout_s": 900,
+        "max_concurrency": 3,
     },
 ]
 

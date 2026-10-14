@@ -130,10 +130,11 @@ def test_choose_agent_skips_cooling_and_busy(env):
     health_service.mark_signal("cli:codex", QuotaSignal("rate_limit", 300, "429"))
     agents_registry.adjust_running("claude", +1)
     try:
-        agent, _, _, skipped = broker.choose_agent("standard", registry, statuses)
+        agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
     finally:
         agents_registry.adjust_running("claude", -1)
-    assert agent is None
+    assert agent is not None and agent.id == "claude"
+    assert reasons == ["agent:claude:queued_busy"]
     assert ("codex", "cooling:rate_limit") in skipped and ("claude", "busy") in skipped
 
 
@@ -431,3 +432,47 @@ async def test_wait_job_returns_when_task_cancelled_externally(env):
         await rt.task
     except asyncio.CancelledError:
         pass
+
+
+def test_choose_agent_queues_first_busy_when_all_busy(env):
+    registry = env["registry"]
+    statuses = {a.id: AgentStatus(id=a.id, installed=True) for a in registry.cli_agents}
+    agents_registry.adjust_running("codex", +1)
+    agents_registry.adjust_running("claude", +1)
+    try:
+        agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
+    finally:
+        agents_registry.adjust_running("codex", -1)
+        agents_registry.adjust_running("claude", -1)
+    assert agent is not None and agent.id == "codex"
+    assert reasons[-1] == "agent:codex:queued_busy"
+    assert ("codex", "busy") in skipped and ("claude", "busy") in skipped
+
+
+def test_choose_agent_busy_fallback_ignores_non_busy_rejections(env):
+    registry = env["registry"]
+    statuses = {"codex": AgentStatus(id="codex", installed=True, auth="auth_error"),
+                "claude": AgentStatus(id="claude", installed=True)}
+    agents_registry.adjust_running("claude", +1)
+    try:
+        agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
+    finally:
+        agents_registry.adjust_running("claude", -1)
+    assert agent is not None and agent.id == "claude"
+    assert reasons == ["agent:claude:queued_busy"]
+    assert ("codex", "auth_error") in skipped
+
+
+def test_choose_agent_returns_none_without_busy_candidate(env):
+    registry = env["registry"]
+    statuses = {"codex": AgentStatus(id="codex", installed=True, auth="auth_error"),
+                "claude": AgentStatus(id="claude", installed=False)}
+    agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
+    assert agent is None and reasons == ["no_agent_available"]
+    assert ("codex", "auth_error") in skipped and ("claude", "not_installed") in skipped
+
+
+def test_muse_default_max_concurrency_is_3():
+    muse = next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "muse")
+    assert muse["max_concurrency"] == 3
+    assert CliAgent(**muse).max_concurrency == 3

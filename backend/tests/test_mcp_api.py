@@ -97,6 +97,17 @@ def test_delegate_broker_rejection_is_tool_error(client, monkeypatch):
     assert result["isError"] is True and "verify_disabled" in result["content"][0]["text"]
 
 
+def test_delegate_no_agent_error_includes_skipped(client, monkeypatch):
+    async def reject(req, depth_header=""):
+        raise broker.NoAgentAvailable(["base:+25", "tier:standard(60)", "no_agent_available"], [("muse", "busy")])
+
+    monkeypatch.setattr(broker, "submit", reject)
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": {"task": "x", "workspace": "C:/r"}}).json()["result"]
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "skipped:" in text and "muse=busy" in text
+
+
 def test_job_status_unknown_is_tool_error(client, monkeypatch):
     monkeypatch.setattr(broker, "get_job", lambda job_id: None)
     result = _rpc(client, "tools/call", {"name": "job_status", "arguments": {"job_id": "nope"}}).json()["result"]

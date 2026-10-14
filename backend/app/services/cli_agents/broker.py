@@ -61,6 +61,13 @@ class NoAgentAvailable(Exception):
         self.skipped = skipped
 
 
+def no_agent_text(reasons: list[str], skipped: list[tuple[str, str]]) -> str:
+    text = "no_agent_available: " + "; ".join(reasons)
+    if skipped:
+        text += " | skipped: " + ", ".join(f"{aid}={reason}" for aid, reason in skipped)
+    return text
+
+
 @dataclass
 class AttemptOutcome:
     ok: bool
@@ -200,6 +207,21 @@ def _candidate_order(tier: str, registry: ProviderRegistry, preferred: str) -> l
     return ordered
 
 
+def _queued_busy(agents: dict[str, CliAgent], skipped: list[tuple[str, str]], tier: str,
+                model_override: str, alt_pool: bool) -> tuple[Optional[CliAgent], str]:
+    for aid, reason in skipped:
+        if reason != "busy":
+            continue
+        agent = agents.get(aid)
+        if agent is None:
+            continue
+        model = agent.model_for(tier, model_override)
+        if alt_pool and agent.alt_model_on_quota:
+            model = agent.alt_model_on_quota
+        return agent, model
+    return None, ""
+
+
 def choose_agent(
     tier: str,
     registry: ProviderRegistry,
@@ -231,6 +253,11 @@ def choose_agent(
             continue
         reasons.append(f"agent:{aid}" + (":preferred" if preferred == aid else f":{tier}"))
         return agent, model, reasons, skipped
+    queued, queued_model = _queued_busy(agents, skipped, tier, model_override, alt_pool)
+    if queued is not None:
+        # El semáforo por agente encola el trabajo; un agente ocupado recibe el job en vez de rechazarlo.
+        reasons.append(f"agent:{queued.id}:queued_busy")
+        return queued, queued_model, reasons, skipped
     reasons.append("no_agent_available")
     return None, "", reasons, skipped
 

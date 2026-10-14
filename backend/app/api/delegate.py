@@ -26,7 +26,7 @@ async def submit_job(req: JobRequest, request: Request):
     except broker.DelegationDisabled as e:
         raise HTTPException(409 if str(e) != "too_many_jobs" else 429, str(e))
     except broker.NoAgentAvailable as e:
-        raise HTTPException(400, {"detail": "no_agent_available", "reasons": e.reasons, "skipped": e.skipped})
+        raise HTTPException(400, {"detail": broker.no_agent_text(e.reasons, e.skipped), "reasons": e.reasons, "skipped": e.skipped})
     return job.model_dump()
 
 
