@@ -40,6 +40,7 @@ GIT_TIMEOUT = 10
 STREAM_LIMIT = 16 * 1024 * 1024
 OVERSIZED_LINE_MARK = "[línea omitida: supera el límite de lectura]"
 PARSE_TAIL_LINES = 2000
+PARSE_TAIL_BYTES = 2_000_000
 TRUNCATED_MARK = "[bipolar: salida intermedia recortada]"
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"})
 
@@ -367,19 +368,25 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
 class _StreamCapture:
     head: list[str] = field(default_factory=list)
     head_bytes: int = 0
-    tail: deque = field(default_factory=lambda: deque(maxlen=PARSE_TAIL_LINES))
+    tail: deque = field(default_factory=deque)
+    tail_bytes: int = 0
 
     def add(self, text: str, size: int) -> None:
         if self.head_bytes + size <= OUTPUT_CAP:
             self.head.append(text)
             self.head_bytes += size
-        else:
-            self.tail.append(text)
+            return
+        self.tail.append((text, size))
+        self.tail_bytes += size
+        # acotada por bytes además de por líneas: una sola línea del agente puede medir hasta STREAM_LIMIT
+        while len(self.tail) > 1 and (self.tail_bytes > PARSE_TAIL_BYTES or len(self.tail) > PARSE_TAIL_LINES):
+            _, dropped = self.tail.popleft()
+            self.tail_bytes -= dropped
 
     def text(self) -> str:
         if not self.tail:
             return "\n".join(self.head)
-        return "\n".join([*self.head, TRUNCATED_MARK, *self.tail])
+        return "\n".join([*self.head, TRUNCATED_MARK, *(text for text, _ in self.tail)])
 
 
 def _consume_line(rt: JobRuntime, line: bytes, name: str, capture: _StreamCapture) -> None:

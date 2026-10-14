@@ -54,3 +54,13 @@ async def test_verify_event_text_contains_output_tail(monkeypatch):
     await broker._record_verify_checks(rt, registry)
     events = [e for e in rt.lines if e.get("event") == "verify_result"]
     assert events and "falló: test_x" in events[0].get("text", "")
+
+
+def test_capture_tail_is_bounded_by_bytes_and_keeps_last_line():
+    capture = broker._StreamCapture()
+    big = "y" * 1_000_000
+    for _ in range(10):
+        capture.add(big, len(big))
+    capture.add("FINAL", 5)
+    assert capture.tail_bytes <= broker.PARSE_TAIL_BYTES
+    assert capture.text().splitlines()[-1] == "FINAL"
