@@ -103,6 +103,9 @@ def _int_in_range(args: dict, name: str, lo: int, hi: int, default: int) -> int:
     value = args.get(name, default)
     if value is None:
         return default
+    # un cliente con el esquema de tools/list viejo en caché manda los campos nuevos como texto
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
         raise ToolError(f"'{name}' debe ser un entero entre {lo} y {hi}")
     return value

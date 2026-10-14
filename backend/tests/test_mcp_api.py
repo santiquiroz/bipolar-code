@@ -249,3 +249,24 @@ def test_delegate_small_wait_s_passes_through(client, monkeypatch):
     result = _rpc(client, "tools/call", {"name": "delegate", "arguments": args}).json()["result"]
     assert result["isError"] is False
     assert captured["wait"] == ("j1", 30)
+
+
+def test_delegate_accepts_integer_fields_sent_as_text(client, monkeypatch):
+    job = Job(id="j1", created_at="t", status="running", tier="standard", agent_id="muse")
+    captured = {}
+
+    async def fake_submit(req, depth_header=""):
+        captured["req"] = req
+        return job
+
+    monkeypatch.setattr(broker, "submit", fake_submit)
+    args = {"task": "haz X", "workspace": "C:/repo", "max_revisions": "2", "timeout_s": "2700"}
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": args}).json()["result"]
+    assert result["isError"] is False
+    assert captured["req"].max_revisions == 2 and captured["req"].timeout_s == 2700
+
+
+def test_delegate_rejects_non_numeric_text(client):
+    args = {"task": "haz X", "workspace": "C:/repo", "max_revisions": "dos"}
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": args}).json()["result"]
+    assert result["isError"] is True and "max_revisions" in result["content"][0]["text"]
