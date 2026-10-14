@@ -79,6 +79,15 @@ ENV_FIXED = {
     "CI": "1", "NO_COLOR": "1",
 }
 SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+# rutas de toolchains que los comandos de verify (builds en el host) necesitan además de ENV_ALLOWLIST
+VERIFY_ENV_EXTRA = (
+    "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)",
+    "CommonProgramW6432", "windir", "ALLUSERSPROFILE", "PUBLIC", "OS", "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION",
+    "VSINSTALLDIR", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion",
+    "INCLUDE", "LIB", "LIBPATH", "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_NDK_HOME",
+    "DOTNET_ROOT", "GOPATH", "GOROOT", "CARGO_HOME", "RUSTUP_HOME", "VULKAN_SDK",
+)
 ENV_BLOCKLIST = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_API_BASE",
                  "CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "CURSOR_CONFIG_DIR")
 # cursor queda fuera: su CURSOR_CONFIG_DIR es la carpeta con la deny list y una cuenta la pisaría
@@ -168,12 +177,13 @@ def child_env(base: Mapping[str, str], extra: Optional[dict] = None) -> dict:
 
 
 def verify_env(base: Mapping[str, str]) -> dict:
-    # verify lo corre bipolar en el host, no el agente: necesita el entorno completo de la máquina
-    # (ProgramFiles(x86) para vswhere, variables de toolchains); solo se quitan los secretos
-    env = {k: v for k, v in base.items()
-           if k.upper() not in ENV_BLOCKLIST and not k.upper().endswith(SECRET_SUFFIXES)}
-    env.update(ENV_FIXED)
-    return env
+    # verify ejecuta código que el agente acaba de escribir (tests, scripts de build), así que sigue
+    # siendo lista permitida; solo suma las rutas que los toolchains necesitan (vswhere vive en
+    # ProgramFiles(x86)), nunca el entorno completo
+    allowed = {k.upper() for k in VERIFY_ENV_EXTRA}
+    extra = {k: v for k, v in base.items() if k.upper() in allowed}
+    return child_env(base, {k: v for k, v in extra.items()
+                            if k.upper() not in ENV_BLOCKLIST and not k.upper().endswith(SECRET_SUFFIXES)})
 
 
 def exe_argv(exe: str) -> list[str]:

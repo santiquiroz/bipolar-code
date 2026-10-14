@@ -105,7 +105,10 @@ async def test_cancel_during_verify_kills_child(tmp_path, monkeypatch):
 def test_verify_env_keeps_host_toolchain_vars_and_drops_secrets():
     from app.services.cli_agents.adapters import verify_env
     base = {"ProgramFiles(x86)": "C:\Program Files (x86)", "VSINSTALLDIR": "C:\VS", "PATH": "C:\bin",
-            "ANTHROPIC_API_KEY": "secreto", "GITHUB_TOKEN": "secreto", "ANTHROPIC_BASE_URL": "http://x"}
+            "ANTHROPIC_API_KEY": "secreto", "GITHUB_TOKEN": "secreto", "ANTHROPIC_BASE_URL": "http://x",
+            "AWS_SECRET_ACCESS_KEY": "secreto", "DATABASE_URL": "postgres://u:p@h/db"}
     env = verify_env(base)
     assert env["ProgramFiles(x86)"] == "C:\Program Files (x86)" and env["VSINSTALLDIR"] == "C:\VS"
-    assert "ANTHROPIC_API_KEY" not in env and "GITHUB_TOKEN" not in env and "ANTHROPIC_BASE_URL" not in env
+    assert env["PATH"] == "C:\bin"
+    for leaked in ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "AWS_SECRET_ACCESS_KEY", "DATABASE_URL"):
+        assert leaked not in env
