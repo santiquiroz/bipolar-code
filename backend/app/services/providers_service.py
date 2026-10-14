@@ -219,7 +219,9 @@ def load_registry() -> ProviderRegistry:
     if last_error is not None or registry is None:
         backup = _backup_corrupt_registry(path) if path.exists() else None
         log.error("registry_load_error", error=str(last_error), backup=str(backup) if backup else "")
-        return ProviderRegistry(providers=[Provider(**d) for d in _DEFAULTS])
+        fallback = ProviderRegistry(providers=[Provider(**d) for d in _DEFAULTS])
+        fallback._loaded_from_defaults = True
+        return fallback
     try:
         existing_ids = {p.id for p in registry.providers}
 
@@ -296,7 +298,14 @@ def _replace_with_retry(source: Path, target: Path, attempts: int = 5) -> None:
             time.sleep(0.05)
 
 
+class RegistryNotSaved(RuntimeError):
+    """El registro en memoria salió de los defaults porque providers.json no se pudo leer."""
+
+
 def save_registry(registry: ProviderRegistry) -> None:
+    if registry._loaded_from_defaults:
+        log.error("registry_save_refused", reason="loaded_from_defaults")
+        raise RegistryNotSaved("providers.json no se pudo leer; no se guardan los valores por defecto encima")
     path = _registry_path()
     tmp_path = path.with_name(f"providers.json.tmp-{os.getpid()}-{threading.get_ident()}")
     tmp_path.write_text(registry.model_dump_json(indent=2), encoding="utf-8")

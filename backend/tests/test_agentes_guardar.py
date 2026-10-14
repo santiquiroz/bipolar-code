@@ -100,3 +100,15 @@ def test_load_registry_retries_once_after_transient_read_error(config_dir, monke
     assert attempts["n"] == 1
     assert {p.id for p in registry.providers} >= {"copilot", "ollama"}
     assert list(config_dir.glob("providers.json.corrupt-*")) == []
+
+
+def test_save_registry_refuses_defaults_loaded_after_read_failure(config_dir):
+    bad = "{ corrupto"
+    target = config_dir / "providers.json"
+    target.write_text(bad, encoding="utf-8")
+    registry = providers_service.load_registry()
+    with pytest.raises(providers_service.RegistryNotSaved):
+        providers_service.save_registry(registry)
+    with pytest.raises(providers_service.RegistryNotSaved):
+        providers_service.update_smart_config(cli_agents=[])
+    assert target.read_text(encoding="utf-8") == bad
