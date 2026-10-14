@@ -476,3 +476,78 @@ def test_muse_default_max_concurrency_is_3():
     muse = next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "muse")
     assert muse["max_concurrency"] == 3
     assert CliAgent(**muse).max_concurrency == 3
+
+
+def _overlap_rt(env, job_id, started, finished, preview="tarea", workspace=None):
+    ws = workspace or env["workspace"]
+    job = broker.Job(id=job_id, created_at="2026-01-01T00:00:00+00:00", started_at=started,
+                     finished_at=finished, task_preview=preview, workspace=str(ws))
+    req = JobRequest(task=preview, workspace=str(ws))
+    rt = broker.JobRuntime(job=job, request=req, workspace=ws)
+    broker._jobs[job_id] = rt
+    return rt
+
+
+def test_overlapping_jobs_same_workspace(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00", "crear scripts/package.ps1")
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None, "tocar CMakeLists.txt")
+    assert broker._overlapping_jobs(rt1) == ["j2"]
+    assert broker._overlapping_jobs(broker._jobs["j2"]) == ["j1"]
+
+
+def test_overlapping_jobs_ignores_other_workspace(env, tmp_path):
+    other = tmp_path / "otro"
+    other.mkdir()
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None, workspace=other)
+    assert broker._overlapping_jobs(rt1) == []
+
+
+def test_overlapping_jobs_ignores_disjoint_windows(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    _overlap_rt(env, "j2", "2026-10-14T11:00:00+00:00", None)
+    _overlap_rt(env, "j3", "2026-10-14T08:00:00+00:00", "2026-10-14T09:00:00+00:00")
+    _overlap_rt(env, "j4", None, None)
+    assert broker._overlapping_jobs(rt1) == []
+
+
+@pytest.mark.asyncio
+async def test_collect_artifacts_flags_inexact_files_touched(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None)
+    await broker._collect_job_artifacts(rt1, set())
+    assert rt1.job.concurrent_jobs == ["j2"]
+    assert rt1.job.files_touched_exact is False
+
+
+@pytest.mark.asyncio
+async def test_collect_artifacts_keeps_exact_without_overlap(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    await broker._collect_job_artifacts(rt1, set())
+    assert rt1.job.concurrent_jobs == []
+    assert rt1.job.files_touched_exact is True
+
+
+def test_overlap_note_lists_previews_only_when_overlapping(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    assert broker._overlap_note(rt1) == ""
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None, "migrar config/gow2.toml")
+    note = broker._overlap_note(rt1)
+    assert "migrar config/gow2.toml" in note and "NO son parte" in note
+
+
+def test_review_prompt_carries_overlap_note():
+    from app.services.cli_agents import reviewer
+    plain = reviewer.review_prompt("haz X", "diff", [])
+    assert reviewer.review_prompt("haz X", "diff", [], "") == plain
+    noted = reviewer.review_prompt("haz X", "diff", [], "Hay jobs concurrentes (j2).")
+    assert "Hay jobs concurrentes (j2)." in noted
+
+
+def test_job_summary_includes_concurrency_fields():
+    from app.api.mcp import job_summary
+    job = broker.Job(id="j1", created_at="t", files_touched=["a.py"],
+                     concurrent_jobs=["j2"], files_touched_exact=False)
+    payload = job_summary(job)
+    assert payload["concurrent_jobs"] == ["j2"]
+    assert payload["files_touched_exact"] is False

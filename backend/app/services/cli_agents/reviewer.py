@@ -145,9 +145,12 @@ def collect_diff(workspace: Path, files: list[str]) -> str:
     return _collect_plain(workspace, accepted, omitted)
 
 
-def review_prompt(task: str, diff: str, checks: list[CheckResult]) -> str:
+def review_prompt(task: str, diff: str, checks: list[CheckResult], overlap_note: str = "") -> str:
     lines = ["Eres el revisor de un cambio hecho por otro agente. Solo lectura."]
-    lines += ["", "Tarea original:", task, "", "Verificación:"]
+    lines += ["", "Tarea original:", task]
+    if overlap_note:
+        lines += ["", overlap_note]
+    lines += ["", "Verificación:"]
     if not checks:
         lines.append("Sin comandos de verificación.")
     for check in checks:

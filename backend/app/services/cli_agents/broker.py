@@ -485,6 +485,58 @@ def _files_touched(workspace: Path, before: set[str]) -> list[str]:
     return [line[3:].strip() for line in _status_lines(workspace) if line not in before]
 
 
+def _parse_time(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _same_workspace(left: Optional[Path], right: Optional[Path]) -> bool:
+    if left is None or right is None:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except (OSError, RuntimeError):
+        return left == right
+
+
+def _overlapping_jobs(rt: JobRuntime) -> list[str]:
+    start = _parse_time(rt.job.started_at)
+    if start is None:
+        return []
+    end = _parse_time(rt.job.finished_at)
+    found = []
+    for other_id, other in _jobs.items():
+        if other_id == rt.job.id:
+            continue
+        if not _same_workspace(rt.workspace, other.workspace):
+            continue
+        other_start = _parse_time(other.job.started_at)
+        if other_start is None:
+            continue
+        # ventanas semiabiertas: un job que empieza justo al terminar otro no tocó sus archivos
+        if end is not None and other_start >= end:
+            continue
+        other_end = _parse_time(other.job.finished_at)
+        if other_end is not None and other_end <= start:
+            continue
+        found.append(other_id)
+    return found
+
+
+def _overlap_note(rt: JobRuntime) -> str:
+    ids = _overlapping_jobs(rt)
+    if not ids:
+        return ""
+    previews = "; ".join(f"{jid}: {(_jobs[jid].job.task_preview or '').strip()[:120]}" for jid in ids if jid in _jobs)
+    return (f"Hay jobs concurrentes en el mismo workspace ({previews}). "
+            "Los cambios que correspondan a esas tareas NO son parte de este job y no deben juzgarse.")
+
+
 def _write_log(rt: JobRuntime) -> str:
     path = jobs_dir() / f"{rt.job.id}.log"
     try:
@@ -553,6 +605,8 @@ async def _collect_job_artifacts(rt: JobRuntime, status_before: set[str]) -> Non
     job = rt.job
     if rt.request.mode == "task":
         job.files_touched = _files_touched(rt.workspace, status_before)
+        job.concurrent_jobs = _overlapping_jobs(rt)
+        job.files_touched_exact = not job.concurrent_jobs
     job.log_path = _write_log(rt)
     if job.agent_id:
         await _record(job)
@@ -648,7 +702,7 @@ async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, wo
     if not candidates:
         return None
     diff = reviewer.collect_diff(rt.workspace, _files_touched(rt.workspace, rt.status_before))
-    prompt = reviewer.review_prompt(rt.request.task, diff, checks)
+    prompt = reviewer.review_prompt(rt.request.task, diff, checks, _overlap_note(rt))
     for cand in candidates:
         model_cand = cand.model_for(job.tier)
         outcome = await _run_attempt_guarded(rt, registry, cand, model_cand, registry.delegation.review_timeout_s, prompt, read_only=True)

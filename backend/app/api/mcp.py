@@ -133,6 +133,8 @@ def job_summary(job: Job) -> dict:
             for a in job.attempts
         ],
         "files_touched": job.files_touched,
+        "concurrent_jobs": job.concurrent_jobs,
+        "files_touched_exact": job.files_touched_exact,
         "error": job.error,
         "output_tail": job.output_tail[-2000:] if terminal else "",
     }
