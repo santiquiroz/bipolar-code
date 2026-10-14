@@ -844,6 +844,17 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                     break
                 agent, model = nxt
                 continue
+            # un agente en sandbox suele no poder compilar y sale con error aunque dejó el trabajo hecho:
+            # el verify corre en el host, así que se le da la oportunidad (y las revisiones) antes de fallar
+            if (not outcome.ok and outcome.signal is None and rt.request.mode == "task"
+                    and rt.request.verify and _files_touched(rt.workspace, rt.status_before)):
+                _emit(rt, {"event": "gate_after_failure", "agent_id": agent.id, "timed_out": outcome.timed_out,
+                           "text": "el intento terminó sin éxito pero dejó cambios: se verifican"})
+                nxt = await _handle_gate_ok(rt, registry, statuses, agent, model, outcome, tried, history)
+                if nxt is None:
+                    break
+                agent, model = nxt
+                continue
             if outcome.timed_out:
                 job.status, job.error = "timeout", "timeout"
                 health_service.mark_failure(_pool_key(agent, model), "timeout")

@@ -551,3 +551,96 @@ def test_job_summary_includes_concurrency_fields():
     payload = job_summary(job)
     assert payload["concurrent_jobs"] == ["j2"]
     assert payload["files_touched_exact"] is False
+
+
+def _check_ok(command="check"):
+    from app.services.cli_agents import verifier
+    return verifier.CheckResult(command, 0, 0.1, "ok")
+
+
+def _check_fail(command="check"):
+    from app.services.cli_agents import verifier
+    return verifier.CheckResult(command, 1, 0.1, "falla")
+
+
+def _verify_req(env, **overrides):
+    kwargs = {"task": "implementa el endpoint de facturas", "workspace": str(env["workspace"]),
+              "verify": ["check"], "max_revisions": 3}
+    kwargs.update(overrides)
+    return JobRequest(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_cambios_y_verify_ok_termina_succeeded(env, monkeypatch):
+    run, _ = _fake_subprocess([(1, "", "boom", False)])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    monkeypatch.setattr(broker.verifier, "run_checks", AsyncMock(return_value=[_check_ok()]))
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.verification_status == "passed"
+    assert "gate_after_failure" in [e["event"] for e in broker._jobs[job.id].lines]
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_cambios_y_revision_corrige_verify(env, monkeypatch):
+    run, _ = _fake_subprocess([(1, "", "boom", False), _codex_ok()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    llamadas = {"n": 0}
+
+    async def checks(commands, workspace, timeout_s):
+        llamadas["n"] += 1
+        return [_check_fail()] if llamadas["n"] == 1 else [_check_ok()]
+
+    monkeypatch.setattr(broker.verifier, "run_checks", checks)
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.verification_status == "passed"
+    assert llamadas["n"] == 2
+    assert sum(1 for a in job.attempts if a.kind == "work") == 2
+
+
+@pytest.mark.asyncio
+async def test_fallo_sin_cambios_no_corre_verify(env, monkeypatch):
+    run, _ = _fake_subprocess([(1, "", "boom", False)])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: [])
+    run_checks = AsyncMock(return_value=[_check_ok()])
+    monkeypatch.setattr(broker.verifier, "run_checks", run_checks)
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "failed" and len(job.attempts) == 1
+    run_checks.assert_not_awaited()
+    assert "gate_after_failure" not in [e["event"] for e in broker._jobs[job.id].lines]
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_senal_de_cuota_no_corre_verify(env, monkeypatch):
+    run, _ = _fake_subprocess([_codex_quota()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    run_checks = AsyncMock(return_value=[_check_ok()])
+    monkeypatch.setattr(broker.verifier, "run_checks", run_checks)
+    job = await broker.submit(_verify_req(env, agent_id="codex"))
+    job = await _wait(job.id)
+    assert job.status == "quota" and len(job.attempts) == 1
+    run_checks.assert_not_awaited()
+    assert "gate_after_failure" not in [e["event"] for e in broker._jobs[job.id].lines]
+
+
+@pytest.mark.asyncio
+async def test_timeout_con_cambios_y_verify_ok_termina_succeeded(env, monkeypatch):
+    run, _ = _fake_subprocess([(None, "", "", True)])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    monkeypatch.setattr(broker.verifier, "run_checks", AsyncMock(return_value=[_check_ok()]))
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.verification_status == "passed"
+    assert "gate_after_failure" in [e["event"] for e in broker._jobs[job.id].lines]
