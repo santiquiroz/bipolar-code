@@ -25,6 +25,7 @@ _PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 _DEFAULT_PROTOCOL = "2025-06-18"
 _TIERS = ("trivial", "simple", "standard", "complex")
 MAX_BATCH = 20
+MCP_MAX_WAIT_S = 50
 
 TOOLS: list[dict] = [
     {
@@ -39,7 +40,9 @@ TOOLS: list[dict] = [
                 "agent": {"type": "string", "description": "Agente preferido (id del registry)."},
                 "verify": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
                 "review": {"type": "boolean"},
-                "wait_s": {"type": "integer", "minimum": 0, "maximum": 540, "default": 0},
+                "max_revisions": {"type": "integer", "minimum": 0, "maximum": 3, "default": 1, "description": "Rondas de corrección cuando verify o la revisión fallan."},
+                "timeout_s": {"type": "integer", "minimum": 60, "maximum": 3600, "description": "Tope de la corrida del agente en segundos; sin valor, el del agente."},
+                "wait_s": {"type": "integer", "minimum": 0, "maximum": 540, "default": 0, "description": "Segundos de espera; el servidor espera como máximo 50 por llamada porque los clientes MCP cortan a los 60 s. Repetí job_status hasta un estado final."},
             },
             "required": ["task", "workspace"],
         },
@@ -51,7 +54,7 @@ TOOLS: list[dict] = [
             "type": "object",
             "properties": {
                 "job_id": {"type": "string"},
-                "wait_s": {"type": "integer", "minimum": 0, "maximum": 540, "default": 0},
+                "wait_s": {"type": "integer", "minimum": 0, "maximum": 540, "default": 0, "description": "Segundos de espera; el servidor espera como máximo 50 por llamada porque los clientes MCP cortan a los 60 s. Repetí job_status hasta un estado final."},
             },
             "required": ["job_id"],
         },
@@ -103,6 +106,12 @@ def _int_in_range(args: dict, name: str, lo: int, hi: int, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
         raise ToolError(f"'{name}' debe ser un entero entre {lo} y {hi}")
     return value
+
+
+def _optional_int_in_range(args: dict, name: str, lo: int, hi: int) -> Optional[int]:
+    if name not in args or args.get(name) is None:
+        return None
+    return _int_in_range(args, name, lo, hi, args[name])
 
 
 def _str_list(args: dict, name: str, max_items: int = 10) -> list[str]:
@@ -161,18 +170,21 @@ async def _tool_delegate(args: dict) -> dict:
     review = args.get("review")
     if review is not None and not isinstance(review, bool):
         raise ToolError("'review' debe ser true o false")
+    max_revisions = _int_in_range(args, "max_revisions", 0, 3, 1)
+    timeout_s = _optional_int_in_range(args, "timeout_s", 60, 3600)
     wait_s = _int_in_range(args, "wait_s", 0, 540, 0)
     job = await broker.submit(JobRequest(task=task, workspace=workspace, tier_hint=tier,
-                                         agent_id=agent, verify=verify, review=review))
+                                         agent_id=agent, verify=verify, review=review,
+                                         max_revisions=max_revisions, timeout_s=timeout_s))
     if wait_s > 0:
-        job = await broker.wait_job(job.id, wait_s) or job
+        job = await broker.wait_job(job.id, min(wait_s, MCP_MAX_WAIT_S)) or job
     return job_summary(job)
 
 
 async def _tool_job_status(args: dict) -> dict:
     job_id = _require_str(args, "job_id")
     wait_s = _int_in_range(args, "wait_s", 0, 540, 0)
-    job = await broker.wait_job(job_id, wait_s) if wait_s > 0 else broker.get_job(job_id)
+    job = await broker.wait_job(job_id, min(wait_s, MCP_MAX_WAIT_S)) if wait_s > 0 else broker.get_job(job_id)
     if job is None:
         raise ToolError(f"job desconocido: {job_id}")
     return job_summary(job)

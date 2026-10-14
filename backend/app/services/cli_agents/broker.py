@@ -39,6 +39,8 @@ QUEUE_MULTIPLIER = 4
 GIT_TIMEOUT = 10
 STREAM_LIMIT = 16 * 1024 * 1024
 OVERSIZED_LINE_MARK = "[línea omitida: supera el límite de lectura]"
+PARSE_TAIL_LINES = 2000
+TRUNCATED_MARK = "[bipolar: salida intermedia recortada]"
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"})
 
 
@@ -361,15 +363,34 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
-def _consume_line(rt: JobRuntime, line: bytes, name: str, sink: list[str]) -> None:
+@dataclass
+class _StreamCapture:
+    head: list[str] = field(default_factory=list)
+    head_bytes: int = 0
+    tail: deque = field(default_factory=lambda: deque(maxlen=PARSE_TAIL_LINES))
+
+    def add(self, text: str, size: int) -> None:
+        if self.head_bytes + size <= OUTPUT_CAP:
+            self.head.append(text)
+            self.head_bytes += size
+        else:
+            self.tail.append(text)
+
+    def text(self) -> str:
+        if not self.tail:
+            return "\n".join(self.head)
+        return "\n".join([*self.head, TRUNCATED_MARK, *self.tail])
+
+
+def _consume_line(rt: JobRuntime, line: bytes, name: str, capture: _StreamCapture) -> None:
     text = line.decode("utf-8", "replace").rstrip("\r\n")
     rt.output_bytes += len(line)
+    capture.add(text, len(line))
     if rt.output_bytes <= OUTPUT_CAP:
-        sink.append(text)
         _emit(rt, {"event": "line", "stream": name, "text": text[:4000]})
 
 
-async def _pump(rt: JobRuntime, stream, name: str, sink: list[str]) -> None:
+async def _pump(rt: JobRuntime, stream, name: str, capture: _StreamCapture) -> None:
     while True:
         try:
             line = await stream.readline()
@@ -379,7 +400,7 @@ async def _pump(rt: JobRuntime, stream, name: str, sink: list[str]) -> None:
             continue
         if not line:
             return
-        _consume_line(rt, line, name, sink)
+        _consume_line(rt, line, name, capture)
 
 
 async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str, bool]:
@@ -398,9 +419,9 @@ async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str
         proc.stdin.write(spec.stdin_payload)
         await proc.stdin.drain()
         proc.stdin.close()
-    out_lines: list[str] = []
-    err_lines: list[str] = []
-    pumps = asyncio.gather(_pump(rt, proc.stdout, "stdout", out_lines), _pump(rt, proc.stderr, "stderr", err_lines))
+    out_capture = _StreamCapture()
+    err_capture = _StreamCapture()
+    pumps = asyncio.gather(_pump(rt, proc.stdout, "stdout", out_capture), _pump(rt, proc.stderr, "stderr", err_capture))
     timed_out = False
     try:
         await asyncio.wait_for(proc.wait(), spec.timeout_s)
@@ -410,7 +431,7 @@ async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str
         await proc.wait()
     await pumps
     rt.proc = None
-    return proc.returncode, "\n".join(out_lines), "\n".join(err_lines), timed_out
+    return proc.returncode, out_capture.text(), err_capture.text(), timed_out
 
 
 async def _run_ollama(rt: JobRuntime, agent: CliAgent, model: str, task: str, timeout_s: int) -> AttemptOutcome:
@@ -651,7 +672,8 @@ async def _record_verify_checks(rt: JobRuntime, registry: ProviderRegistry) -> l
                                     detail={"command": check.command, "returncode": check.returncode,
                                             "timed_out": check.timed_out, "error": check.error}))
         _emit(rt, {"event": "verify_result", "command": check.command, "returncode": check.returncode,
-                   "timed_out": check.timed_out, "error": check.error[:300], "ok": check.ok})
+                   "timed_out": check.timed_out, "error": check.error[:300], "ok": check.ok,
+                   "text": f"{check.command} -> exit {check.returncode}{' (timeout)' if check.timed_out else ''}\n{check.output_tail[-3000:]}"})
     return checks
 
 
@@ -942,3 +964,4 @@ def reset_for_tests() -> None:
     _jobs.clear()
     _agent_sems.clear()
     _global_sem = None
+    os.environ.pop("BIPOLAR_DELEGATION_DEPTH", None)

@@ -88,6 +88,46 @@ def test_delegate_wraps_broker_and_waits(client, monkeypatch):
     assert captured["wait"] == ("j1", 30)
 
 
+def test_delegate_passes_max_revisions_and_timeout(client, monkeypatch):
+    job = Job(id="j1", created_at="t", status="running", tier="standard", agent_id="muse")
+    captured = {}
+
+    async def fake_submit(req, depth_header=""):
+        captured["req"] = req
+        return job
+
+    monkeypatch.setattr(broker, "submit", fake_submit)
+    args = {"task": "haz X", "workspace": "C:/repo", "max_revisions": 3, "timeout_s": 1800}
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": args}).json()["result"]
+    assert result["isError"] is False
+    assert captured["req"].max_revisions == 3 and captured["req"].timeout_s == 1800
+
+
+def test_delegate_defaults_max_revisions_and_timeout(client, monkeypatch):
+    job = Job(id="j1", created_at="t", status="running", tier="standard", agent_id="muse")
+    captured = {}
+
+    async def fake_submit(req, depth_header=""):
+        captured["req"] = req
+        return job
+
+    monkeypatch.setattr(broker, "submit", fake_submit)
+    args = {"task": "haz X", "workspace": "C:/repo"}
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": args}).json()["result"]
+    assert result["isError"] is False
+    assert captured["req"].max_revisions == 1 and captured["req"].timeout_s is None
+
+
+def test_delegate_max_revisions_out_of_range_is_tool_error(client):
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": {"task": "x", "workspace": "C:/r", "max_revisions": 4}}).json()["result"]
+    assert result["isError"] is True and "max_revisions" in result["content"][0]["text"]
+
+
+def test_delegate_timeout_s_out_of_range_is_tool_error(client):
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": {"task": "x", "workspace": "C:/r", "timeout_s": 30}}).json()["result"]
+    assert result["isError"] is True and "timeout_s" in result["content"][0]["text"]
+
+
 def test_delegate_broker_rejection_is_tool_error(client, monkeypatch):
     async def reject(req, depth_header=""):
         raise broker.InvalidRequest("verify_disabled")
@@ -176,3 +216,36 @@ async def test_wait_job_returns_running_on_timeout(monkeypatch):
     finally:
         rt.task.cancel()
         broker._jobs.pop("slow", None)
+
+
+def test_job_status_clamps_wait_s_to_mcp_max(client, monkeypatch):
+    job = Job(id="j1", created_at="t", status="running", tier="standard", agent_id="muse")
+    captured = {}
+
+    async def fake_wait(job_id, timeout_s):
+        captured["wait"] = (job_id, timeout_s)
+        return job
+
+    monkeypatch.setattr(broker, "wait_job", fake_wait)
+    result = _rpc(client, "tools/call", {"name": "job_status", "arguments": {"job_id": "j1", "wait_s": 540}}).json()["result"]
+    assert result["isError"] is False
+    assert captured["wait"] == ("j1", 50)
+
+
+def test_delegate_small_wait_s_passes_through(client, monkeypatch):
+    job = Job(id="j1", created_at="t", status="running", tier="standard", agent_id="muse")
+    captured = {}
+
+    async def fake_submit(req, depth_header=""):
+        return job
+
+    async def fake_wait(job_id, timeout_s):
+        captured["wait"] = (job_id, timeout_s)
+        return job
+
+    monkeypatch.setattr(broker, "submit", fake_submit)
+    monkeypatch.setattr(broker, "wait_job", fake_wait)
+    args = {"task": "haz X", "workspace": "C:/repo", "wait_s": 30}
+    result = _rpc(client, "tools/call", {"name": "delegate", "arguments": args}).json()["result"]
+    assert result["isError"] is False
+    assert captured["wait"] == ("j1", 30)
