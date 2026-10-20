@@ -175,10 +175,11 @@ async def _probe(monkeypatch, response=None):
 
 async def test_probe_reads_key_limits_without_spending_requests(config_dir, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
-    payload = {"data": {"limit_remaining": None, "usage": 0, "is_free_tier": True, "label": "x"}}
+    payload = {"data": {"limit": 0, "limit_remaining": 0, "usage": 0, "is_free_tier": True, "label": "x"}}
     status, calls = await _probe(monkeypatch, _FakeResponse(200, payload))
     assert status.auth == "ok" and status.version == "2.1.0"
-    assert status.quota == {"limit_remaining": None, "usage": 0, "is_free_tier": True}
+    assert status.quota == {"limit": 0, "limit_remaining": 0, "usage": 0, "is_free_tier": True}
+    assert status.error == ""
     assert calls == [("https://openrouter.ai/api/v1/key", {"Authorization": f"Bearer {KEY}"})]
 
 
@@ -192,3 +193,10 @@ async def test_probe_without_key_skips_request(config_dir, monkeypatch):
     status, calls = await _probe(monkeypatch, _FakeResponse(200, {}))
     assert status.auth == "auth_error" and status.error == "OPENROUTER_API_KEY sin valor"
     assert calls == []
+
+
+@pytest.mark.parametrize("limit", [None, 5])
+async def test_probe_warns_when_key_can_spend_credits(config_dir, monkeypatch, limit):
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    status, _ = await _probe(monkeypatch, _FakeResponse(200, {"data": {"limit": limit}}))
+    assert status.auth == "ok" and "límite de crédito 0" in status.error

@@ -247,7 +247,10 @@ async def _probe_openrouter(exe: str, status: AgentStatus) -> None:
     if resp.status_code == 200:
         data = resp.json().get("data") or {}
         status.auth = "ok"
-        status.quota = {name: data.get(name) for name in ("limit_remaining", "usage", "is_free_tier")}
+        status.quota = {name: data.get(name) for name in ("limit", "limit_remaining", "usage", "is_free_tier")}
+        # el agente corre con Bash y ve la clave: una clave con crédito acota lo que cuesta si se filtra
+        if data.get("limit") is None or data.get("limit") > 0:
+            status.error = "usa una clave dedicada con límite de crédito 0: el agente puede leerla"
 
 
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:
