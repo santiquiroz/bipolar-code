@@ -96,13 +96,13 @@ def test_codex_parse_prefers_out_file_and_detects_structured_error(tmp_path):
 
 
 def test_copilot_build_deny_list_wins_and_effort_low_for_simple(tmp_path, clean_env):
-    spec = ad.CopilotAdapter().build(_agent("copilot", max_credits=7), "copilot.exe", "job3", "tarea", "gpt-5.4", tmp_path, "simple", 600)
+    spec = ad.CopilotAdapter().build(_agent("copilot", max_credits=40), "copilot.exe", "job3", "tarea", "gpt-5.4", tmp_path, "simple", 600)
     argv = spec.argv
     joined = " ".join(argv)
     for rule in ad.CopilotAdapter.DENY:
         assert rule in argv
     assert "--allow-all" not in joined and "--autopilot" not in joined
-    assert argv[argv.index("--max-ai-credits") + 1] == "7"
+    assert argv[argv.index("--max-ai-credits") + 1] == "40"
     assert argv[argv.index("--effort") + 1] == "low"
     assert argv[argv.index("--output-format") + 1] == "json"
     assert "tarea" not in joined

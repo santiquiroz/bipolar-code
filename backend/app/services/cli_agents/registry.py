@@ -21,13 +21,14 @@ from app.core.quota_signals import detect_signal
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, account_has_login, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, OpenRouterAdapter, account_has_login, child_env, exe_argv
 
 log = get_logger(__name__)
 
 PROBE_TTL_SECONDS = 600
 PROBE_TIMEOUT_SECONDS = 15
 LOW_QUOTA_FRACTION = 0.02
+OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 _cache: dict[str, tuple[float, AgentStatus]] = {}
 _running: dict[str, int] = {}
 
@@ -38,6 +39,8 @@ def _home() -> Path:
 
 def known_paths(agent_id: str) -> list[Path]:
     local = Path(os.environ.get("LOCALAPPDATA") or (_home() / "AppData" / "Local"))
+    if agent_id == "openrouter":
+        agent_id = "claude"
     return {
         "claude": [_home() / ".local" / "bin" / "claude.exe", _home() / ".local" / "bin" / "claude",
                    local / "Programs" / "claude" / "claude.exe"],
@@ -226,6 +229,27 @@ async def _muse_sandbox(argv: list[str]) -> str:
     return _muse_sandbox_status(out or err)
 
 
+async def _probe_openrouter(exe: str, status: AgentStatus) -> None:
+    status.version, status.error = await _probe_version(exe)
+    key = OpenRouterAdapter.api_key()
+    if not key:
+        status.auth, status.error = "auth_error", "OPENROUTER_API_KEY sin valor"
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(OPENROUTER_KEY_URL, headers={"Authorization": f"Bearer {key}"})
+    except Exception as e:
+        status.error = f"openrouter unreachable: {e.__class__.__name__}"
+        return
+    if resp.status_code in (401, 403):
+        status.auth = "auth_error"
+        return
+    if resp.status_code == 200:
+        data = resp.json().get("data") or {}
+        status.auth = "ok"
+        status.quota = {name: data.get(name) for name in ("limit_remaining", "usage", "is_free_tier")}
+
+
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -268,6 +292,8 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
                 await _probe_deepseek(exe, status)
             elif agent.base == "muse":
                 await _probe_muse(exe, status)
+            elif agent.base == "openrouter":
+                await _probe_openrouter(exe, status)
             else:
                 status.version, status.error = await _probe_version(exe)
             if agent.base == "codex" and not agent.is_account:

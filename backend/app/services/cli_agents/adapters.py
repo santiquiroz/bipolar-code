@@ -12,10 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
+from app.core.config import env_value, get_settings
 from app.models.smart import CliAgent, tier_index
 
 BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
-            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse"}
+            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse", "openrouter": "claude"}
 DSH_ACCOUNT_RECORD = "deepseek-account-platform/default:"
 DSH_CLI_PARTS = ("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
 MODEL_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -94,6 +95,13 @@ ENV_BLOCKLIST = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL"
 ACCOUNT_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "deepseek": "DSH_HOME"}
 CREDENTIAL_FILES = {"claude": ".credentials.json", "codex": "auth.json", "deepseek": ".credentials.yaml"}
 ARGV_PROMPT_MAX = 24_000
+# copilot rechaza --max-ai-credits por debajo de este piso ("Use at least 30 AI credits")
+COPILOT_MIN_AI_CREDITS = 30
+OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_FREE_MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}/[a-z0-9][a-z0-9._-]{0,95}:free$", re.I)
+OPENROUTER_MODEL_VARS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                         "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
 
 
 def supports_accounts(base: str) -> bool:
@@ -287,6 +295,48 @@ class ClaudeAdapter:
         )
 
 
+class OpenRouterAdapter(ClaudeAdapter):
+    id = "openrouter"
+
+    @staticmethod
+    def config_dir() -> Path:
+        path = Path(get_settings().litellm_config_dir) / "delegate" / "openrouter-claude"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def api_key() -> str:
+        return env_value(OPENROUTER_KEY_ENV)
+
+    @staticmethod
+    def validate_free_model(model: str) -> str:
+        if not OPENROUTER_FREE_MODEL_RE.match(model or ""):
+            raise AdapterUnsafe("openrouter_model_not_free")
+        return model
+
+    def openrouter_env(self, model: str, key: str) -> dict[str, str]:
+        env = {name: model for name in OPENROUTER_MODEL_VARS}
+        env.update({
+            "ANTHROPIC_BASE_URL": OPENROUTER_BASE_URL,
+            "ANTHROPIC_AUTH_TOKEN": key,
+            # vacío explícito: si falta, Claude Code puede autenticarse contra Anthropic
+            "ANTHROPIC_API_KEY": "",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # aislado del ~/.claude del usuario: los modelos gratis pueden guardar los prompts
+            "CLAUDE_CONFIG_DIR": str(self.config_dir()),
+        })
+        return env
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        model = self.validate_free_model(model or agent.default_model)
+        key = self.api_key()
+        if not key:
+            raise AdapterUnsafe("openrouter_key_missing")
+        spec = super().build(agent, exe, job_id, task, model, workspace, tier, timeout_s, read_only)
+        spec.env.update(self.openrouter_env(model, key))
+        return spec
+
+
 class CodexAdapter:
     id = "codex"
     prompt_via = "stdin"
@@ -348,7 +398,7 @@ class CopilotAdapter:
         for rule in self.DENY:
             argv += ["--deny-tool", rule]
         if agent.max_credits > 0:
-            argv += ["--max-ai-credits", str(agent.max_credits)]
+            argv += ["--max-ai-credits", str(max(agent.max_credits, COPILOT_MIN_AI_CREDITS))]
         argv += ["--effort", effort_for_tier(tier)]
         if model:
             argv += ["--model", model]
@@ -726,6 +776,7 @@ ADAPTERS = {
     "cursor": CursorAdapter(),
     "deepseek": DeepseekAdapter(),
     "muse": MuseAdapter(),
+    "openrouter": OpenRouterAdapter(),
 }
 
 

@@ -101,7 +101,7 @@ _DEFAULTS: list[dict] = [
         "auth_env_var": "OPENROUTER_API_KEY",
         "models_endpoint": "https://openrouter.ai/api/v1/models",
         "models_auth_env_var": "OPENROUTER_API_KEY",
-        "active_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "active_model": "minimax/minimax-m3.1-flash:free",
         "drop_params": True,
     },
     {
@@ -253,6 +253,9 @@ def load_registry() -> ProviderRegistry:
 def _place_seeded_agent(agent_id: str, order: list[str]) -> list[str]:
     if agent_id == "muse":
         return [agent_id] + order
+    if agent_id == "openrouter" and "deepseek" in order:
+        position = order.index("deepseek")
+        return order[:position] + [agent_id] + order[position:]
     return order + [agent_id]
 
 
@@ -279,6 +282,7 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
             seeded.append(f"cli:{defaults['id']}")
     _seed_agent_order(registry, existing, "deepseek")
     _seed_agent_order(registry, existing, "muse")
+    _seed_agent_order(registry, existing, "openrouter")
     if not registry.smart.tiers and registry.providers:
         registry.smart.tiers = default_tier_table({p.id for p in registry.providers})
         seeded.append("smart.tiers")

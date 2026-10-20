@@ -173,9 +173,23 @@ def _muse_sandbox_verified(status: Optional[AgentStatus]) -> bool:
     return sandbox in ("ready", "n/a")
 
 
-def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentStatus], model: str, preferred: bool) -> Optional[str]:
+def _agent_workspace_allowed(agent: CliAgent, workspace: Optional[Path]) -> bool:
+    if workspace is None or not agent.workspace_allowlist:
+        return False
+    try:
+        validate_workspace(str(workspace), agent.workspace_allowlist)
+    except WorkspaceNotAllowed:
+        return False
+    return True
+
+
+def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentStatus], model: str, preferred: bool,
+                  workspace: Optional[Path] = None) -> Optional[str]:
     if not agent.enabled:
         return "disabled"
+    # los modelos gratis de OpenRouter pueden guardar los prompts: solo workspaces que el usuario liberó para eso
+    if agent.base == "openrouter" and not _agent_workspace_allowed(agent, workspace):
+        return "agent_workspace_not_allowed"
     if status is not None and not status.installed:
         return "not_installed"
     if mode == "task" and not agent.agentic:
@@ -235,6 +249,7 @@ def choose_agent(
     mode: str = "task",
     model_override: str = "",
     alt_pool: bool = False,
+    workspace: Optional[Path] = None,
 ) -> tuple[Optional[CliAgent], str, list[str], list[tuple[str, str]]]:
     agents = {a.id: a for a in registry.cli_agents}
     reasons: list[str] = []
@@ -250,7 +265,7 @@ def choose_agent(
         model = agent.model_for(tier, model_override)
         if alt_pool and agent.alt_model_on_quota:
             model = agent.alt_model_on_quota
-        reason = _reject_agent(agent, tier, mode, statuses.get(aid), model, preferred == aid)
+        reason = _reject_agent(agent, tier, mode, statuses.get(aid), model, preferred == aid, workspace)
         if reason:
             skipped.append((aid, reason))
             continue
@@ -304,7 +319,8 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
     cls = classify_task(req.task, thresholds=registry.smart.thresholds)
     tier = req.tier_hint or cls.tier
     statuses = await _statuses(registry, req.agent_id)
-    agent, model, reasons, skipped = choose_agent(tier, registry, statuses, preferred=req.agent_id, mode=req.mode, model_override=req.model)
+    agent, model, reasons, skipped = choose_agent(tier, registry, statuses, preferred=req.agent_id, mode=req.mode, model_override=req.model,
+                                                workspace=workspace)
     job = Job(
         id=job_id, created_at=_now(), mode=req.mode, workspace=str(workspace), task_preview=req.task[:200],
         tier=tier, score=cls.score, reasons=list(cls.reasons) + reasons, skipped=[list(s) for s in skipped],
@@ -711,14 +727,15 @@ async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, 
     return outcome
 
 
-def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAgent, tier: str) -> list:
+def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAgent, tier: str,
+                       workspace: Optional[Path] = None) -> list:
     agents = {a.id: a for a in registry.cli_agents}
     candidates = []
     for thinker_id in registry.delegation.thinkers:
         cand = agents.get(thinker_id)
         if cand is None or cand.id == worker.id or not supports_read_only(cand.base):
             continue
-        if _reject_agent(cand, tier, "task", statuses.get(thinker_id), cand.model_for(tier), False):
+        if _reject_agent(cand, tier, "task", statuses.get(thinker_id), cand.model_for(tier), False, workspace):
             continue
         candidates.append(cand)
     candidates.sort(key=lambda c: c.base == worker.base)
@@ -727,7 +744,7 @@ def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAg
 
 async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, worker: CliAgent, checks: list):
     job = rt.job
-    candidates = _review_candidates(registry, statuses, worker, job.tier)
+    candidates = _review_candidates(registry, statuses, worker, job.tier, rt.workspace)
     if not candidates:
         return None
     diff = reviewer.collect_diff(rt.workspace, _files_touched(rt.workspace, rt.status_before))
@@ -799,10 +816,10 @@ def _escalation_target(rt: JobRuntime, registry: ProviderRegistry, statuses: dic
         if cand is None or not cand.agentic:
             continue
         model = cand.model_for(job.tier)
-        if _reject_agent(cand, job.tier, "task", statuses.get(thinker_id), model, False):
+        if _reject_agent(cand, job.tier, "task", statuses.get(thinker_id), model, False, rt.workspace):
             continue
         return cand, model
-    agent, model, _, _ = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode="task")
+    agent, model, _, _ = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode="task", workspace=rt.workspace)
     return agent, model
 
 
@@ -876,7 +893,8 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             if rt.request.agent_id:
                 job.status, job.error = "quota", outcome.signal.excerpt
                 break
-            agent, model, more_reasons, skipped = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode=rt.request.mode, model_override=rt.request.model)
+            agent, model, more_reasons, skipped = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode=rt.request.mode, model_override=rt.request.model,
+                                                                   workspace=rt.workspace)
             job.reasons += more_reasons
             job.skipped += [list(s) for s in skipped]
             if agent is None:
