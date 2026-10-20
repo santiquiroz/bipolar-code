@@ -83,12 +83,6 @@ def test_free_models_daily_cap_is_quota_exhausted():
     assert detect_signal(body, 429).kind == "quota_exhausted"
 
 
-def test_copilot_credit_floor(tmp_path):
-    agent = CliAgent(**{**next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "copilot"), "max_credits": 7})
-    argv = ad.CopilotAdapter().build(agent, "copilot.exe", "job2", "tarea", "", tmp_path, "simple", 600).argv
-    assert argv[argv.index("--max-ai-credits") + 1] == str(ad.COPILOT_MIN_AI_CREDITS)
-
-
 @pytest.mark.parametrize("allowlist, use_workspace, expected", [
     ([], True, "agent_workspace_not_allowed"),
     (["<ws>"], False, "agent_workspace_not_allowed"),

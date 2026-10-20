@@ -620,3 +620,16 @@ def test_muse_parse_missing_terminal_falls_back_to_stderr():
 def test_muse_parse_missing_terminal_is_error_even_with_zero_returncode():
     result = ad.MuseAdapter().parse(json.dumps({"payload_type": "run.model.configured", "payload": {"model_id": "meta/default"}}), "", 0, None)
     assert result.structured_error is True
+
+
+def test_copilot_credit_floor(tmp_path):
+    agent = CliAgent(**{**next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "copilot"), "max_credits": 7})
+    argv = ad.CopilotAdapter().build(agent, "copilot.exe", "job2", "tarea", "", tmp_path, "simple", 600).argv
+    assert argv[argv.index("--max-ai-credits") + 1] == str(ad.COPILOT_MIN_AI_CREDITS)
+
+
+@pytest.mark.parametrize("model", ["", "auto"])
+def test_copilot_auto_model_gets_no_effort_flag(tmp_path, model):
+    agent = CliAgent(**next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "copilot"))
+    argv = ad.CopilotAdapter().build(agent, "copilot.exe", "job3", "tarea", model, tmp_path, "simple", 600).argv
+    assert "--effort" not in argv

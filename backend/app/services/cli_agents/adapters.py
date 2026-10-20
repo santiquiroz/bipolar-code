@@ -399,9 +399,11 @@ class CopilotAdapter:
             argv += ["--deny-tool", rule]
         if agent.max_credits > 0:
             argv += ["--max-ai-credits", str(max(agent.max_credits, COPILOT_MIN_AI_CREDITS))]
-        argv += ["--effort", effort_for_tier(tier)]
         if model:
             argv += ["--model", model]
+        # el modelo "auto" (el de Copilot sin --model) rechaza --effort y la corrida muere
+        if model and model != "auto":
+            argv += ["--effort", effort_for_tier(tier)]
         argv += validate_extra_args(agent.extra_args)
         return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, pointer_file=pointer,
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
