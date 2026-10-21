@@ -26,7 +26,7 @@ from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import health_service, providers_service, usage_tracker
-from app.services.cli_agents import registry as agents_registry, reviewer, verifier
+from app.services.cli_agents import outcome_stats, registry as agents_registry, reviewer, verifier
 from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
 from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
@@ -220,6 +220,17 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
     return None
 
 
+def _demoted_set(tier: str, registry: ProviderRegistry, preferred: str, ordered: list[str]) -> set[str]:
+    demoted_ids = set()
+    for aid in ordered:
+        if aid == preferred:
+            continue
+        pct = outcome_stats.accept_pct(aid, tier, registry.delegation.demote_min_samples)
+        if pct is not None and pct < registry.delegation.demote_below_pct:
+            demoted_ids.add(aid)
+    return demoted_ids
+
+
 def _candidate_order(tier: str, registry: ProviderRegistry, preferred: str) -> list[str]:
     order = [preferred] if preferred else []
     order += registry.delegation.tier_order.get(tier, [])
@@ -229,6 +240,11 @@ def _candidate_order(tier: str, registry: ProviderRegistry, preferred: str) -> l
         if aid and aid not in seen:
             seen.add(aid)
             ordered.append(aid)
+    if registry.delegation.demote_low_acceptance:
+        demoted_ids = _demoted_set(tier, registry, preferred, ordered)
+        kept = [aid for aid in ordered if aid == preferred or aid not in demoted_ids]
+        demoted_order = [aid for aid in ordered if aid in demoted_ids]
+        return kept + demoted_order
     return ordered
 
 
@@ -278,6 +294,9 @@ def choose_agent(
             skipped.append((aid, reason))
             continue
         reasons.append(f"agent:{aid}" + (":preferred" if preferred == aid else f":{tier}"))
+        pct = outcome_stats.accept_pct(aid, tier, registry.delegation.demote_min_samples)
+        if registry.delegation.demote_low_acceptance and aid != preferred and pct is not None and pct < registry.delegation.demote_below_pct:
+            reasons.append(f"demoted:{aid}:{pct}")
         return agent, model, reasons, skipped
     queued, queued_model = _queued_busy(agents, skipped, tier, model_override, alt_pool)
     if queued is not None:
@@ -316,6 +335,8 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
     if depth_header and depth_header.strip().isdigit() and int(depth_header) >= 1:
         raise DelegationDisabled("recursion_guard")
     registry = providers_service.load_registry()
+    if registry.delegation.demote_low_acceptance:
+        await outcome_stats.refresh()
     if not registry.delegation.enabled and not req.agent_id:
         raise DelegationDisabled("delegation_disabled")
     queued = sum(1 for rt in _jobs.values() if rt.job.status in ("queued", "running"))
@@ -925,6 +946,20 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
                           model: str, outcome: AttemptOutcome, tried: list, history: list):
     job = rt.job
     gate = await _quality_gate(rt, registry, statuses, agent, model, outcome)
+    if rt.request.mode == "task":
+        if gate.accepted:
+            # Intentos con error que pasan por gate_after_failure no se registran:
+            # aunque dejen cambios, el intento falló y no cuenta como resultado del agente.
+            if outcome.ok:
+                revised = any(
+                    attempt.agent_id == agent.id and attempt.kind == "work" and attempt.detail.get("revision")
+                    for attempt in job.attempts
+                )
+                await outcome_stats.record(agent.id, job.tier, "revised" if revised else "first_pass")
+        elif gate.reason.startswith(("review_rejected", "verify_failed", "revision_failed")):
+            # Solo registrar rechazo si el fallo no es cuota/auth/timeout/red del worker de revisión
+            if gate.outcome is not None and gate.outcome.signal is None and not gate.outcome.timed_out:
+                await outcome_stats.record(agent.id, job.tier, "rejected")
     if gate.accepted:
         _finish_ok(job, gate.outcome or outcome, agent, model)
         return None
