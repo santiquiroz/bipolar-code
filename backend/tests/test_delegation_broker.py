@@ -434,6 +434,18 @@ async def test_wait_job_returns_when_task_cancelled_externally(env):
         pass
 
 
+def test_choose_agent_queues_preferred_busy_instead_of_falling_back(env):
+    registry = env["registry"]
+    statuses = {a.id: AgentStatus(id=a.id, installed=True) for a in registry.cli_agents}
+    agents_registry.adjust_running("claude", +1)
+    try:
+        agent, _, reasons, _ = broker.choose_agent("standard", registry, statuses, preferred="claude")
+    finally:
+        agents_registry.adjust_running("claude", -1)
+    assert agent is not None and agent.id == "claude"
+    assert reasons == ["agent:claude:queued_busy:preferred"]
+
+
 def test_choose_agent_queues_first_busy_when_all_busy(env):
     registry = env["registry"]
     statuses = {a.id: AgentStatus(id=a.id, installed=True) for a in registry.cli_agents}

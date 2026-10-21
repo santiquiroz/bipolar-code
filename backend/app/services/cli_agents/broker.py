@@ -290,6 +290,10 @@ def choose_agent(
         if alt_pool and agent.alt_model_on_quota:
             model = agent.alt_model_on_quota
         reason = _reject_agent(agent, tier, mode, statuses.get(aid), model, preferred == aid, workspace)
+        if reason == "busy" and aid == preferred:
+            # el agente pedido a propósito espera su turno: saltar a otro puede mandar el código a un carril que no se eligió
+            reasons.append(f"agent:{aid}:queued_busy:preferred")
+            return agent, model, reasons, skipped
         if reason:
             skipped.append((aid, reason))
             continue
