@@ -55,7 +55,11 @@ TASK_CONSTRAINTS = (
     "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
     "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
     "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
-    "Deja los cambios en el working tree y termina con la lista de archivos tocados."
+    "Deja los cambios en el working tree y termina con la lista de archivos tocados. "
+    "La última línea de tu respuesta debe ser `STATUS: DONE`, `STATUS: DONE_WITH_CONCERNS`, `STATUS: NEEDS_CONTEXT` o `STATUS: BLOCKED`; "
+    "si no es DONE, escribe en la misma línea, después de la palabra, el motivo o la pregunta concreta. "
+    "NEEDS_CONTEXT = falta información y no adivinaste; BLOCKED = no se puede avanzar (permisos, dependencia rota); "
+    "DONE_WITH_CONCERNS = terminado pero con riesgos que alguien debe revisar."
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (

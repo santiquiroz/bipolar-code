@@ -27,6 +27,7 @@ from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import health_service, providers_service, usage_tracker
 from app.services.cli_agents import registry as agents_registry, reviewer, verifier
+from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
 from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
 
@@ -43,7 +44,8 @@ PARSE_TAIL_LINES = 2000
 PARSE_TAIL_BYTES = 2_000_000
 TRUNCATED_MARK = "[bipolar: salida intermedia recortada]"
 RESULT_OUTPUT_CAP = 20_000
-TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"})
+TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error", "needs_context", "blocked"})
+WORKER_STOP_JOB_STATUSES = tuple(s.lower() for s in STOP_STATUSES)
 
 
 class WorkspaceNotAllowed(Exception):
@@ -761,6 +763,21 @@ async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, 
     return outcome
 
 
+def _worker_stop(rt: JobRuntime, agent: CliAgent, outcome: AttemptOutcome) -> str:
+    if rt.request.mode != "task" or outcome.result is None:
+        return ""
+    status, detail = parse_worker_status(outcome.result.text)
+    rt.job.worker_status, rt.job.worker_detail = status, detail
+    if status not in STOP_STATUSES:
+        return ""
+    _emit(rt, {"event": "worker_stop", "agent_id": agent.id, "status": status, "detail": detail[:300]})
+    return f"{status.lower()}: {detail}"[:300]
+
+
+def _stop_job(job: Job, reason: str) -> None:
+    job.status, job.error = reason.split(":", 1)[0], reason[:300]
+
+
 def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAgent, tier: str,
                        workspace: Optional[Path] = None) -> list:
     agents = {a.id: a for a in registry.cli_agents}
@@ -782,7 +799,8 @@ async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, wo
     if not candidates:
         return None
     diff = reviewer.collect_diff(rt.workspace, _files_touched(rt.workspace, rt.status_before))
-    prompt = reviewer.review_prompt(rt.request.task, diff, checks, _overlap_note(rt))
+    concerns = job.worker_detail if job.worker_status == "DONE_WITH_CONCERNS" else ""
+    prompt = reviewer.review_prompt(rt.request.task, diff, checks, _overlap_note(rt), worker_concerns=concerns)
     for cand in candidates:
         model_cand = cand.model_for(job.tier)
         outcome = await _run_attempt_guarded(rt, registry, cand, model_cand, registry.delegation.review_timeout_s, prompt, read_only=True)
@@ -816,6 +834,9 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 outcome = await _revise(rt, registry, worker, model, [], checks[-1])
                 if not outcome.ok:
                     return GateResult(False, f"revision_failed: {outcome.error}"[:300], outcome)
+                stop = _worker_stop(rt, worker, outcome)
+                if stop:
+                    return GateResult(False, stop, outcome)
                 continue
             return GateResult(False, f"verify_failed: {checks[-1].command}"[:300], outcome)
         job.verification_status = "passed" if checks else "n/a"
@@ -838,6 +859,9 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             outcome = await _revise(rt, registry, worker, model, verdict.issues, None)
             if not outcome.ok:
                 return GateResult(False, f"revision_failed: {outcome.error}"[:300], outcome)
+            stop = _worker_stop(rt, worker, outcome)
+            if stop:
+                return GateResult(False, stop, outcome)
             continue
         job.review_status = "failed"
         reason = f"review_rejected: {'; '.join(verdict.issues)}" if verdict.issues else "review_rejected"
@@ -871,6 +895,9 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
     if gate.reason.startswith("review_unavailable"):
         job.status, job.error = "failed", gate.reason[:300]
         return None
+    if gate.reason.startswith(WORKER_STOP_JOB_STATUSES):
+        _stop_job(job, gate.reason)
+        return None
     history.append(f"{agent.id}: {gate.reason}")
     tried.append(agent.id)
     nxt, nxt_model = _escalation_target(rt, registry, statuses, tried)
@@ -899,6 +926,11 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
         while agent is not None and _work_count(job) < max(1, registry.delegation.max_attempts):
             outcome = await _run_work_attempt(rt, registry, agent, model)
             if outcome.ok:
+                # el worker pidió parar: el problema está en la tarea, escalar solo gastaría cuota de otro agente
+                stop = _worker_stop(rt, agent, outcome)
+                if stop:
+                    _stop_job(job, stop)
+                    break
                 nxt = await _handle_gate_ok(rt, registry, statuses, agent, model, outcome, tried, history)
                 if nxt is None:
                     break
