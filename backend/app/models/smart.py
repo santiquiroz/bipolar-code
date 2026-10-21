@@ -128,6 +128,9 @@ class DelegationConfig(BaseModel):
     review_default: bool = True
     verify_timeout_s: int = Field(default=600, ge=30, le=3600)
     review_timeout_s: int = Field(default=900, ge=60, le=3600)
+    demote_low_acceptance: bool = False
+    demote_min_samples: int = Field(default=5, ge=1, le=100)
+    demote_below_pct: int = Field(default=40, ge=0, le=100)
 
 
 DEFAULT_CLI_AGENTS: list[dict] = [

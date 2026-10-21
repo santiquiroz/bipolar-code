@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.models.delegate import JobRequest
 from app.services.cli_agents import broker
+from app.services.cli_agents import outcome_stats
 
 router = APIRouter(prefix="/delegate", tags=["delegate"])
 
@@ -33,6 +34,11 @@ async def submit_job(req: JobRequest, request: Request):
 @router.get("/jobs")
 async def list_jobs(limit: int = Query(50, ge=1, le=500), status: Optional[str] = None):
     return {"jobs": [j.model_dump() for j in broker.list_jobs(limit, status)]}
+
+
+@router.get("/stats")
+async def delegation_stats(days: int = Query(30, ge=1, le=365)):
+    return await outcome_stats.summary(days)
 
 
 @router.get("/jobs/{job_id}")
