@@ -61,6 +61,7 @@ class Job(BaseModel):
     model: str = ""
     attempts: list[Attempt] = Field(default_factory=list)
     output_tail: str = ""
+    result_text: str = ""
     files_touched: list[str] = Field(default_factory=list)
     concurrent_jobs: list[str] = Field(default_factory=list)
     files_touched_exact: bool = True

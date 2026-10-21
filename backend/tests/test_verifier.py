@@ -28,6 +28,39 @@ def test_parse_command_relative_to_workspace(tmp_path):
     assert argv[-1] == "--flag"
 
 
+def test_parse_check_cd_prefix_sets_cwd(tmp_path):
+    sub = tmp_path / "front-end"
+    sub.mkdir()
+    cwd, argv = verifier.parse_check(f'cd front-end && "{PY}" -c "print(1)"', tmp_path)
+    assert cwd == sub.resolve()
+    assert Path(argv[0]).resolve() == Path(sys.executable).resolve()
+    assert argv[1:] == ["-c", "print(1)"]
+
+
+def test_parse_check_without_cd_runs_in_workspace(tmp_path):
+    cwd, _ = verifier.parse_check(f'"{PY}" -c "print(1)"', tmp_path)
+    assert cwd == tmp_path
+
+
+@pytest.mark.parametrize("bad", ["cd ../x && " + PY + " -c 1", "cd C:/abs && " + PY + " -c 1", "cd front-end/../../x && " + PY + " -c 1"])
+def test_parse_check_rejects_subfolder_outside_workspace(bad, tmp_path):
+    with pytest.raises(verifier.InvalidCommand, match="subcarpeta fuera del workspace"):
+        verifier.parse_check(bad, tmp_path)
+
+
+def test_parse_check_rejects_missing_subfolder(tmp_path):
+    with pytest.raises(verifier.InvalidCommand, match="subcarpeta no existe"):
+        verifier.parse_check(f'cd nope && "{PY}" -c 1', tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_run_checks_runs_in_subfolder(tmp_path):
+    sub = tmp_path / "front-end"
+    sub.mkdir()
+    results = await verifier.run_checks([f'cd front-end && "{PY}" -c "import os; print(os.getcwd())"'], tmp_path, timeout_s=30)
+    assert results[0].ok and sub.resolve().as_posix().lower() in results[0].output_tail.lower().replace("\\", "/")
+
+
 @pytest.mark.parametrize("bad", ["", "   ", "definitely-not-a-real-binary-xyz --x"])
 def test_parse_command_rejects(bad, tmp_path):
     with pytest.raises(verifier.InvalidCommand):

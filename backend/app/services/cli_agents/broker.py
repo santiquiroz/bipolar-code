@@ -42,6 +42,7 @@ OVERSIZED_LINE_MARK = "[línea omitida: supera el límite de lectura]"
 PARSE_TAIL_LINES = 2000
 PARSE_TAIL_BYTES = 2_000_000
 TRUNCATED_MARK = "[bipolar: salida intermedia recortada]"
+RESULT_OUTPUT_CAP = 20_000
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"})
 
 
@@ -581,6 +582,16 @@ def _overlap_note(rt: JobRuntime) -> str:
             "Los cambios que correspondan a esas tareas NO son parte de este job y no deben juzgarse.")
 
 
+def _result_section(text: str) -> str:
+    return f"\n[result]\n{text}" if text else ""
+
+
+def _keep_result(job: Job, outcome: AttemptOutcome) -> None:
+    # las líneas del log se recortan a 4000 caracteres; el texto completo del adaptador va aparte
+    if outcome.result is not None:
+        job.result_text = outcome.result.text
+
+
 def _write_log(rt: JobRuntime) -> str:
     path = jobs_dir() / f"{rt.job.id}.log"
     try:
@@ -592,6 +603,7 @@ def _write_log(rt: JobRuntime) -> str:
                 if written > LOG_CAP:
                     break
                 fh.write(line)
+            fh.write(_result_section(rt.job.result_text))
     except OSError as e:
         log.warning("job_log_write_failed", job=rt.job.id, error=str(e))
         return ""
@@ -677,6 +689,7 @@ async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: C
     attempt.error = outcome.error[:300]
     if outcome.signal is not None:
         attempt.signal = outcome.signal.kind
+    _keep_result(job, outcome)
     return outcome
 
 
@@ -723,6 +736,7 @@ async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, 
     attempt.error = outcome.error[:300]
     if outcome.signal is not None:
         attempt.signal = outcome.signal.kind
+    _keep_result(job, outcome)
     _emit(rt, {"event": "revision", "agent_id": worker.id, "ok": outcome.ok, "error": outcome.error[:300]})
     return outcome
 
@@ -849,6 +863,7 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
     tried: list[str] = []
     history: list[str] = []
     alt_pool_tried = False
+    network_retried: set[str] = set()
     global_sem, _ = _sems(registry, agent.id if agent else "")
     async with global_sem:
         job.status = "running"
@@ -880,7 +895,14 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 job.status, job.error = "failed", outcome.error
                 health_service.mark_failure(_pool_key(agent, model), outcome.error)
                 break
-            _apply_signal(agent, model, outcome.signal)
+            # un corte de red no dice nada del estado del agente: un reintento al mismo agente, sin cooldown
+            network = outcome.signal.kind == "network_error"
+            if network and agent.id not in network_retried:
+                network_retried.add(agent.id)
+                _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt, "retry": True})
+                continue
+            if not network:
+                _apply_signal(agent, model, outcome.signal)
             _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt})
             if outcome.signal.kind == "auth":
                 job.status, job.error = "auth_error", outcome.signal.excerpt
@@ -890,15 +912,16 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 model = agent.alt_model_on_quota
                 continue
             tried.append(agent.id)
+            failed_status = "failed" if network else "quota"
             if rt.request.agent_id:
-                job.status, job.error = "quota", outcome.signal.excerpt
+                job.status, job.error = failed_status, outcome.signal.excerpt
                 break
             agent, model, more_reasons, skipped = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode=rt.request.mode, model_override=rt.request.model,
                                                                    workspace=rt.workspace)
             job.reasons += more_reasons
             job.skipped += [list(s) for s in skipped]
             if agent is None:
-                job.status, job.error = "quota", outcome.signal.excerpt
+                job.status, job.error = failed_status, outcome.signal.excerpt
         if job.status == "running":
             job.status, job.error = "failed", job.error or "max_attempts"
 
@@ -917,7 +940,7 @@ def _finish_ok(job: Job, outcome: AttemptOutcome, agent: CliAgent, model: str) -
 
 def list_jobs(limit: int = 50, status: Optional[str] = None) -> list[Job]:
     jobs = [rt.job for rt in reversed(_jobs.values()) if not status or rt.job.status == status]
-    return [j.model_copy(update={"output_tail": j.output_tail[-2000:]}) for j in jobs[:limit]]
+    return [j.model_copy(update={"output_tail": j.output_tail[-2000:], "result_text": j.result_text[-2000:]}) for j in jobs[:limit]]
 
 
 def get_job(job_id: str) -> Optional[Job]:
@@ -925,11 +948,20 @@ def get_job(job_id: str) -> Optional[Job]:
     return rt.job if rt else None
 
 
-def job_output(job_id: str) -> Optional[str]:
+def job_output(job_id: str, tail_chars: Optional[int] = None) -> Optional[str]:
     rt = _jobs.get(job_id)
     if rt is None:
         return None
-    return "\n".join(f"[{ev.get('stream', ev.get('event'))}] {ev.get('text', ev.get('status', ''))}" for ev in rt.lines)
+    lines = "\n".join(f"[{ev.get('stream', ev.get('event'))}] {ev.get('text', ev.get('status', ''))}" for ev in rt.lines)
+    result = rt.job.result_text
+    if tail_chars is None:
+        return lines + _result_section(result)
+    if not result:
+        return lines[-tail_chars:]
+    # el resultado completo (hasta RESULT_OUTPUT_CAP) va primero; la cola de las líneas llena lo que sobra
+    block = _result_section(result[-RESULT_OUTPUT_CAP:])
+    budget = tail_chars - len(block)
+    return (lines[-budget:] if budget > 0 else "") + block
 
 
 async def wait_job(job_id: str, timeout_s: float) -> Optional[Job]:

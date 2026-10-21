@@ -149,6 +149,7 @@ def job_summary(job: Job) -> dict:
         "files_touched_exact": job.files_touched_exact,
         "error": job.error,
         "output_tail": job.output_tail[-2000:] if terminal else "",
+        "result_text": job.result_text[-broker.RESULT_OUTPUT_CAP:] if terminal else "",
     }
 
 
@@ -196,10 +197,10 @@ async def _tool_job_status(args: dict) -> dict:
 async def _tool_job_output(args: dict) -> dict:
     job_id = _require_str(args, "job_id")
     tail_chars = _int_in_range(args, "tail_chars", 200, 20000, 4000)
-    output = broker.job_output(job_id)
+    output = broker.job_output(job_id, tail_chars)
     if output is None:
         raise ToolError(f"job desconocido: {job_id}")
-    return {"job_id": job_id, "output": output[-tail_chars:]}
+    return {"job_id": job_id, "output": output}
 
 
 async def _tool_cancel_job(args: dict) -> dict:

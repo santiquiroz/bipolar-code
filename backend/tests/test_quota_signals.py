@@ -17,6 +17,10 @@ from app.core import quota_signals as qs
     ("401 Unauthorized", "auth"),
     ("The service is overloaded", "overloaded"),
     ("529 overloaded_error", "overloaded"),
+    ("getaddrinfo ENOTFOUND api.anthropic.com", "network_error"),
+    ("socket hang up: read ECONNRESET", "network_error"),
+    ("connect ETIMEDOUT 104.18.0.1:443", "network_error"),
+    ("Can't reach the API server (ConnectionRefused)", "network_error"),
 ])
 def test_detect_signal_kinds(text, kind):
     signal = qs.detect_signal(text)

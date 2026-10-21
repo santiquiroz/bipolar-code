@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
-SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded"]
+SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded", "network_error"]
 
 RATE_LIMIT_RE = re.compile(r"rate.?limit|\b429\b|too many requests|slow down", re.I)
 EXHAUSTED_RE = re.compile(
@@ -21,6 +21,7 @@ AUTH_RE = re.compile(
     re.I,
 )
 OVERLOADED_RE = re.compile(r"overloaded|\b529\b|\b503\b|service unavailable", re.I)
+NETWORK_RE = re.compile(r"ENOTFOUND|ECONNRESET|ETIMEDOUT|Can't reach the API server", re.I)
 RETRY_AFTER_RE = re.compile(
     r"(?:retry.?after|try again in|resets? in)[:= ]*(\d+)\s*(h|hours?|m|min|minutes?|s|sec|seconds?)?",
     re.I,
@@ -73,6 +74,8 @@ def _kind_for(text: str, status: Optional[int]) -> Optional[SignalKind]:
         return "rate_limit"
     if status in (503, 529) or OVERLOADED_RE.search(text):
         return "overloaded"
+    if NETWORK_RE.search(text):
+        return "network_error"
     return None
 
 

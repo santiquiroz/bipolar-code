@@ -264,6 +264,7 @@ class ClaudeAdapter:
     id = "claude"
     prompt_via = "pointer"
     supports_read_only = True
+    max_turns = 50
 
     def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
@@ -273,7 +274,7 @@ class ClaudeAdapter:
             "--output-format", "json",
             "--permission-mode", "plan" if read_only else "acceptEdits",
             "--disallowedTools", "Task,Agent,WebFetch,WebSearch,Edit,Write,MultiEdit,NotebookEdit,Bash" if read_only else "Task,Agent,WebFetch,WebSearch",
-            "--max-turns", "50",
+            "--max-turns", str(self.max_turns),
             "--setting-sources", "project,local", "--strict-mcp-config",
             "--add-dir", ws,
         ]
@@ -297,6 +298,8 @@ class ClaudeAdapter:
 
 class OpenRouterAdapter(ClaudeAdapter):
     id = "openrouter"
+    # los modelos gratis gastan más turnos que Claude para la misma tarea (error_max_turns con 50)
+    max_turns = 120
 
     @staticmethod
     def config_dir() -> Path:
