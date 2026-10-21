@@ -199,7 +199,8 @@ def exe_argv(exe: str) -> list[str]:
     lower = exe.lower()
     if sys.platform == "win32" and lower.endswith((".cmd", ".bat")):
         comspec = os.environ.get("ComSpec") or os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
-        return [comspec, "/d", "/s", "/c", exe]
+        # call: sin él, /s le quita a la línea su primera y última comilla y una ruta con espacios se parte
+        return [comspec, "/d", "/s", "/c", "call", exe]
     return [exe]
 
 

@@ -1,6 +1,7 @@
 """Tests de los adaptadores CLI: argv seguro, prompt fuera de argv, env limpio y parseo."""
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,6 +77,17 @@ def test_cmd_shim_runs_through_comspec(monkeypatch):
     monkeypatch.setenv("ComSpec", r"C:\Windows\System32\cmd.exe")
     assert ad.exe_argv(r"C:\Users\x\AppData\Roaming\npm\codex.cmd")[:4] == [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c"]
     assert ad.exe_argv(r"C:\tools\agy.exe") == [r"C:\tools\agy.exe"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="shim .cmd solo en Windows")
+def test_cmd_shim_in_path_with_spaces_runs_with_its_arguments(tmp_path):
+    carpeta = tmp_path / "Program Files" / "nodejs"
+    carpeta.mkdir(parents=True)
+    shim = carpeta / "npm.cmd"
+    shim.write_text("@echo %1 %2\r\n@exit /b 3\r\n", encoding="utf-8")
+    salida = subprocess.run(ad.exe_argv(str(shim)) + ["run", "test:coverage"], capture_output=True, text=True)
+    assert salida.returncode == 3
+    assert salida.stdout.strip() == "run test:coverage"
 
 
 def test_codex_parse_prefers_out_file_and_detects_structured_error(tmp_path):
