@@ -144,7 +144,7 @@ export interface Attempt {
   returncode?: number | null; signal: string; kind: 'work' | 'verify' | 'review'
   detail: Record<string, unknown>; duration_s: number; error: string
 }
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled' | 'quota' | 'auth_error'
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled' | 'quota' | 'auth_error' | 'needs_context' | 'blocked'
 export type GateStatus = 'n/a' | 'passed' | 'failed' | 'skipped' | 'unreviewed' | 'tampered'
 export interface Job {
   id: string; created_at: string; started_at?: string | null; finished_at?: string | null

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.models.smart import Tier
 
-JobStatus = Literal["queued", "running", "succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"]
+JobStatus = Literal["queued", "running", "succeeded", "failed", "timeout", "cancelled", "quota", "auth_error", "needs_context", "blocked"]
 JobMode = Literal["task", "text"]
 
 
@@ -73,6 +73,8 @@ class Job(BaseModel):
     review_status: Literal["n/a", "passed", "failed", "skipped", "unreviewed", "tampered"] = "n/a"
     escalations: int = 0
     log_path: str = ""
+    worker_status: str = ""
+    worker_detail: str = ""
 
 
 class AgentStatus(BaseModel):
