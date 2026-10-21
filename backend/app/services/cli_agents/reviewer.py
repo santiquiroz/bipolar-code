@@ -201,7 +201,7 @@ def parse_verdict(text: str) -> Optional[Verdict]:
     return _as_verdict(obj) if obj is not None else None
 
 
-def revision_task(task: str, issues: list[str], failed_check: Optional[CheckResult]) -> str:
+def revision_task(task: str, issues: list[str], failed_check: Optional[CheckResult] = None) -> str:
     lines = [task, "", "Corrige lo siguiente sin rehacer lo que ya está bien:"]
     for issue in issues:
         lines.append(f"- {issue}")
@@ -210,6 +210,7 @@ def revision_task(task: str, issues: list[str], failed_check: Optional[CheckResu
         if failed_check.error:
             lines.append(f"error: {failed_check.error}")
         lines.append(failed_check.output_tail or "(sin salida)")
+    lines += ["", "Conserva el código y las pruebas que ya existían antes de esta tarea (compara con git HEAD): no los borres, renombres ni reescribas salvo que la tarea o la revisión lo pidan de forma explícita; agrega o corrige solo lo necesario."]
     return "\n".join(lines)
 
 
@@ -217,4 +218,5 @@ def escalation_task(task: str, history: list[str]) -> str:
     lines = [task, "", "Un intento anterior dejó cambios en el árbol de trabajo y no pasó la revisión. Parte de ese estado; no reviertas nada que no entiendas."]
     if history:
         lines += ["", "Historial:", *history]
+    lines += ["", "Conserva el código y las pruebas que ya existían antes de esta tarea (compara con git HEAD): no los borres, renombres ni reescribas salvo que la tarea o la revisión lo pidan de forma explícita; agrega o corrige solo lo necesario."]
     return "\n".join(lines)

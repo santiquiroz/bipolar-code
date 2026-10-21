@@ -145,7 +145,7 @@ export interface Attempt {
   detail: Record<string, unknown>; duration_s: number; error: string
 }
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled' | 'quota' | 'auth_error'
-export type GateStatus = 'n/a' | 'passed' | 'failed' | 'skipped'
+export type GateStatus = 'n/a' | 'passed' | 'failed' | 'skipped' | 'unreviewed'
 export interface Job {
   id: string; created_at: string; started_at?: string | null; finished_at?: string | null
   status: JobStatus; mode: 'task' | 'text'; workspace: string; task_preview: string

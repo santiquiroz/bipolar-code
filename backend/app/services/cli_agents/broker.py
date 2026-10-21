@@ -804,6 +804,10 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             return GateResult(True, "", outcome)
         verdict = await _review(rt, registry, statuses, worker, checks)
         if verdict is None:
+            asked_changes = any(a.kind == "review" and a.detail.get("verdict") in ("revise", "reject") for a in job.attempts)
+            if asked_changes:
+                job.review_status = "unreviewed"
+                return GateResult(False, "review_unavailable: la revisión anterior pidió cambios y no hubo revisor para validar la corrección", outcome)
             job.review_status = "skipped"
             return GateResult(True, "", outcome)
         if verdict.verdict == "approve":
@@ -843,6 +847,9 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
     gate = await _quality_gate(rt, registry, statuses, agent, model, outcome)
     if gate.accepted:
         _finish_ok(job, gate.outcome or outcome, agent, model)
+        return None
+    if gate.reason.startswith("review_unavailable"):
+        job.status, job.error = "failed", gate.reason[:300]
         return None
     history.append(f"{agent.id}: {gate.reason}")
     tried.append(agent.id)
