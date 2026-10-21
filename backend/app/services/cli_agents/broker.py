@@ -46,6 +46,11 @@ RESULT_OUTPUT_CAP = 20_000
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"})
 
 
+# sentinel: el revisor modificó el árbol de trabajo
+class ReviewTampered:
+    pass
+
+
 class WorkspaceNotAllowed(Exception):
     pass
 
@@ -785,18 +790,41 @@ async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, wo
     prompt = reviewer.review_prompt(rt.request.task, diff, checks, _overlap_note(rt))
     for cand in candidates:
         model_cand = cand.model_for(job.tier)
+        before = reviewer.tree_fingerprint(rt.workspace) if rt.workspace else ""
         outcome = await _run_attempt_guarded(rt, registry, cand, model_cand, registry.delegation.review_timeout_s, prompt, read_only=True)
+        after = reviewer.tree_fingerprint(rt.workspace) if rt.workspace else ""
+        changed = bool(before) and before != after
+        # otro job en el mismo workspace también puede escribir durante la revisión: no es culpa del revisor
+        concurrent = changed and bool(_overlapping_jobs(rt))
+        tampered = changed and not concurrent
+        if concurrent:
+            _emit(rt, {"event": "review_tree_changed_concurrent", "agent_id": cand.id})
         verdict = reviewer.parse_verdict(outcome.result.text) if outcome.ok and outcome.result else None
+        if verdict is not None:
+            verdict = reviewer.resolve_citations(verdict, rt.workspace, diff)
+        if tampered:
+            verdict = None  # un veredicto de un revisor que tocó el árbol no cuenta
+        # revise/reject sin hallazgos válidos: el revisor no sostiene su veredicto, se prueba el siguiente
+        unsupported = verdict is not None and verdict.verdict in ("revise", "reject") and not verdict.issues and bool(verdict.dropped)
+        dropped = verdict.dropped if verdict else []
         job.attempts.append(Attempt(agent_id=cand.id, model=model_cand, started_at=_now(), finished_at=_now(),
                                     returncode=outcome.returncode, kind="review", error=outcome.error[:300],
                                     detail={"verdict": verdict.verdict if verdict else "",
-                                            "issues": verdict.issues if verdict else []}))
-        _emit(rt, {"event": "review_result", "agent_id": cand.id, "verdict": verdict.verdict if verdict else "",
-                   "issues": verdict.issues if verdict else [], "ok": outcome.ok})
+                                            "issues": verdict.issues if verdict else [],
+                                            "dropped": dropped, "tampered": tampered, "unsupported": unsupported}))
+        if tampered:
+            _emit(rt, {"event": "review_tampered", "agent_id": cand.id})
+            health_service.mark_failure(_pool_key(cand, model_cand), "review_mutated_tree")
+            return ReviewTampered()
+        if unsupported:
+            _emit(rt, {"event": "review_unsupported", "agent_id": cand.id, "dropped": dropped})
+        else:
+            _emit(rt, {"event": "review_result", "agent_id": cand.id, "verdict": verdict.verdict if verdict else "",
+                       "issues": verdict.issues if verdict else [], "ok": outcome.ok, "dropped": dropped})
         if outcome.signal is not None:
             _apply_signal(cand, model_cand, outcome.signal)
             continue
-        if verdict is not None:
+        if verdict is not None and not unsupported:
             return verdict
     return None
 
@@ -823,8 +851,16 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             job.review_status = "n/a"
             return GateResult(True, "", outcome)
         verdict = await _review(rt, registry, statuses, worker, checks)
+        if isinstance(verdict, ReviewTampered):
+            # El revisor modificó el árbol: terminal, sin escalar
+            job.review_status = "tampered"
+            job.status = "failed"
+            job.error = f"review_tampered: el revisor {job.attempts[-1].agent_id} modificó el árbol de trabajo durante la revisión; revisa los cambios a mano"
+            return GateResult(False, job.error[:300], outcome)
         if verdict is None:
-            asked_changes = any(a.kind == "review" and a.detail.get("verdict") in ("revise", "reject") for a in job.attempts)
+            # una revisión no sostenida (citas falsas) no cuenta como petición de cambios
+            asked_changes = any(a.kind == "review" and a.detail.get("verdict") in ("revise", "reject")
+                                and not a.detail.get("unsupported") for a in job.attempts)
             if asked_changes:
                 job.review_status = "unreviewed"
                 return GateResult(False, "review_unavailable: la revisión anterior pidió cambios y no hubo revisor para validar la corrección", outcome)
@@ -868,7 +904,7 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
     if gate.accepted:
         _finish_ok(job, gate.outcome or outcome, agent, model)
         return None
-    if gate.reason.startswith("review_unavailable"):
+    if gate.reason.startswith("review_unavailable") or gate.reason.startswith("review_tampered"):
         job.status, job.error = "failed", gate.reason[:300]
         return None
     history.append(f"{agent.id}: {gate.reason}")

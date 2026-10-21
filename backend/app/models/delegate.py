@@ -70,7 +70,7 @@ class Job(BaseModel):
     tokens_out: int = 0
     cost_usd: Optional[float] = None
     verification_status: Literal["n/a", "passed", "failed", "skipped"] = "n/a"
-    review_status: Literal["n/a", "passed", "failed", "skipped", "unreviewed"] = "n/a"
+    review_status: Literal["n/a", "passed", "failed", "skipped", "unreviewed", "tampered"] = "n/a"
     escalations: int = 0
     log_path: str = ""
 
