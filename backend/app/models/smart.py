@@ -83,6 +83,7 @@ class CliAgent(BaseModel):
     max_credits: int = 0
     workspace_allowlist: list[str] = Field(default_factory=list)
     extra_args: list[str] = Field(default_factory=list)
+    fallback_models: list[str] = Field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -175,6 +176,11 @@ DEFAULT_CLI_AGENTS: list[dict] = [
         "supported_tiers": ["trivial", "simple", "standard"],
         "default_model": "minimax/minimax-m3.1-flash:free",
         "quota_reset": "daily", "cost_weight": 0.0, "priority": 85, "timeout_s": 900,
+        "fallback_models": [
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "poolside/laguna-s-2.1:free",
+            "minimax/minimax-m3.1-flash:free",
+        ],
     },
 ]
 

@@ -27,7 +27,7 @@ from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import health_service, providers_service, usage_tracker
 from app.services.cli_agents import registry as agents_registry, reviewer, verifier
-from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
+from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -622,6 +622,26 @@ def _apply_signal(agent: CliAgent, model: str, signal: QuotaSignal) -> None:
     agents_registry.invalidate(agent.id)
 
 
+# un fallo de UN modelo :free (rate limit por minuto, sobrecarga, modelo retirado) no dice nada del resto del carril;
+# el cupo diario (quota_exhausted) sí es de la cuenta y nunca se reintenta con otro modelo
+OPENROUTER_MODEL_SIGNALS = ("rate_limit", "overloaded", "model_unavailable")
+
+
+def _openrouter_fallback_eligible(agent: CliAgent, signal: QuotaSignal) -> bool:
+    return agent.base == "openrouter" and bool(agent.fallback_models) and signal.kind in OPENROUTER_MODEL_SIGNALS
+
+
+def _next_openrouter_model(agent: CliAgent, tried: set[str]) -> Optional[str]:
+    for candidate in agent.fallback_models:
+        if candidate in tried:
+            continue
+        tried.add(candidate)
+        if not OPENROUTER_FREE_MODEL_RE.match(candidate):
+            continue  # el adaptador rechaza modelos no :free; aquí se saltan sin gastar un intento
+        return candidate
+    return None
+
+
 async def _run_job(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
     rt.status_before = set()
     try:
@@ -870,6 +890,7 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
     tried: list[str] = []
     history: list[str] = []
     alt_pool_tried = False
+    openrouter_models_tried: set[str] = set()
     network_retried: set[str] = set()
     global_sem, _ = _sems(registry, agent.id if agent else "")
     async with global_sem:
@@ -908,7 +929,9 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 network_retried.add(agent.id)
                 _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt, "retry": True})
                 continue
-            if not network:
+            # openrouter con un modelo caído no pone en cooldown al carril: el fallback decide antes
+            fallback_eligible = _openrouter_fallback_eligible(agent, outcome.signal)
+            if not network and not fallback_eligible:
                 _apply_signal(agent, model, outcome.signal)
             _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt})
             if outcome.signal.kind == "auth":
@@ -918,8 +941,16 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 alt_pool_tried = True
                 model = agent.alt_model_on_quota
                 continue
+            if fallback_eligible:
+                openrouter_models_tried.add(model)
+                fallback_model = _next_openrouter_model(agent, openrouter_models_tried)
+                if fallback_model is not None:
+                    _emit(rt, {"event": "model_fallback", "agent_id": agent.id, "from": model, "to": fallback_model, "signal": outcome.signal.kind})
+                    model = fallback_model
+                    continue
+                _apply_signal(agent, model, outcome.signal)  # sin modelos de respaldo: el carril sigue el flujo normal
             tried.append(agent.id)
-            failed_status = "failed" if network else "quota"
+            failed_status = "failed" if network or outcome.signal.kind == "model_unavailable" else "quota"
             if rt.request.agent_id:
                 job.status, job.error = failed_status, outcome.signal.excerpt
                 break

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
-SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded", "network_error"]
+SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded", "network_error", "model_unavailable"]
 
 RATE_LIMIT_RE = re.compile(r"rate.?limit|\b429\b|too many requests|slow down", re.I)
 EXHAUSTED_RE = re.compile(
@@ -22,6 +22,10 @@ AUTH_RE = re.compile(
 )
 OVERLOADED_RE = re.compile(r"overloaded|\b529\b|\b503\b|service unavailable", re.I)
 NETWORK_RE = re.compile(r"ENOTFOUND|ECONNRESET|ETIMEDOUT|Can't reach the API server", re.I)
+MODEL_UNAVAILABLE_RE = re.compile(
+    r"No endpoints found|is not a valid model ID|model not found|is not available for free",
+    re.I,
+)
 RETRY_AFTER_RE = re.compile(
     r"(?:retry.?after|try again in|resets? in)[:= ]*(\d+)\s*(h|hours?|m|min|minutes?|s|sec|seconds?)?",
     re.I,
@@ -66,6 +70,8 @@ def make_excerpt(text: str, limit: int = EXCERPT_CHARS) -> str:
 
 
 def _kind_for(text: str, status: Optional[int]) -> Optional[SignalKind]:
+    if MODEL_UNAVAILABLE_RE.search(text):
+        return "model_unavailable"
     if status == 401 or AUTH_RE.search(text):
         return "auth"
     if EXHAUSTED_RE.search(text):

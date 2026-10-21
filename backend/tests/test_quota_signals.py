@@ -94,3 +94,19 @@ def test_detect_signal_dsh_insufficient_balance_is_quota_exhausted():
 def test_detect_signal_dsh_missing_credential_is_auth():
     signal = qs.detect_signal("dsh: MISSING_CREDENTIAL: llm-deepseek: no API key")
     assert signal is not None and signal.kind == "auth"
+
+
+@pytest.mark.parametrize("text,kind", [
+    ("No endpoints found matching your data policy", "model_unavailable"),
+    ("xyz is not a valid model ID", "model_unavailable"),
+    ("model not found", "model_unavailable"),
+    ("is not available for free", "model_unavailable"),
+])
+def test_detect_signal_model_unavailable(text, kind):
+    signal = qs.detect_signal(text)
+    assert signal is not None and signal.kind == kind
+
+
+def test_free_models_per_day_remains_quota_exhausted():
+    signal = qs.detect_signal("Rate limit exceeded: free-models-per-day")
+    assert signal is not None and signal.kind == "quota_exhausted"
