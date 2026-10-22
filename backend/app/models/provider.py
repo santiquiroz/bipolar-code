@@ -2,7 +2,7 @@
 Modelo genérico de proveedor de LLM.
 Cada proveedor define cómo conectarse, autenticarse y listar sus modelos.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from typing import Optional
 
 from app.models.smart import CliAgent, DelegationConfig, SmartRoutingConfig
@@ -41,7 +41,7 @@ class Provider(BaseModel):
     anthropic_native: bool = False
 
     # Config de lanzamiento para providers locales gestionados (llama.cpp):
-    # {exe_path, model_path, ctx_size, split_mode, tensor_split, ngl, extra_args}
+    # {exe_path, model_path, ctx_size, split_mode, tensor_split, ngl, extra_args, devices}
     local_launch: dict = {}
 
 
@@ -71,3 +71,5 @@ class ProviderRegistry(BaseModel):
     smart: SmartRoutingConfig = Field(default_factory=SmartRoutingConfig)
     cli_agents: list[CliAgent] = Field(default_factory=list)
     delegation: DelegationConfig = Field(default_factory=DelegationConfig)
+    # True cuando providers.json no se pudo leer: guardar este registro pisaría la configuración real
+    _loaded_from_defaults: bool = PrivateAttr(default=False)

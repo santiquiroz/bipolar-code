@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Badge } from '@/components/Badge'
 import { Button } from '@/components/Button'
+import { LlamaDeviceList } from '@/components/LlamaDeviceList'
 import { ModelDownloader } from '@/components/ModelDownloader'
 import { providersApi } from '@/services/api'
 import { useLlamaDevices, useLlamaLogs, useLlamaStatus, useStartLlama, useStopLlama } from '@/hooks/useLlamaCpp'
@@ -99,15 +100,11 @@ export function LlamaCppPanel({ provider }: LlamaCppPanelProps) {
           <p className="text-xs text-gray-400">
             GPUs detectadas — VRAM libre total: {formatGiB(totalFree)} (tensor-split auto proporcional)
           </p>
-          {devices.map((d) => (
-            <div key={d.index} className="flex items-center gap-2 text-xs text-gray-600">
-              <Badge label={`${d.backend}${d.index}`} variant="neutral" />
-              <span className="truncate">{d.name}</span>
-              <span className="ml-auto text-gray-400">
-                {formatGiB(d.vram_free_mib)} libre / {formatGiB(d.vram_total_mib)}
-              </span>
-            </div>
-          ))}
+          <LlamaDeviceList
+            devices={devices}
+            value={launch.devices ?? 'auto'}
+            onChange={(devices) => saveLaunch.mutate({ devices })}
+          />
         </div>
       )}
 

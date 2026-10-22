@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
-SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded"]
+SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded", "network_error", "model_unavailable"]
 
 RATE_LIMIT_RE = re.compile(r"rate.?limit|\b429\b|too many requests|slow down", re.I)
 EXHAUSTED_RE = re.compile(
     r"quota|usage limit|insufficient_quota|resource_exhausted|out of (?:ai )?credits"
-    r"|credit balance (?:is )?too low|credit_balance_too_low|credits? (?:limit|exhausted)|weekly limit|hit your limit|hit your (?:\w+ )?limit|limit reached|insufficient balance",
+    r"|credit balance (?:is )?too low|credit_balance_too_low|credits? (?:limit|exhausted)|weekly limit|hit your limit|hit your (?:\w+ )?limit|limit reached|insufficient balance|free-models-per-day",
     re.I,
 )
 AUTH_RE = re.compile(
@@ -21,6 +21,11 @@ AUTH_RE = re.compile(
     re.I,
 )
 OVERLOADED_RE = re.compile(r"overloaded|\b529\b|\b503\b|service unavailable", re.I)
+NETWORK_RE = re.compile(r"ENOTFOUND|ECONNRESET|ETIMEDOUT|Can't reach the API server", re.I)
+MODEL_UNAVAILABLE_RE = re.compile(
+    r"No endpoints found|is not a valid model ID|model not found|is not available for free",
+    re.I,
+)
 RETRY_AFTER_RE = re.compile(
     r"(?:retry.?after|try again in|resets? in)[:= ]*(\d+)\s*(h|hours?|m|min|minutes?|s|sec|seconds?)?",
     re.I,
@@ -65,6 +70,8 @@ def make_excerpt(text: str, limit: int = EXCERPT_CHARS) -> str:
 
 
 def _kind_for(text: str, status: Optional[int]) -> Optional[SignalKind]:
+    if MODEL_UNAVAILABLE_RE.search(text):
+        return "model_unavailable"
     if status == 401 or AUTH_RE.search(text):
         return "auth"
     if EXHAUSTED_RE.search(text):
@@ -73,6 +80,8 @@ def _kind_for(text: str, status: Optional[int]) -> Optional[SignalKind]:
         return "rate_limit"
     if status in (503, 529) or OVERLOADED_RE.search(text):
         return "overloaded"
+    if NETWORK_RE.search(text):
+        return "network_error"
     return None
 
 

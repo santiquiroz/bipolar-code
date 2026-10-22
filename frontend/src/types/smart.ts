@@ -1,5 +1,5 @@
 export type Tier = 'trivial' | 'simple' | 'standard' | 'complex'
-export type AgentId = 'anthropic' | 'claude' | 'codex' | 'copilot' | 'antigravity' | 'ollama' | 'cursor' | 'deepseek' | 'muse'
+export type AgentId = 'claude' | 'codex' | 'copilot' | 'antigravity' | 'ollama' | 'cursor' | 'deepseek' | 'muse' | 'openrouter' | 'anthropic'
 export type QuotaReset = 'none' | '5h' | 'daily' | 'weekly'
 
 export interface RouteTarget { provider_id: string; model: string }
@@ -145,8 +145,8 @@ export interface Attempt {
   returncode?: number | null; signal: string; kind: 'work' | 'verify' | 'review'
   detail: Record<string, unknown>; duration_s: number; error: string
 }
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled' | 'quota' | 'auth_error'
-export type GateStatus = 'n/a' | 'passed' | 'failed' | 'skipped'
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled' | 'quota' | 'auth_error' | 'needs_context' | 'blocked'
+export type GateStatus = 'n/a' | 'passed' | 'failed' | 'skipped' | 'unreviewed' | 'tampered'
 export interface Job {
   id: string; created_at: string; started_at?: string | null; finished_at?: string | null
   status: JobStatus; mode: 'task' | 'text'; workspace: string; task_preview: string

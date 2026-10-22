@@ -27,6 +27,7 @@ export interface LocalLaunchConfig {
   model_path?: string
   ctx_size?: number
   split_mode?: string
+  devices?: 'auto' | string[]
   tensor_split?: 'auto' | number[]
   ngl?: number
   extra_args?: string[]
@@ -36,9 +37,11 @@ export interface LocalLaunchConfig {
 }
 
 export interface LlamaDevice {
+  id: string
   index: number
   backend: string
   name: string
+  integrated: boolean
   vram_total_mib: number
   vram_free_mib: number
 }
@@ -47,6 +50,7 @@ export interface LlamaDevicesResponse {
   exe_found: boolean
   exe_path: string
   devices: LlamaDevice[]
+  selected: string[]
 }
 
 export interface LlamaStatus {

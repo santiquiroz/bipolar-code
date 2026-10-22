@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field, model_validator
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "anthropic"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "anthropic")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic")
 
-AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse|anthropic)(-[a-z0-9]{1,24})?$"
+AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse|openrouter|anthropic)(-[a-z0-9]{1,24})?$"
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -82,7 +82,9 @@ class CliAgent(BaseModel):
     quota_reset: QuotaReset = "none"
     max_credits: int = 0
     max_monthly_usd: float = Field(default=0, ge=0)
+    workspace_allowlist: list[str] = Field(default_factory=list)
     extra_args: list[str] = Field(default_factory=list)
+    fallback_models: list[str] = Field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -113,9 +115,9 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "deepseek"],
-        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "deepseek"],
-        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "deepseek"],
+        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "deepseek"],
+        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "deepseek"],
+        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "deepseek"],
         "complex": ["anthropic", "muse", "codex", "claude", "antigravity", "deepseek"],
     })
     max_parallel_jobs: int = 3
@@ -127,6 +129,9 @@ class DelegationConfig(BaseModel):
     review_default: bool = True
     verify_timeout_s: int = Field(default=600, ge=30, le=3600)
     review_timeout_s: int = Field(default=900, ge=60, le=3600)
+    demote_low_acceptance: bool = False
+    demote_min_samples: int = Field(default=5, ge=1, le=100)
+    demote_below_pct: int = Field(default=40, ge=0, le=100)
 
 
 DEFAULT_CLI_AGENTS: list[dict] = [
@@ -149,7 +154,7 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     },
     {
         "id": "copilot", "name": "GitHub Copilot CLI", "supported_tiers": ["trivial", "simple", "standard"],
-        "quota_reset": "weekly", "cost_weight": 0.5, "priority": 50, "max_credits": 10,
+        "quota_reset": "weekly", "cost_weight": 0.5, "priority": 50, "max_credits": 30,
     },
     {
         "id": "antigravity", "name": "Google Antigravity CLI (agy)",
@@ -177,6 +182,18 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     {
         "id": "muse", "name": "Muse (Meta)", "supported_tiers": ["trivial", "simple", "standard", "complex"],
         "quota_reset": "none", "cost_weight": 0.4, "priority": 5, "timeout_s": 900,
+        "max_concurrency": 3,
+    },
+    {
+        "id": "openrouter", "name": "OpenRouter (modelos :free vía Claude Code)",
+        "supported_tiers": ["trivial", "simple", "standard"],
+        "default_model": "minimax/minimax-m3.1-flash:free",
+        "quota_reset": "daily", "cost_weight": 0.0, "priority": 85, "timeout_s": 900,
+        "fallback_models": [
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "poolside/laguna-s-2.1:free",
+            "minimax/minimax-m3.1-flash:free",
+        ],
     },
 ]
 

@@ -12,11 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
-from app.core.config import env_value
+from app.core.config import env_value, get_settings
 from app.models.smart import CliAgent, tier_index
 
 BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
-            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse"}
+            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse", "openrouter": "claude"}
 DSH_ACCOUNT_RECORD = "deepseek-account-platform/default:"
 DSH_CLI_PARTS = ("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
 MODEL_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -55,7 +55,20 @@ TASK_CONSTRAINTS = (
     "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
     "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
     "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
-    "Deja los cambios en el working tree y termina con la lista de archivos tocados."
+    "Deja los cambios en el working tree y termina con la lista de archivos tocados. "
+    "Si no puedes ejecutar comandos de compilación o pruebas por permisos, eso NO es BLOCKED: el broker corre la verificación al terminar; "
+    "completa los cambios y declara DONE o DONE_WITH_CONCERNS indicando qué comandos no pudiste correr. "
+    "BLOCKED es solo cuando no puedes hacer los cambios de código. "
+    "La última línea de tu respuesta debe ser `STATUS: DONE`, `STATUS: DONE_WITH_CONCERNS`, `STATUS: NEEDS_CONTEXT` o `STATUS: BLOCKED`; "
+    "si no es DONE, escribe en la misma línea, después de la palabra, el motivo o la pregunta concreta. "
+    "NEEDS_CONTEXT = falta información y no adivinaste; BLOCKED = no se puede avanzar (permisos, dependencia rota); "
+    "DONE_WITH_CONCERNS = terminado pero con riesgos que alguien debe revisar."
+)
+CLAUDE_BUILD_TOOLS = (
+    "Bash(dotnet build:*)", "Bash(dotnet test:*)", "Bash(dotnet restore:*)",
+    "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx vitest:*)", "Bash(npx ng:*)",
+    "Bash(pytest:*)", "Bash(python -m pytest:*)",
+    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (
@@ -73,19 +86,37 @@ ENV_ALLOWLIST = (
     "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "ProgramData",
     "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "TERM", "USERNAME", "USER", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
     "NODE_PATH", "GEMINI_CLI_HOME",
+    "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
 )
+ENV_ALLOWLIST_UPPER = frozenset(k.upper() for k in ENV_ALLOWLIST)
 ENV_FIXED = {
     "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "GIT_TERMINAL_PROMPT": "0",
     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes", "BIPOLAR_DELEGATION_DEPTH": "1", "MSYS_NO_PATHCONV": "1",
     "CI": "1", "NO_COLOR": "1",
 }
 SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+# rutas de toolchains que los comandos de verify (builds en el host) necesitan además de ENV_ALLOWLIST
+VERIFY_ENV_EXTRA = (
+    "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)",
+    "CommonProgramW6432", "windir", "ALLUSERSPROFILE", "PUBLIC", "OS", "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION",
+    "VSINSTALLDIR", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion",
+    "INCLUDE", "LIB", "LIBPATH", "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_NDK_HOME",
+    "DOTNET_ROOT", "GOPATH", "GOROOT", "CARGO_HOME", "RUSTUP_HOME", "VULKAN_SDK",
+)
 ENV_BLOCKLIST = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_API_BASE",
                  "CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "CURSOR_CONFIG_DIR")
 # cursor queda fuera: su CURSOR_CONFIG_DIR es la carpeta con la deny list y una cuenta la pisaría
 ACCOUNT_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "deepseek": "DSH_HOME"}
 CREDENTIAL_FILES = {"claude": ".credentials.json", "codex": "auth.json", "deepseek": ".credentials.yaml"}
 ARGV_PROMPT_MAX = 24_000
+# copilot rechaza --max-ai-credits por debajo de este piso ("Use at least 30 AI credits")
+COPILOT_MIN_AI_CREDITS = 30
+OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_FREE_MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}/[a-z0-9][a-z0-9._-]{0,95}:free$", re.I)
+OPENROUTER_MODEL_VARS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                         "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
 
 
 def supports_accounts(base: str) -> bool:
@@ -158,7 +189,7 @@ def validate_path_argv(path: str) -> str:
 
 
 def child_env(base: Mapping[str, str], extra: Optional[dict] = None) -> dict:
-    env = {k: v for k, v in base.items() if k in ENV_ALLOWLIST or k.upper() in ENV_ALLOWLIST}
+    env = {k: v for k, v in base.items() if k.upper() in ENV_ALLOWLIST_UPPER}
     env.update(ENV_FIXED)
     for key in list(env):
         upper = key.upper()
@@ -168,12 +199,23 @@ def child_env(base: Mapping[str, str], extra: Optional[dict] = None) -> dict:
     return env
 
 
+def verify_env(base: Mapping[str, str]) -> dict:
+    # verify ejecuta código que el agente acaba de escribir (tests, scripts de build), así que sigue
+    # siendo lista permitida; solo suma las rutas que los toolchains necesitan (vswhere vive en
+    # ProgramFiles(x86)), nunca el entorno completo
+    allowed = {k.upper() for k in VERIFY_ENV_EXTRA}
+    extra = {k: v for k, v in base.items() if k.upper() in allowed}
+    return child_env(base, {k: v for k, v in extra.items()
+                            if k.upper() not in ENV_BLOCKLIST and not k.upper().endswith(SECRET_SUFFIXES)})
+
+
 def exe_argv(exe: str) -> list[str]:
     """Un shim .cmd/.bat de npm solo corre vía cmd.exe; el resto del argv queda fijo."""
     lower = exe.lower()
     if sys.platform == "win32" and lower.endswith((".cmd", ".bat")):
         comspec = os.environ.get("ComSpec") or os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
-        return [comspec, "/d", "/s", "/c", exe]
+        # call: sin él, /s le quita a la línea su primera y última comilla y una ruta con espacios se parte
+        return [comspec, "/d", "/s", "/c", "call", exe]
     return [exe]
 
 
@@ -238,6 +280,7 @@ class ClaudeAdapter:
     id = "claude"
     prompt_via = "pointer"
     supports_read_only = True
+    max_turns = 50
 
     def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
@@ -247,10 +290,12 @@ class ClaudeAdapter:
             "--output-format", "json",
             "--permission-mode", "plan" if read_only else "acceptEdits",
             "--disallowedTools", "Task,Agent,WebFetch,WebSearch,Edit,Write,MultiEdit,NotebookEdit,Bash" if read_only else "Task,Agent,WebFetch,WebSearch",
-            "--max-turns", "50",
+            "--max-turns", str(self.max_turns),
             "--setting-sources", "project,local", "--strict-mcp-config",
             "--add-dir", ws,
         ]
+        if not read_only:
+            argv += ["--allowedTools", ",".join(CLAUDE_BUILD_TOOLS)]
         if model:
             argv += ["--model", model]
         argv += validate_extra_args(agent.extra_args)
@@ -314,6 +359,50 @@ class AnthropicAdapter:
         )
 
 
+class OpenRouterAdapter(ClaudeAdapter):
+    id = "openrouter"
+    # los modelos gratis gastan más turnos que Claude para la misma tarea (error_max_turns con 50)
+    max_turns = 120
+
+    @staticmethod
+    def config_dir() -> Path:
+        path = Path(get_settings().litellm_config_dir) / "delegate" / "openrouter-claude"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def api_key() -> str:
+        return env_value(OPENROUTER_KEY_ENV)
+
+    @staticmethod
+    def validate_free_model(model: str) -> str:
+        if not OPENROUTER_FREE_MODEL_RE.match(model or ""):
+            raise AdapterUnsafe("openrouter_model_not_free")
+        return model
+
+    def openrouter_env(self, model: str, key: str) -> dict[str, str]:
+        env = {name: model for name in OPENROUTER_MODEL_VARS}
+        env.update({
+            "ANTHROPIC_BASE_URL": OPENROUTER_BASE_URL,
+            "ANTHROPIC_AUTH_TOKEN": key,
+            # vacío explícito: si falta, Claude Code puede autenticarse contra Anthropic
+            "ANTHROPIC_API_KEY": "",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # aislado del ~/.claude del usuario: los modelos gratis pueden guardar los prompts
+            "CLAUDE_CONFIG_DIR": str(self.config_dir()),
+        })
+        return env
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        model = self.validate_free_model(model or agent.default_model)
+        key = self.api_key()
+        if not key:
+            raise AdapterUnsafe("openrouter_key_missing")
+        spec = super().build(agent, exe, job_id, task, model, workspace, tier, timeout_s, read_only)
+        spec.env.update(self.openrouter_env(model, key))
+        return spec
+
+
 class CodexAdapter:
     id = "codex"
     prompt_via = "stdin"
@@ -375,10 +464,12 @@ class CopilotAdapter:
         for rule in self.DENY:
             argv += ["--deny-tool", rule]
         if agent.max_credits > 0:
-            argv += ["--max-ai-credits", str(agent.max_credits)]
-        argv += ["--effort", effort_for_tier(tier)]
+            argv += ["--max-ai-credits", str(max(agent.max_credits, COPILOT_MIN_AI_CREDITS))]
         if model:
             argv += ["--model", model]
+        # el modelo "auto" (el de Copilot sin --model) rechaza --effort y la corrida muere
+        if model and model != "auto":
+            argv += ["--effort", effort_for_tier(tier)]
         argv += validate_extra_args(agent.extra_args)
         return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, pointer_file=pointer,
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
@@ -754,6 +845,7 @@ ADAPTERS = {
     "cursor": CursorAdapter(),
     "deepseek": DeepseekAdapter(),
     "muse": MuseAdapter(),
+    "openrouter": OpenRouterAdapter(),
 }
 
 

@@ -33,10 +33,13 @@ def _llamacpp_provider():
 async def devices():
     provider = _llamacpp_provider()
     exe = llamacpp_service.resolve_exe(provider)
+    devices = llamacpp_service.list_devices(exe)
+    selected = llamacpp_service.select_devices(devices, provider.local_launch.get("devices", "auto"))
     return {
         "exe_found": bool(exe),
         "exe_path": exe,
-        "devices": llamacpp_service.list_devices(exe),
+        "devices": devices,
+        "selected": [d["id"] for d in selected],
     }
 
 

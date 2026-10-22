@@ -89,9 +89,9 @@ def test_legacy_registry_loads_with_defaults_and_seeds(config_dir):
     assert muse.quota_reset == "none" and muse.cost_weight == 0.4
     assert muse.priority == 5 and muse.timeout_s == 900
     assert registry.delegation.tier_order == {
-        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "deepseek"],
-        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "deepseek"],
-        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "deepseek"],
+        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "deepseek"],
+        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "deepseek"],
+        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "deepseek"],
         "complex": ["anthropic", "muse", "codex", "claude", "antigravity", "deepseek"],
     }
     assert registry.routing_rules[0].tier == "" and registry.routing_rules[0].max_tokens == 0

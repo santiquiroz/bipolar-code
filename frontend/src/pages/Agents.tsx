@@ -30,6 +30,7 @@ export function Agents() {
   const [delegation, setDelegation] = useState<DelegationConfig | null>(null)
   const [agents, setAgents] = useState<CliAgent[]>([])
   const [dirty, setDirty] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [task, setTask] = useState('')
   const [workspace, setWorkspace] = useState('')
   const [mode, setMode] = useState<'task' | 'text'>('task')
@@ -47,9 +48,24 @@ export function Agents() {
       if (JSON.stringify(config.cli_agents) !== JSON.stringify(agents)) setAgents(config.cli_agents)
     }
   }, [config, dirty, delegation, agents])
+  // La app usa BrowserRouter (sin data router): basta beforeunload para avisar.
+  useEffect(() => {
+    if (!dirty) return
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
   const updateDelegation = (patch: Partial<DelegationConfig>) => { setDelegation(d => d ? { ...d, ...patch } : d); setDirty(true) }
   const updateAgent = (id: string, patch: Partial<CliAgent>) => { setAgents(list => list.map(a => a.id === id ? { ...a, ...patch } : a)); setDirty(true) }
-  const saveAll = () => delegation && save.mutate({ cli_agents: agents, delegation }, { onSuccess: () => setDirty(false) })
+  const discardAll = () => { if (!config) return; setDelegation(config.delegation); setAgents(config.cli_agents); setSaveError(''); setDirty(false) }
+  const saveAll = () => {
+    if (!delegation) return
+    setSaveError('')
+    save.mutate({ cli_agents: agents, delegation }, {
+      onSuccess: data => { setAgents(data.cli_agents); setDelegation(data.delegation); setDirty(false) },
+      onError: e => setSaveError(detail(e)),
+    })
+  }
   const submitJob = () => { setJobError(''); submit.mutate({ task, workspace, mode, agent_id: agentId, dry_run: dryRun, verify: verify.split(/\r?\n/).map(s => s.trim()).filter(Boolean), review }, { onSuccess: () => setTask(''), onError: e => setJobError(detail(e)) }) }
   const openLog = async (job: Job) => {
     setDrawer(job); setLog([])
@@ -57,7 +73,8 @@ export function Agents() {
   }
   if (isLoading || !delegation) return <p className="text-sm text-gray-400">Cargando agentes...</p>
   return <div className="space-y-4">
-    <div className="flex justify-between items-center"><div><h2 className="text-lg font-semibold text-gray-800">Agentes</h2><p className="text-sm text-gray-500">Delegación y diagnóstico de agentes CLI</p></div>{dirty && <Button loading={save.isPending} onClick={saveAll}>Guardar</Button>}</div>
+    <div className="flex justify-between items-center"><div><h2 className="text-lg font-semibold text-gray-800">Agentes</h2><p className="text-sm text-gray-500">Delegación y diagnóstico de agentes CLI</p></div></div>
+    {dirty && <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 shadow-sm"><span className="text-sm font-medium text-amber-800">Cambios sin guardar</span><Button size="sm" loading={save.isPending} onClick={saveAll}>Guardar</Button><Button size="sm" variant="secondary" onClick={discardAll}>Descartar</Button>{saveError && <span className="text-sm text-red-600">{saveError}</span>}</div>}
     <Card title="Delegación">
       <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={delegation.enabled} onChange={e => updateDelegation({ enabled: e.target.checked })} /> Delegación a agentes CLI</label>
       <label className="block text-xs text-gray-500 mt-3">Workspaces permitidos (una ruta absoluta por línea)<textarea className={`${field} w-full mt-1`} rows={3} value={delegation.workspace_allowlist.join('\n')} onChange={e => updateDelegation({ workspace_allowlist: e.target.value.split(/\r?\n/).filter(Boolean) })} /></label>

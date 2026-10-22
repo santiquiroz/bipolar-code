@@ -26,8 +26,9 @@ from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import budget_service, health_service, providers_service, usage_tracker
-from app.services.cli_agents import registry as agents_registry, reviewer, verifier
-from app.services.cli_agents.adapters import TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
+from app.services.cli_agents import outcome_stats, registry as agents_registry, reviewer, verifier
+from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
+from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -39,7 +40,17 @@ QUEUE_MULTIPLIER = 4
 GIT_TIMEOUT = 10
 STREAM_LIMIT = 16 * 1024 * 1024
 OVERSIZED_LINE_MARK = "[línea omitida: supera el límite de lectura]"
-TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error"})
+PARSE_TAIL_LINES = 2000
+PARSE_TAIL_BYTES = 2_000_000
+TRUNCATED_MARK = "[bipolar: salida intermedia recortada]"
+RESULT_OUTPUT_CAP = 20_000
+TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error", "needs_context", "blocked"})
+WORKER_STOP_JOB_STATUSES = tuple(s.lower() for s in STOP_STATUSES)
+
+
+# sentinel: el revisor modificó el árbol de trabajo
+class ReviewTampered:
+    pass
 
 
 class WorkspaceNotAllowed(Exception):
@@ -59,6 +70,13 @@ class NoAgentAvailable(Exception):
         super().__init__("no_agent_available")
         self.reasons = reasons
         self.skipped = skipped
+
+
+def no_agent_text(reasons: list[str], skipped: list[tuple[str, str]]) -> str:
+    text = "no_agent_available: " + "; ".join(reasons)
+    if skipped:
+        text += " | skipped: " + ", ".join(f"{aid}={reason}" for aid, reason in skipped)
+    return text
 
 
 @dataclass
@@ -163,9 +181,23 @@ def _muse_sandbox_verified(status: Optional[AgentStatus]) -> bool:
     return sandbox in ("ready", "n/a")
 
 
-def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentStatus], model: str, preferred: bool) -> Optional[str]:
+def _agent_workspace_allowed(agent: CliAgent, workspace: Optional[Path]) -> bool:
+    if workspace is None or not agent.workspace_allowlist:
+        return False
+    try:
+        validate_workspace(str(workspace), agent.workspace_allowlist)
+    except WorkspaceNotAllowed:
+        return False
+    return True
+
+
+def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentStatus], model: str, preferred: bool,
+                  workspace: Optional[Path] = None) -> Optional[str]:
     if not agent.enabled:
         return "disabled"
+    # los modelos gratis de OpenRouter pueden guardar los prompts: solo workspaces que el usuario liberó para eso
+    if agent.base == "openrouter" and not _agent_workspace_allowed(agent, workspace):
+        return "agent_workspace_not_allowed"
     if status is not None and not status.installed:
         return "not_installed"
     if mode == "task" and not agent.agentic:
@@ -193,6 +225,17 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
     return None
 
 
+def _demoted_set(tier: str, registry: ProviderRegistry, preferred: str, ordered: list[str]) -> set[str]:
+    demoted_ids = set()
+    for aid in ordered:
+        if aid == preferred:
+            continue
+        pct = outcome_stats.accept_pct(aid, tier, registry.delegation.demote_min_samples)
+        if pct is not None and pct < registry.delegation.demote_below_pct:
+            demoted_ids.add(aid)
+    return demoted_ids
+
+
 def _candidate_order(tier: str, registry: ProviderRegistry, preferred: str) -> list[str]:
     order = [preferred] if preferred else []
     order += registry.delegation.tier_order.get(tier, [])
@@ -202,7 +245,27 @@ def _candidate_order(tier: str, registry: ProviderRegistry, preferred: str) -> l
         if aid and aid not in seen:
             seen.add(aid)
             ordered.append(aid)
+    if registry.delegation.demote_low_acceptance:
+        demoted_ids = _demoted_set(tier, registry, preferred, ordered)
+        kept = [aid for aid in ordered if aid == preferred or aid not in demoted_ids]
+        demoted_order = [aid for aid in ordered if aid in demoted_ids]
+        return kept + demoted_order
     return ordered
+
+
+def _queued_busy(agents: dict[str, CliAgent], skipped: list[tuple[str, str]], tier: str,
+                model_override: str, alt_pool: bool) -> tuple[Optional[CliAgent], str]:
+    for aid, reason in skipped:
+        if reason != "busy":
+            continue
+        agent = agents.get(aid)
+        if agent is None:
+            continue
+        model = agent.model_for(tier, model_override)
+        if alt_pool and agent.alt_model_on_quota:
+            model = agent.alt_model_on_quota
+        return agent, model
+    return None, ""
 
 
 def choose_agent(
@@ -215,6 +278,7 @@ def choose_agent(
     mode: str = "task",
     model_override: str = "",
     alt_pool: bool = False,
+    workspace: Optional[Path] = None,
 ) -> tuple[Optional[CliAgent], str, list[str], list[tuple[str, str]]]:
     agents = {a.id: a for a in registry.cli_agents}
     reasons: list[str] = []
@@ -230,12 +294,24 @@ def choose_agent(
         model = agent.model_for(tier, model_override)
         if alt_pool and agent.alt_model_on_quota:
             model = agent.alt_model_on_quota
-        reason = _reject_agent(agent, tier, mode, statuses.get(aid), model, preferred == aid)
+        reason = _reject_agent(agent, tier, mode, statuses.get(aid), model, preferred == aid, workspace)
+        if reason == "busy" and aid == preferred:
+            # el agente pedido a propósito espera su turno: saltar a otro puede mandar el código a un carril que no se eligió
+            reasons.append(f"agent:{aid}:queued_busy:preferred")
+            return agent, model, reasons, skipped
         if reason:
             skipped.append((aid, reason))
             continue
         reasons.append(f"agent:{aid}" + (":preferred" if preferred == aid else f":{tier}"))
+        pct = outcome_stats.accept_pct(aid, tier, registry.delegation.demote_min_samples)
+        if registry.delegation.demote_low_acceptance and aid != preferred and pct is not None and pct < registry.delegation.demote_below_pct:
+            reasons.append(f"demoted:{aid}:{pct}")
         return agent, model, reasons, skipped
+    queued, queued_model = _queued_busy(agents, skipped, tier, model_override, alt_pool)
+    if queued is not None:
+        # El semáforo por agente encola el trabajo; un agente ocupado recibe el job en vez de rechazarlo.
+        reasons.append(f"agent:{queued.id}:queued_busy")
+        return queued, queued_model, reasons, skipped
     reasons.append("no_agent_available")
     return None, "", reasons, skipped
 
@@ -268,6 +344,8 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
     if depth_header and depth_header.strip().isdigit() and int(depth_header) >= 1:
         raise DelegationDisabled("recursion_guard")
     registry = providers_service.load_registry()
+    if registry.delegation.demote_low_acceptance:
+        await outcome_stats.refresh()
     if not registry.delegation.enabled and not req.agent_id:
         raise DelegationDisabled("delegation_disabled")
     queued = sum(1 for rt in _jobs.values() if rt.job.status in ("queued", "running"))
@@ -279,7 +357,8 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
     cls = classify_task(req.task, thresholds=registry.smart.thresholds)
     tier = req.tier_hint or cls.tier
     statuses = await _statuses(registry, req.agent_id)
-    agent, model, reasons, skipped = choose_agent(tier, registry, statuses, preferred=req.agent_id, mode=req.mode, model_override=req.model)
+    agent, model, reasons, skipped = choose_agent(tier, registry, statuses, preferred=req.agent_id, mode=req.mode, model_override=req.model,
+                                                workspace=workspace)
     job = Job(
         id=job_id, created_at=_now(), mode=req.mode, workspace=str(workspace), task_preview=req.task[:200],
         tier=tier, score=cls.score, reasons=list(cls.reasons) + reasons, skipped=[list(s) for s in skipped],
@@ -339,15 +418,40 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
-def _consume_line(rt: JobRuntime, line: bytes, name: str, sink: list[str]) -> None:
+@dataclass
+class _StreamCapture:
+    head: list[str] = field(default_factory=list)
+    head_bytes: int = 0
+    tail: deque = field(default_factory=deque)
+    tail_bytes: int = 0
+
+    def add(self, text: str, size: int) -> None:
+        if self.head_bytes + size <= OUTPUT_CAP:
+            self.head.append(text)
+            self.head_bytes += size
+            return
+        self.tail.append((text, size))
+        self.tail_bytes += size
+        # acotada por bytes además de por líneas: una sola línea del agente puede medir hasta STREAM_LIMIT
+        while len(self.tail) > 1 and (self.tail_bytes > PARSE_TAIL_BYTES or len(self.tail) > PARSE_TAIL_LINES):
+            _, dropped = self.tail.popleft()
+            self.tail_bytes -= dropped
+
+    def text(self) -> str:
+        if not self.tail:
+            return "\n".join(self.head)
+        return "\n".join([*self.head, TRUNCATED_MARK, *(text for text, _ in self.tail)])
+
+
+def _consume_line(rt: JobRuntime, line: bytes, name: str, capture: _StreamCapture) -> None:
     text = line.decode("utf-8", "replace").rstrip("\r\n")
     rt.output_bytes += len(line)
+    capture.add(text, len(line))
     if rt.output_bytes <= OUTPUT_CAP:
-        sink.append(text)
         _emit(rt, {"event": "line", "stream": name, "text": text[:4000]})
 
 
-async def _pump(rt: JobRuntime, stream, name: str, sink: list[str]) -> None:
+async def _pump(rt: JobRuntime, stream, name: str, capture: _StreamCapture) -> None:
     while True:
         try:
             line = await stream.readline()
@@ -357,7 +461,7 @@ async def _pump(rt: JobRuntime, stream, name: str, sink: list[str]) -> None:
             continue
         if not line:
             return
-        _consume_line(rt, line, name, sink)
+        _consume_line(rt, line, name, capture)
 
 
 async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str, bool]:
@@ -376,9 +480,9 @@ async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str
         proc.stdin.write(spec.stdin_payload)
         await proc.stdin.drain()
         proc.stdin.close()
-    out_lines: list[str] = []
-    err_lines: list[str] = []
-    pumps = asyncio.gather(_pump(rt, proc.stdout, "stdout", out_lines), _pump(rt, proc.stderr, "stderr", err_lines))
+    out_capture = _StreamCapture()
+    err_capture = _StreamCapture()
+    pumps = asyncio.gather(_pump(rt, proc.stdout, "stdout", out_capture), _pump(rt, proc.stderr, "stderr", err_capture))
     timed_out = False
     try:
         await asyncio.wait_for(proc.wait(), spec.timeout_s)
@@ -388,7 +492,7 @@ async def _run_subprocess(rt: JobRuntime, spec) -> tuple[Optional[int], str, str
         await proc.wait()
     await pumps
     rt.proc = None
-    return proc.returncode, "\n".join(out_lines), "\n".join(err_lines), timed_out
+    return proc.returncode, out_capture.text(), err_capture.text(), timed_out
 
 
 async def _run_ollama(rt: JobRuntime, agent: CliAgent, model: str, task: str, timeout_s: int) -> AttemptOutcome:
@@ -463,6 +567,68 @@ def _files_touched(workspace: Path, before: set[str]) -> list[str]:
     return [line[3:].strip() for line in _status_lines(workspace) if line not in before]
 
 
+def _parse_time(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _same_workspace(left: Optional[Path], right: Optional[Path]) -> bool:
+    if left is None or right is None:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except (OSError, RuntimeError):
+        return left == right
+
+
+def _overlapping_jobs(rt: JobRuntime) -> list[str]:
+    start = _parse_time(rt.job.started_at)
+    if start is None:
+        return []
+    end = _parse_time(rt.job.finished_at)
+    found = []
+    for other_id, other in _jobs.items():
+        if other_id == rt.job.id:
+            continue
+        if not _same_workspace(rt.workspace, other.workspace):
+            continue
+        other_start = _parse_time(other.job.started_at)
+        if other_start is None:
+            continue
+        # ventanas semiabiertas: un job que empieza justo al terminar otro no tocó sus archivos
+        if end is not None and other_start >= end:
+            continue
+        other_end = _parse_time(other.job.finished_at)
+        if other_end is not None and other_end <= start:
+            continue
+        found.append(other_id)
+    return found
+
+
+def _overlap_note(rt: JobRuntime) -> str:
+    ids = _overlapping_jobs(rt)
+    if not ids:
+        return ""
+    previews = "; ".join(f"{jid}: {(_jobs[jid].job.task_preview or '').strip()[:120]}" for jid in ids if jid in _jobs)
+    return (f"Hay jobs concurrentes en el mismo workspace ({previews}). "
+            "Los cambios que correspondan a esas tareas NO son parte de este job y no deben juzgarse.")
+
+
+def _result_section(text: str) -> str:
+    return f"\n[result]\n{text}" if text else ""
+
+
+def _keep_result(job: Job, outcome: AttemptOutcome) -> None:
+    # las líneas del log se recortan a 4000 caracteres; el texto completo del adaptador va aparte
+    if outcome.result is not None:
+        job.result_text = outcome.result.text
+
+
 def _write_log(rt: JobRuntime) -> str:
     path = jobs_dir() / f"{rt.job.id}.log"
     try:
@@ -474,6 +640,7 @@ def _write_log(rt: JobRuntime) -> str:
                 if written > LOG_CAP:
                     break
                 fh.write(line)
+            fh.write(_result_section(rt.job.result_text))
     except OSError as e:
         log.warning("job_log_write_failed", job=rt.job.id, error=str(e))
         return ""
@@ -496,6 +663,26 @@ def _apply_signal(agent: CliAgent, model: str, signal: QuotaSignal) -> None:
         signal = QuotaSignal(signal.kind, 60, signal.excerpt)
     health_service.mark_signal(_pool_key(agent, model), signal, cooldown_s=agent.cooldown_s, quota_reset=agent.quota_reset)
     agents_registry.invalidate(agent.id)
+
+
+# un fallo de UN modelo :free (rate limit por minuto, sobrecarga, modelo retirado) no dice nada del resto del carril;
+# el cupo diario (quota_exhausted) sí es de la cuenta y nunca se reintenta con otro modelo
+OPENROUTER_MODEL_SIGNALS = ("rate_limit", "overloaded", "model_unavailable")
+
+
+def _openrouter_fallback_eligible(agent: CliAgent, signal: QuotaSignal) -> bool:
+    return agent.base == "openrouter" and bool(agent.fallback_models) and signal.kind in OPENROUTER_MODEL_SIGNALS
+
+
+def _next_openrouter_model(agent: CliAgent, tried: set[str]) -> Optional[str]:
+    for candidate in agent.fallback_models:
+        if candidate in tried:
+            continue
+        tried.add(candidate)
+        if not OPENROUTER_FREE_MODEL_RE.match(candidate):
+            continue  # el adaptador rechaza modelos no :free; aquí se saltan sin gastar un intento
+        return candidate
+    return None
 
 
 async def _run_job(rt: JobRuntime, registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
@@ -537,6 +724,8 @@ async def _collect_job_artifacts(rt: JobRuntime, status_before: set[str]) -> Non
     job = rt.job
     if rt.request.mode == "task":
         job.files_touched = _files_touched(rt.workspace, status_before)
+        job.concurrent_jobs = _overlapping_jobs(rt)
+        job.files_touched_exact = not job.concurrent_jobs
     job.log_path = _write_log(rt)
     if job.agent_id:
         await _record(job)
@@ -594,6 +783,7 @@ async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: C
     attempt.error = outcome.error[:300]
     if outcome.signal is not None:
         attempt.signal = outcome.signal.kind
+    _keep_result(job, outcome)
     return outcome
 
 
@@ -612,7 +802,8 @@ async def _record_verify_checks(rt: JobRuntime, registry: ProviderRegistry) -> l
                                     detail={"command": check.command, "returncode": check.returncode,
                                             "timed_out": check.timed_out, "error": check.error}))
         _emit(rt, {"event": "verify_result", "command": check.command, "returncode": check.returncode,
-                   "timed_out": check.timed_out, "error": check.error[:300], "ok": check.ok})
+                   "timed_out": check.timed_out, "error": check.error[:300], "ok": check.ok,
+                   "text": f"{check.command} -> exit {check.returncode}{' (timeout)' if check.timed_out else ''}\n{check.output_tail[-3000:]}"})
     return checks
 
 
@@ -643,6 +834,7 @@ async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, 
     attempt.error = outcome.error[:300]
     if outcome.signal is not None:
         attempt.signal = outcome.signal.kind
+    _keep_result(job, outcome)
     _emit(rt, {"event": "revision", "agent_id": worker.id, "ok": outcome.ok, "error": outcome.error[:300]})
     return outcome
 
@@ -651,14 +843,30 @@ def _review_model(agent: CliAgent, tier: str) -> str:
     return "claude-sonnet-5-5" if agent.base == "anthropic" else agent.model_for(tier)
 
 
-def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAgent, tier: str) -> list:
+def _worker_stop(rt: JobRuntime, agent: CliAgent, outcome: AttemptOutcome) -> str:
+    if rt.request.mode != "task" or outcome.result is None:
+        return ""
+    status, detail = parse_worker_status(outcome.result.text)
+    rt.job.worker_status, rt.job.worker_detail = status, detail
+    if status not in STOP_STATUSES:
+        return ""
+    _emit(rt, {"event": "worker_stop", "agent_id": agent.id, "status": status, "detail": detail[:300]})
+    return f"{status.lower()}: {detail}"[:300]
+
+
+def _stop_job(job: Job, reason: str) -> None:
+    job.status, job.error = reason.split(":", 1)[0], reason[:300]
+
+
+def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAgent, tier: str,
+                       workspace: Optional[Path] = None) -> list:
     agents = {a.id: a for a in registry.cli_agents}
     candidates = []
     for thinker_id in registry.delegation.thinkers:
         cand = agents.get(thinker_id)
         if cand is None or cand.id == worker.id or not supports_read_only(cand.base):
             continue
-        if _reject_agent(cand, tier, "task", statuses.get(thinker_id), _review_model(cand, tier), False):
+        if _reject_agent(cand, tier, "task", statuses.get(thinker_id), _review_model(cand, tier), False, workspace):
             continue
         candidates.append(cand)
     candidates.sort(key=lambda c: c.base == worker.base)
@@ -668,25 +876,49 @@ def _review_candidates(registry: ProviderRegistry, statuses: dict, worker: CliAg
 async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, worker: CliAgent, checks: list):
     job = rt.job
     await _refresh_budget_statuses(registry, statuses)
-    candidates = _review_candidates(registry, statuses, worker, job.tier)
+    candidates = _review_candidates(registry, statuses, worker, job.tier, rt.workspace)
     if not candidates:
         return None
     diff = reviewer.collect_diff(rt.workspace, _files_touched(rt.workspace, rt.status_before))
-    prompt = reviewer.review_prompt(rt.request.task, diff, checks)
+    concerns = job.worker_detail if job.worker_status == "DONE_WITH_CONCERNS" else ""
+    prompt = reviewer.review_prompt(rt.request.task, diff, checks, _overlap_note(rt), worker_concerns=concerns)
     for cand in candidates:
         model_cand = _review_model(cand, job.tier)
+        before = reviewer.tree_fingerprint(rt.workspace) if rt.workspace else ""
         outcome = await _run_attempt_guarded(rt, registry, cand, model_cand, registry.delegation.review_timeout_s, prompt, read_only=True)
+        after = reviewer.tree_fingerprint(rt.workspace) if rt.workspace else ""
+        changed = bool(before) and before != after
+        # otro job en el mismo workspace también puede escribir durante la revisión: no es culpa del revisor
+        concurrent = changed and bool(_overlapping_jobs(rt))
+        tampered = changed and not concurrent
+        if concurrent:
+            _emit(rt, {"event": "review_tree_changed_concurrent", "agent_id": cand.id})
         verdict = reviewer.parse_verdict(outcome.result.text) if outcome.ok and outcome.result else None
+        if verdict is not None:
+            verdict = reviewer.resolve_citations(verdict, rt.workspace, diff)
+        if tampered:
+            verdict = None  # un veredicto de un revisor que tocó el árbol no cuenta
+        # revise/reject sin hallazgos válidos: el revisor no sostiene su veredicto, se prueba el siguiente
+        unsupported = verdict is not None and verdict.verdict in ("revise", "reject") and not verdict.issues and bool(verdict.dropped)
+        dropped = verdict.dropped if verdict else []
         job.attempts.append(Attempt(agent_id=cand.id, model=model_cand, started_at=_now(), finished_at=_now(),
                                     returncode=outcome.returncode, kind="review", error=outcome.error[:300],
                                     detail={"verdict": verdict.verdict if verdict else "",
-                                            "issues": verdict.issues if verdict else []}))
-        _emit(rt, {"event": "review_result", "agent_id": cand.id, "verdict": verdict.verdict if verdict else "",
-                   "issues": verdict.issues if verdict else [], "ok": outcome.ok})
+                                            "issues": verdict.issues if verdict else [],
+                                            "dropped": dropped, "tampered": tampered, "unsupported": unsupported}))
+        if tampered:
+            _emit(rt, {"event": "review_tampered", "agent_id": cand.id})
+            health_service.mark_failure(_pool_key(cand, model_cand), "review_mutated_tree")
+            return ReviewTampered()
+        if unsupported:
+            _emit(rt, {"event": "review_unsupported", "agent_id": cand.id, "dropped": dropped})
+        else:
+            _emit(rt, {"event": "review_result", "agent_id": cand.id, "verdict": verdict.verdict if verdict else "",
+                       "issues": verdict.issues if verdict else [], "ok": outcome.ok, "dropped": dropped})
         if outcome.signal is not None:
             _apply_signal(cand, model_cand, outcome.signal)
             continue
-        if verdict is not None:
+        if verdict is not None and not unsupported:
             return verdict
     return None
 
@@ -706,6 +938,9 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 outcome = await _revise(rt, registry, worker, model, [], checks[-1])
                 if not outcome.ok:
                     return GateResult(False, f"revision_failed: {outcome.error}"[:300], outcome)
+                stop = _worker_stop(rt, worker, outcome)
+                if stop:
+                    return GateResult(False, stop, outcome)
                 continue
             return GateResult(False, f"verify_failed: {checks[-1].command}"[:300], outcome)
         job.verification_status = "passed" if checks else "n/a"
@@ -713,7 +948,19 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             job.review_status = "n/a"
             return GateResult(True, "", outcome)
         verdict = await _review(rt, registry, statuses, worker, checks)
+        if isinstance(verdict, ReviewTampered):
+            # El revisor modificó el árbol: terminal, sin escalar
+            job.review_status = "tampered"
+            job.status = "failed"
+            job.error = f"review_tampered: el revisor {job.attempts[-1].agent_id} modificó el árbol de trabajo durante la revisión; revisa los cambios a mano"
+            return GateResult(False, job.error[:300], outcome)
         if verdict is None:
+            # una revisión no sostenida (citas falsas) no cuenta como petición de cambios
+            asked_changes = any(a.kind == "review" and a.detail.get("verdict") in ("revise", "reject")
+                                and not a.detail.get("unsupported") for a in job.attempts)
+            if asked_changes:
+                job.review_status = "unreviewed"
+                return GateResult(False, "review_unavailable: la revisión anterior pidió cambios y no hubo revisor para validar la corrección", outcome)
             job.review_status = "skipped"
             return GateResult(True, "", outcome)
         if verdict.verdict == "approve":
@@ -724,6 +971,9 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             outcome = await _revise(rt, registry, worker, model, verdict.issues, None)
             if not outcome.ok:
                 return GateResult(False, f"revision_failed: {outcome.error}"[:300], outcome)
+            stop = _worker_stop(rt, worker, outcome)
+            if stop:
+                return GateResult(False, stop, outcome)
             continue
         job.review_status = "failed"
         reason = f"review_rejected: {'; '.join(verdict.issues)}" if verdict.issues else "review_rejected"
@@ -740,10 +990,10 @@ def _escalation_target(rt: JobRuntime, registry: ProviderRegistry, statuses: dic
         if cand is None or not cand.agentic:
             continue
         model = cand.model_for(job.tier)
-        if _reject_agent(cand, job.tier, "task", statuses.get(thinker_id), model, False):
+        if _reject_agent(cand, job.tier, "task", statuses.get(thinker_id), model, False, rt.workspace):
             continue
         return cand, model
-    agent, model, _, _ = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode="task")
+    agent, model, _, _ = choose_agent(job.tier, registry, statuses, exclude=tuple(tried), mode="task", workspace=rt.workspace)
     return agent, model
 
 
@@ -751,8 +1001,28 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
                           model: str, outcome: AttemptOutcome, tried: list, history: list):
     job = rt.job
     gate = await _quality_gate(rt, registry, statuses, agent, model, outcome)
+    if rt.request.mode == "task":
+        if gate.accepted:
+            # Intentos con error que pasan por gate_after_failure no se registran:
+            # aunque dejen cambios, el intento falló y no cuenta como resultado del agente.
+            if outcome.ok:
+                revised = any(
+                    attempt.agent_id == agent.id and attempt.kind == "work" and attempt.detail.get("revision")
+                    for attempt in job.attempts
+                )
+                await outcome_stats.record(agent.id, job.tier, "revised" if revised else "first_pass")
+        elif gate.reason.startswith(("review_rejected", "verify_failed", "revision_failed")):
+            # Solo registrar rechazo si el fallo no es cuota/auth/timeout/red del worker de revisión
+            if gate.outcome is not None and gate.outcome.signal is None and not gate.outcome.timed_out:
+                await outcome_stats.record(agent.id, job.tier, "rejected")
     if gate.accepted:
         _finish_ok(job, gate.outcome or outcome, agent, model)
+        return None
+    if gate.reason.startswith("review_unavailable") or gate.reason.startswith("review_tampered"):
+        job.status, job.error = "failed", gate.reason[:300]
+        return None
+    if gate.reason.startswith(WORKER_STOP_JOB_STATUSES):
+        _stop_job(job, gate.reason)
         return None
     history.append(f"{agent.id}: {gate.reason}")
     tried.append(agent.id)
@@ -770,7 +1040,8 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
 async def _next_available_agent(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, tried: list) -> tuple:
     await _refresh_budget_statuses(registry, statuses)
     agent, model, reasons, skipped = choose_agent(rt.job.tier, registry, statuses, exclude=tuple(tried),
-                                                 mode=rt.request.mode, model_override=rt.request.model)
+                                                 mode=rt.request.mode, model_override=rt.request.model,
+                                                 workspace=rt.workspace)
     rt.job.reasons += reasons
     rt.job.skipped += [list(skip) for skip in skipped]
     return agent, model
@@ -783,6 +1054,8 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
     tried: list[str] = []
     history: list[str] = []
     alt_pool_tried = False
+    openrouter_models_tried: set[str] = set()
+    network_retried: set[str] = set()
     global_sem, _ = _sems(registry, agent.id if agent else "")
     async with global_sem:
         job.status = "running"
@@ -790,6 +1063,22 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
         while agent is not None and _work_count(job) < max(1, registry.delegation.max_attempts):
             outcome = await _run_work_attempt(rt, registry, agent, model)
             if outcome.ok:
+                # el worker pidió parar: el problema está en la tarea, escalar solo gastaría cuota de otro agente
+                stop = _worker_stop(rt, agent, outcome)
+                if stop:
+                    _stop_job(job, stop)
+                    break
+                nxt = await _handle_gate_ok(rt, registry, statuses, agent, model, outcome, tried, history)
+                if nxt is None:
+                    break
+                agent, model = nxt
+                continue
+            # un agente en sandbox suele no poder compilar y sale con error aunque dejó el trabajo hecho:
+            # el verify corre en el host, así que se le da la oportunidad (y las revisiones) antes de fallar
+            if (not outcome.ok and outcome.signal is None and rt.request.mode == "task"
+                    and rt.request.verify and _files_touched(rt.workspace, rt.status_before)):
+                _emit(rt, {"event": "gate_after_failure", "agent_id": agent.id, "timed_out": outcome.timed_out,
+                           "text": "el intento terminó sin éxito pero dejó cambios: se verifican"})
                 nxt = await _handle_gate_ok(rt, registry, statuses, agent, model, outcome, tried, history)
                 if nxt is None:
                     break
@@ -809,7 +1098,16 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 if agent is not None:
                     job.status = "running"
                 continue
-            _apply_signal(agent, model, outcome.signal)
+            # un corte de red no dice nada del estado del agente: un reintento al mismo agente, sin cooldown
+            network = outcome.signal.kind == "network_error"
+            if network and agent.id not in network_retried:
+                network_retried.add(agent.id)
+                _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt, "retry": True})
+                continue
+            # openrouter con un modelo caído no pone en cooldown al carril: el fallback decide antes
+            fallback_eligible = _openrouter_fallback_eligible(agent, outcome.signal)
+            if not network and not fallback_eligible:
+                _apply_signal(agent, model, outcome.signal)
             _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt})
             if outcome.signal.kind == "auth":
                 job.status, job.error = "auth_error", outcome.signal.excerpt
@@ -818,14 +1116,22 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 alt_pool_tried = True
                 model = agent.alt_model_on_quota
                 continue
+            if fallback_eligible:
+                openrouter_models_tried.add(model)
+                fallback_model = _next_openrouter_model(agent, openrouter_models_tried)
+                if fallback_model is not None:
+                    _emit(rt, {"event": "model_fallback", "agent_id": agent.id, "from": model, "to": fallback_model, "signal": outcome.signal.kind})
+                    model = fallback_model
+                    continue
+                _apply_signal(agent, model, outcome.signal)  # sin modelos de respaldo: el carril sigue el flujo normal
             tried.append(agent.id)
-            failure_status = "failed" if agent.base == "anthropic" and outcome.signal.kind == "overloaded" else "quota"
+            failed_status = "failed" if network or outcome.signal.kind == "model_unavailable" or (agent.base == "anthropic" and outcome.signal.kind == "overloaded") else "quota"
             if rt.request.agent_id:
-                job.status, job.error = failure_status, outcome.signal.excerpt
+                job.status, job.error = failed_status, outcome.signal.excerpt
                 break
             agent, model = await _next_available_agent(rt, registry, statuses, tried)
             if agent is None:
-                job.status, job.error = failure_status, outcome.signal.excerpt
+                job.status, job.error = failed_status, outcome.signal.excerpt
         if job.status == "running":
             job.status, job.error = "failed", job.error or "max_attempts"
 
@@ -844,7 +1150,7 @@ def _finish_ok(job: Job, outcome: AttemptOutcome, agent: CliAgent, model: str) -
 
 def list_jobs(limit: int = 50, status: Optional[str] = None) -> list[Job]:
     jobs = [rt.job for rt in reversed(_jobs.values()) if not status or rt.job.status == status]
-    return [j.model_copy(update={"output_tail": j.output_tail[-2000:]}) for j in jobs[:limit]]
+    return [j.model_copy(update={"output_tail": j.output_tail[-2000:], "result_text": j.result_text[-2000:]}) for j in jobs[:limit]]
 
 
 def get_job(job_id: str) -> Optional[Job]:
@@ -852,11 +1158,20 @@ def get_job(job_id: str) -> Optional[Job]:
     return rt.job if rt else None
 
 
-def job_output(job_id: str) -> Optional[str]:
+def job_output(job_id: str, tail_chars: Optional[int] = None) -> Optional[str]:
     rt = _jobs.get(job_id)
     if rt is None:
         return None
-    return "\n".join(f"[{ev.get('stream', ev.get('event'))}] {ev.get('text', ev.get('status', ''))}" for ev in rt.lines)
+    lines = "\n".join(f"[{ev.get('stream', ev.get('event'))}] {ev.get('text', ev.get('status', ''))}" for ev in rt.lines)
+    result = rt.job.result_text
+    if tail_chars is None:
+        return lines + _result_section(result)
+    if not result:
+        return lines[-tail_chars:]
+    # el resultado completo (hasta RESULT_OUTPUT_CAP) va primero; la cola de las líneas llena lo que sobra
+    block = _result_section(result[-RESULT_OUTPUT_CAP:])
+    budget = tail_chars - len(block)
+    return (lines[-budget:] if budget > 0 else "") + block
 
 
 async def wait_job(job_id: str, timeout_s: float) -> Optional[Job]:
@@ -927,3 +1242,4 @@ def reset_for_tests() -> None:
     _jobs.clear()
     _agent_sems.clear()
     _global_sem = None
+    os.environ.pop("BIPOLAR_DELEGATION_DEPTH", None)

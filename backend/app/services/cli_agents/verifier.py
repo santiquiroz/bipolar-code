@@ -1,6 +1,7 @@
 """Verificador: corre comandos sin shell, con timeout que mata el árbol."""
 import asyncio
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ from typing import Optional
 
 import psutil
 
-from app.services.cli_agents.adapters import child_env, exe_argv
+from app.services.cli_agents.adapters import exe_argv, verify_env
 
 OUTPUT_TAIL_CHARS = 8000
 
@@ -21,19 +22,46 @@ class InvalidCommand(ValueError):
     pass
 
 
-def parse_command(command: str, workspace: Path) -> list[str]:
+CD_PREFIX_RE = re.compile(r"^cd\s+(\S+)\s+&&\s+(.+)$")
+OUTSIDE_WORKSPACE = "subcarpeta fuera del workspace"
+
+
+def parse_check(command: str, workspace: Path) -> tuple[Path, list[str]]:
+    """Devuelve (cwd, argv). Prefijo opcional `cd <subcarpeta> && <comando>`; `&&`, `;` y `|` sin ese prefijo
+    no son operadores (sin shell): viajan como argumentos literales, como siempre."""
+    cwd = workspace
+    match = CD_PREFIX_RE.match(command.strip())
+    if match:
+        cwd, command = _subfolder(match.group(1), workspace), match.group(2)
     text = command.replace("\\", "/") if sys.platform == "win32" else command
     tokens = shlex.split(text, posix=True)
     if not tokens:
         raise InvalidCommand("comando vacío")
     token = tokens[0]
     if "/" in token:
-        found = shutil.which(str(workspace / token))
+        found = shutil.which(str(cwd / token))
     else:
         found = shutil.which(token)
     if not found:
         raise InvalidCommand(f"no se encontró el ejecutable: {token}")
-    return exe_argv(found) + tokens[1:]
+    return cwd, exe_argv(found) + tokens[1:]
+
+
+def parse_command(command: str, workspace: Path) -> list[str]:
+    return parse_check(command, workspace)[1]
+
+
+def _subfolder(raw: str, workspace: Path) -> Path:
+    rel = raw.replace("\\", "/")
+    if rel.startswith("/") or re.match(r"^[A-Za-z]:", rel) or ".." in rel.split("/"):
+        raise InvalidCommand(OUTSIDE_WORKSPACE)
+    root = workspace.resolve()
+    target = (root / rel).resolve()
+    if target != root and root not in target.parents:
+        raise InvalidCommand(OUTSIDE_WORKSPACE)
+    if not target.is_dir():
+        raise InvalidCommand(f"subcarpeta no existe: {rel}")
+    return target
 
 
 @dataclass
@@ -63,7 +91,7 @@ def _kill_tree_pid(pid: int) -> None:
 async def _run_one(command: str, workspace: Path, timeout_s: int) -> CheckResult:
     start = time.monotonic()
     try:
-        argv = parse_command(command, workspace)
+        cwd, argv = parse_check(command, workspace)
     except InvalidCommand as e:
         return CheckResult(command, None, 0.0, "", error=str(e))
     kwargs: dict = {}
@@ -73,7 +101,7 @@ async def _run_one(command: str, workspace: Path, timeout_s: int) -> CheckResult
         kwargs["start_new_session"] = True
     try:
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(workspace), env=child_env(os.environ),
+            *argv, cwd=str(cwd), env=verify_env(os.environ),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **kwargs)
     except OSError as e:

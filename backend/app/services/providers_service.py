@@ -5,9 +5,13 @@ El estado persiste en providers.json. Los configs YAML se generan dinámicamente
 import asyncio
 import ipaddress
 import json
+import os
+import shutil
 import threading
+import time
 import yaml
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import SplitResult, urlsplit
@@ -97,7 +101,7 @@ _DEFAULTS: list[dict] = [
         "auth_env_var": "OPENROUTER_API_KEY",
         "models_endpoint": "https://openrouter.ai/api/v1/models",
         "models_auth_env_var": "OPENROUTER_API_KEY",
-        "active_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "active_model": "minimax/minimax-m3.1-flash:free",
         "drop_params": True,
     },
     {
@@ -169,6 +173,26 @@ def _new_default_fields(provider: Provider, defaults: dict) -> dict:
     return patches
 
 
+def _backup_corrupt_registry(path: Path) -> Optional[Path]:
+    """Copia el providers.json dañado a un respaldo providers.json.corrupt-<AAAAMMDD-HHMMSS>.
+
+    Nunca pisa un respaldo existente: si el nombre ya está ocupado agrega -1, -2, ...
+    Retorna la ruta del respaldo o None si no se pudo copiar."""
+    try:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"providers.json.corrupt-{stamp}")
+        if backup.exists():
+            i = 1
+            while path.with_name(f"providers.json.corrupt-{stamp}-{i}").exists():
+                i += 1
+            backup = path.with_name(f"providers.json.corrupt-{stamp}-{i}")
+        shutil.copy2(path, backup)
+        return backup
+    except Exception as e:
+        log.warning("registry_backup_failed", error=str(e))
+        return None
+
+
 def load_registry() -> ProviderRegistry:
     path = _registry_path()
     if not path.exists():
@@ -179,9 +203,26 @@ def load_registry() -> ProviderRegistry:
         )
         save_registry(registry)
         return registry
+    last_error: Optional[Exception] = None
+    registry = None
+    for _attempt in range(2):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            registry = ProviderRegistry(**data)
+            last_error = None
+            break
+        except Exception as e:
+            last_error = e
+            if _attempt == 0:
+                # Puede ser una lectura a mitad de una escritura: reintentar una vez.
+                time.sleep(0.1)
+    if last_error is not None or registry is None:
+        backup = _backup_corrupt_registry(path) if path.exists() else None
+        log.error("registry_load_error", error=str(last_error), backup=str(backup) if backup else "")
+        fallback = ProviderRegistry(providers=[Provider(**d) for d in _DEFAULTS])
+        fallback._loaded_from_defaults = True
+        return fallback
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        registry = ProviderRegistry(**data)
         existing_ids = {p.id for p in registry.providers}
 
         # Add new providers that weren't in providers.json
@@ -214,6 +255,9 @@ def load_registry() -> ProviderRegistry:
 def _place_seeded_agent(agent_id: str, order: list[str]) -> list[str]:
     if agent_id in ("muse", "anthropic"):
         return [agent_id] + order
+    if agent_id == "openrouter" and "deepseek" in order:
+        position = order.index("deepseek")
+        return order[:position] + [agent_id] + order[position:]
     return order + [agent_id]
 
 
@@ -240,6 +284,7 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
             seeded.append(f"cli:{defaults['id']}")
     _seed_agent_order(registry, existing, "deepseek")
     _seed_agent_order(registry, existing, "muse")
+    _seed_agent_order(registry, existing, "openrouter")
     _seed_agent_order(registry, existing, "anthropic")
     if "anthropic" not in existing and "anthropic" not in registry.delegation.thinkers:
         registry.delegation.thinkers.insert(0, "anthropic")
@@ -249,10 +294,31 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
     return seeded
 
 
+def _replace_with_retry(source: Path, target: Path, attempts: int = 5) -> None:
+    """En Windows os.replace falla si otro proceso tiene el destino abierto en ese instante."""
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                source.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
+
+
+class RegistryNotSaved(RuntimeError):
+    """El registro en memoria salió de los defaults porque providers.json no se pudo leer."""
+
+
 def save_registry(registry: ProviderRegistry) -> None:
-    _registry_path().write_text(
-        registry.model_dump_json(indent=2), encoding="utf-8"
-    )
+    if registry._loaded_from_defaults:
+        log.error("registry_save_refused", reason="loaded_from_defaults")
+        raise RegistryNotSaved("providers.json no se pudo leer; no se guardan los valores por defecto encima")
+    path = _registry_path()
+    tmp_path = path.with_name(f"providers.json.tmp-{os.getpid()}-{threading.get_ident()}")
+    tmp_path.write_text(registry.model_dump_json(indent=2), encoding="utf-8")
+    _replace_with_retry(tmp_path, path)
     log.info("registry_saved", active=registry.active_provider_id, count=len(registry.providers))
 
 
@@ -287,6 +353,12 @@ def update_smart_config(smart=None, cli_agents=None, delegation=None) -> Provide
         if delegation is not None:
             registry.delegation = delegation
         save_registry(registry)
+        if cli_agents is not None:
+            log.info(
+                "smart_config_saved",
+                enabled_agents=[a.id for a in registry.cli_agents if a.enabled],
+                delegation_enabled=registry.delegation.enabled,
+            )
         return registry
 
 

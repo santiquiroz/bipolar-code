@@ -130,10 +130,11 @@ def test_choose_agent_skips_cooling_and_busy(env):
     health_service.mark_signal("cli:codex", QuotaSignal("rate_limit", 300, "429"))
     agents_registry.adjust_running("claude", +1)
     try:
-        agent, _, _, skipped = broker.choose_agent("standard", registry, statuses)
+        agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
     finally:
         agents_registry.adjust_running("claude", -1)
-    assert agent is None
+    assert agent is not None and agent.id == "claude"
+    assert reasons == ["agent:claude:queued_busy"]
     assert ("codex", "cooling:rate_limit") in skipped and ("claude", "busy") in skipped
 
 
@@ -431,3 +432,227 @@ async def test_wait_job_returns_when_task_cancelled_externally(env):
         await rt.task
     except asyncio.CancelledError:
         pass
+
+
+def test_choose_agent_queues_preferred_busy_instead_of_falling_back(env):
+    registry = env["registry"]
+    statuses = {a.id: AgentStatus(id=a.id, installed=True) for a in registry.cli_agents}
+    agents_registry.adjust_running("claude", +1)
+    try:
+        agent, _, reasons, _ = broker.choose_agent("standard", registry, statuses, preferred="claude")
+    finally:
+        agents_registry.adjust_running("claude", -1)
+    assert agent is not None and agent.id == "claude"
+    assert reasons == ["agent:claude:queued_busy:preferred"]
+
+
+def test_choose_agent_queues_first_busy_when_all_busy(env):
+    registry = env["registry"]
+    statuses = {a.id: AgentStatus(id=a.id, installed=True) for a in registry.cli_agents}
+    agents_registry.adjust_running("codex", +1)
+    agents_registry.adjust_running("claude", +1)
+    try:
+        agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
+    finally:
+        agents_registry.adjust_running("codex", -1)
+        agents_registry.adjust_running("claude", -1)
+    assert agent is not None and agent.id == "codex"
+    assert reasons[-1] == "agent:codex:queued_busy"
+    assert ("codex", "busy") in skipped and ("claude", "busy") in skipped
+
+
+def test_choose_agent_busy_fallback_ignores_non_busy_rejections(env):
+    registry = env["registry"]
+    statuses = {"codex": AgentStatus(id="codex", installed=True, auth="auth_error"),
+                "claude": AgentStatus(id="claude", installed=True)}
+    agents_registry.adjust_running("claude", +1)
+    try:
+        agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
+    finally:
+        agents_registry.adjust_running("claude", -1)
+    assert agent is not None and agent.id == "claude"
+    assert reasons == ["agent:claude:queued_busy"]
+    assert ("codex", "auth_error") in skipped
+
+
+def test_choose_agent_returns_none_without_busy_candidate(env):
+    registry = env["registry"]
+    statuses = {"codex": AgentStatus(id="codex", installed=True, auth="auth_error"),
+                "claude": AgentStatus(id="claude", installed=False)}
+    agent, _, reasons, skipped = broker.choose_agent("standard", registry, statuses)
+    assert agent is None and reasons == ["no_agent_available"]
+    assert ("codex", "auth_error") in skipped and ("claude", "not_installed") in skipped
+
+
+def test_muse_default_max_concurrency_is_3():
+    muse = next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "muse")
+    assert muse["max_concurrency"] == 3
+    assert CliAgent(**muse).max_concurrency == 3
+
+
+def _overlap_rt(env, job_id, started, finished, preview="tarea", workspace=None):
+    ws = workspace or env["workspace"]
+    job = broker.Job(id=job_id, created_at="2026-01-01T00:00:00+00:00", started_at=started,
+                     finished_at=finished, task_preview=preview, workspace=str(ws))
+    req = JobRequest(task=preview, workspace=str(ws))
+    rt = broker.JobRuntime(job=job, request=req, workspace=ws)
+    broker._jobs[job_id] = rt
+    return rt
+
+
+def test_overlapping_jobs_same_workspace(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00", "crear scripts/package.ps1")
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None, "tocar CMakeLists.txt")
+    assert broker._overlapping_jobs(rt1) == ["j2"]
+    assert broker._overlapping_jobs(broker._jobs["j2"]) == ["j1"]
+
+
+def test_overlapping_jobs_ignores_other_workspace(env, tmp_path):
+    other = tmp_path / "otro"
+    other.mkdir()
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None, workspace=other)
+    assert broker._overlapping_jobs(rt1) == []
+
+
+def test_overlapping_jobs_ignores_disjoint_windows(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    _overlap_rt(env, "j2", "2026-10-14T11:00:00+00:00", None)
+    _overlap_rt(env, "j3", "2026-10-14T08:00:00+00:00", "2026-10-14T09:00:00+00:00")
+    _overlap_rt(env, "j4", None, None)
+    assert broker._overlapping_jobs(rt1) == []
+
+
+@pytest.mark.asyncio
+async def test_collect_artifacts_flags_inexact_files_touched(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None)
+    await broker._collect_job_artifacts(rt1, set())
+    assert rt1.job.concurrent_jobs == ["j2"]
+    assert rt1.job.files_touched_exact is False
+
+
+@pytest.mark.asyncio
+async def test_collect_artifacts_keeps_exact_without_overlap(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    await broker._collect_job_artifacts(rt1, set())
+    assert rt1.job.concurrent_jobs == []
+    assert rt1.job.files_touched_exact is True
+
+
+def test_overlap_note_lists_previews_only_when_overlapping(env):
+    rt1 = _overlap_rt(env, "j1", "2026-10-14T10:00:00+00:00", "2026-10-14T11:00:00+00:00")
+    assert broker._overlap_note(rt1) == ""
+    _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None, "migrar config/gow2.toml")
+    note = broker._overlap_note(rt1)
+    assert "migrar config/gow2.toml" in note and "NO son parte" in note
+
+
+def test_review_prompt_carries_overlap_note():
+    from app.services.cli_agents import reviewer
+    plain = reviewer.review_prompt("haz X", "diff", [])
+    assert reviewer.review_prompt("haz X", "diff", [], "") == plain
+    noted = reviewer.review_prompt("haz X", "diff", [], "Hay jobs concurrentes (j2).")
+    assert "Hay jobs concurrentes (j2)." in noted
+
+
+def test_job_summary_includes_concurrency_fields():
+    from app.api.mcp import job_summary
+    job = broker.Job(id="j1", created_at="t", files_touched=["a.py"],
+                     concurrent_jobs=["j2"], files_touched_exact=False)
+    payload = job_summary(job)
+    assert payload["concurrent_jobs"] == ["j2"]
+    assert payload["files_touched_exact"] is False
+
+
+def _check_ok(command="check"):
+    from app.services.cli_agents import verifier
+    return verifier.CheckResult(command, 0, 0.1, "ok")
+
+
+def _check_fail(command="check"):
+    from app.services.cli_agents import verifier
+    return verifier.CheckResult(command, 1, 0.1, "falla")
+
+
+def _verify_req(env, **overrides):
+    kwargs = {"task": "implementa el endpoint de facturas", "workspace": str(env["workspace"]),
+              "verify": ["check"], "max_revisions": 3}
+    kwargs.update(overrides)
+    return JobRequest(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_cambios_y_verify_ok_termina_succeeded(env, monkeypatch):
+    run, _ = _fake_subprocess([(1, "", "boom", False)])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    monkeypatch.setattr(broker.verifier, "run_checks", AsyncMock(return_value=[_check_ok()]))
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.verification_status == "passed"
+    assert "gate_after_failure" in [e["event"] for e in broker._jobs[job.id].lines]
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_cambios_y_revision_corrige_verify(env, monkeypatch):
+    run, _ = _fake_subprocess([(1, "", "boom", False), _codex_ok()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    llamadas = {"n": 0}
+
+    async def checks(commands, workspace, timeout_s):
+        llamadas["n"] += 1
+        return [_check_fail()] if llamadas["n"] == 1 else [_check_ok()]
+
+    monkeypatch.setattr(broker.verifier, "run_checks", checks)
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.verification_status == "passed"
+    assert llamadas["n"] == 2
+    assert sum(1 for a in job.attempts if a.kind == "work") == 2
+
+
+@pytest.mark.asyncio
+async def test_fallo_sin_cambios_no_corre_verify(env, monkeypatch):
+    run, _ = _fake_subprocess([(1, "", "boom", False)])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: [])
+    run_checks = AsyncMock(return_value=[_check_ok()])
+    monkeypatch.setattr(broker.verifier, "run_checks", run_checks)
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "failed" and len(job.attempts) == 1
+    run_checks.assert_not_awaited()
+    assert "gate_after_failure" not in [e["event"] for e in broker._jobs[job.id].lines]
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_senal_de_cuota_no_corre_verify(env, monkeypatch):
+    run, _ = _fake_subprocess([_codex_quota()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    run_checks = AsyncMock(return_value=[_check_ok()])
+    monkeypatch.setattr(broker.verifier, "run_checks", run_checks)
+    job = await broker.submit(_verify_req(env, agent_id="codex"))
+    job = await _wait(job.id)
+    assert job.status == "quota" and len(job.attempts) == 1
+    run_checks.assert_not_awaited()
+    assert "gate_after_failure" not in [e["event"] for e in broker._jobs[job.id].lines]
+
+
+@pytest.mark.asyncio
+async def test_timeout_con_cambios_y_verify_ok_termina_succeeded(env, monkeypatch):
+    run, _ = _fake_subprocess([(None, "", "", True)])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    monkeypatch.setattr(broker, "_validate_verify", lambda *a: None)
+    monkeypatch.setattr(broker, "_files_touched", lambda ws, before: ["a.py"])
+    monkeypatch.setattr(broker.verifier, "run_checks", AsyncMock(return_value=[_check_ok()]))
+    job = await broker.submit(_verify_req(env))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.verification_status == "passed"
+    assert "gate_after_failure" in [e["event"] for e in broker._jobs[job.id].lines]

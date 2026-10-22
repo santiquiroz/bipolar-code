@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.models.delegate import JobRequest
 from app.services.cli_agents import broker
+from app.services.cli_agents import outcome_stats
 
 router = APIRouter(prefix="/delegate", tags=["delegate"])
 
@@ -26,13 +27,18 @@ async def submit_job(req: JobRequest, request: Request):
     except broker.DelegationDisabled as e:
         raise HTTPException(409 if str(e) != "too_many_jobs" else 429, str(e))
     except broker.NoAgentAvailable as e:
-        raise HTTPException(400, {"detail": "no_agent_available", "reasons": e.reasons, "skipped": e.skipped})
+        raise HTTPException(400, {"detail": broker.no_agent_text(e.reasons, e.skipped), "reasons": e.reasons, "skipped": e.skipped})
     return job.model_dump()
 
 
 @router.get("/jobs")
 async def list_jobs(limit: int = Query(50, ge=1, le=500), status: Optional[str] = None):
     return {"jobs": [j.model_dump() for j in broker.list_jobs(limit, status)]}
+
+
+@router.get("/stats")
+async def delegation_stats(days: int = Query(30, ge=1, le=365)):
+    return await outcome_stats.summary(days)
 
 
 @router.get("/jobs/{job_id}")

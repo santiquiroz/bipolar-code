@@ -1,6 +1,7 @@
 """Tests de los adaptadores CLI: argv seguro, prompt fuera de argv, env limpio y parseo."""
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -56,6 +57,17 @@ def test_claude_build_has_safety_flags_and_pointer(tmp_path, clean_env):
     assert "ANTHROPIC_BASE_URL" not in spec.env
 
 
+
+def test_claude_build_allows_build_and_test_commands(tmp_path, clean_env):
+    argv = ad.ClaudeAdapter().build(_agent("claude"), "claude.exe", "job1", "haz X", "", tmp_path, "standard", 600).argv
+    allowed = argv[argv.index("--allowedTools") + 1].split(",")
+    assert {"Bash(dotnet test:*)", "Bash(npm run:*)", "Bash(python -m pytest:*)"} <= set(allowed)
+    assert not any(tool.startswith(("Bash(git push", "Bash(git reset", "Bash(rm")) for tool in allowed)
+
+
+def test_task_constraints_say_missing_build_permission_is_not_blocked():
+    assert "NO es BLOCKED" in ad.TASK_CONSTRAINTS
+
 def test_claude_parse_json_result():
     out = json.dumps({"result": "listo", "is_error": False, "usage": {"input_tokens": 10, "output_tokens": 5}, "total_cost_usd": 0.01, "session_id": "s1"})
     r = ad.ClaudeAdapter().parse(out, "", 0, None)
@@ -78,6 +90,17 @@ def test_cmd_shim_runs_through_comspec(monkeypatch):
     assert ad.exe_argv(r"C:\tools\agy.exe") == [r"C:\tools\agy.exe"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="shim .cmd solo en Windows")
+def test_cmd_shim_in_path_with_spaces_runs_with_its_arguments(tmp_path):
+    carpeta = tmp_path / "Program Files" / "nodejs"
+    carpeta.mkdir(parents=True)
+    shim = carpeta / "npm.cmd"
+    shim.write_text("@echo %1 %2\r\n@exit /b 3\r\n", encoding="utf-8")
+    salida = subprocess.run(ad.exe_argv(str(shim)) + ["run", "test:coverage"], capture_output=True, text=True)
+    assert salida.returncode == 3
+    assert salida.stdout.strip() == "run test:coverage"
+
+
 def test_codex_parse_prefers_out_file_and_detects_structured_error(tmp_path):
     out_file = tmp_path / "last.md"
     out_file.write_text("respuesta final", encoding="utf-8")
@@ -96,13 +119,13 @@ def test_codex_parse_prefers_out_file_and_detects_structured_error(tmp_path):
 
 
 def test_copilot_build_deny_list_wins_and_effort_low_for_simple(tmp_path, clean_env):
-    spec = ad.CopilotAdapter().build(_agent("copilot", max_credits=7), "copilot.exe", "job3", "tarea", "gpt-5.4", tmp_path, "simple", 600)
+    spec = ad.CopilotAdapter().build(_agent("copilot", max_credits=40), "copilot.exe", "job3", "tarea", "gpt-5.4", tmp_path, "simple", 600)
     argv = spec.argv
     joined = " ".join(argv)
     for rule in ad.CopilotAdapter.DENY:
         assert rule in argv
     assert "--allow-all" not in joined and "--autopilot" not in joined
-    assert argv[argv.index("--max-ai-credits") + 1] == "7"
+    assert argv[argv.index("--max-ai-credits") + 1] == "40"
     assert argv[argv.index("--effort") + 1] == "low"
     assert argv[argv.index("--output-format") + 1] == "json"
     assert "tarea" not in joined
@@ -620,3 +643,23 @@ def test_muse_parse_missing_terminal_falls_back_to_stderr():
 def test_muse_parse_missing_terminal_is_error_even_with_zero_returncode():
     result = ad.MuseAdapter().parse(json.dumps({"payload_type": "run.model.configured", "payload": {"model_id": "meta/default"}}), "", 0, None)
     assert result.structured_error is True
+
+
+def test_copilot_credit_floor(tmp_path):
+    agent = CliAgent(**{**next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "copilot"), "max_credits": 7})
+    argv = ad.CopilotAdapter().build(agent, "copilot.exe", "job2", "tarea", "", tmp_path, "simple", 600).argv
+    assert argv[argv.index("--max-ai-credits") + 1] == str(ad.COPILOT_MIN_AI_CREDITS)
+
+
+@pytest.mark.parametrize("model", ["", "auto"])
+def test_copilot_auto_model_gets_no_effort_flag(tmp_path, model):
+    agent = CliAgent(**next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "copilot"))
+    argv = ad.CopilotAdapter().build(agent, "copilot.exe", "job3", "tarea", model, tmp_path, "simple", 600).argv
+    assert "--effort" not in argv
+
+
+def test_child_env_keeps_program_files_for_nuget():
+    env = ad.child_env({"PATH": "x", "ProgramFiles(x86)": r"C:\Program Files (x86)", "ProgramFiles": r"C:\Program Files", "SECRETO": "no"})
+    assert env["ProgramFiles(x86)"] == r"C:\Program Files (x86)" and env["ProgramFiles"] == r"C:\Program Files"
+    assert "SECRETO" not in env
+    assert ad.child_env({"PROGRAMFILES(X86)": "C:/x86"})["PROGRAMFILES(X86)"] == "C:/x86"

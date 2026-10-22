@@ -23,7 +23,7 @@ from app.core.config import get_settings
 setup_logging()
 log = get_logger(__name__)
 
-APP_VERSION = "2.18.0"
+APP_VERSION = "2.20.1"
 
 _REFRESH_MARGIN = 120   # refresh when less than 2 min remain
 _RETRY_ON_ERROR = 60    # retry after 1 min on failure
@@ -74,6 +74,12 @@ async def lifespan(app: FastAPI):
     from app.services.telegram_bot import run_telegram_bot
     from app.services import decisions_log
     from app.services.cli_agents import broker
+    from app.services import providers_service
+    try:
+        _startup_registry = providers_service.load_registry()
+        log.info("registry_loaded", enabled_agents=[a.id for a in _startup_registry.cli_agents if a.enabled])
+    except Exception as e:
+        log.warning("registry_loaded_failed", error=str(e))
     await usage_tracker.init_db()
     try:
         await decisions_log.init_tables()

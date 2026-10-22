@@ -72,7 +72,7 @@ def test_get_config_returns_agents_and_recommendations(env):
     assert resp.status_code == 200
     data = resp.json()
     assert data["smart"]["mode"] == "shadow" and data["tiers"] == ["trivial", "simple", "standard", "complex"]
-    assert {a["id"] for a in data["agents"]} == {"anthropic", "claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse"}
+    assert {a["id"] for a in data["agents"]} == {"claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic"}
     codes = {r["code"] for r in data["recommendations"]}
     assert {"ollama_anthropic_native", "shadow_mode"} <= codes
 
@@ -138,3 +138,20 @@ def test_delegate_disabled_returns_409_and_dry_run_works(env, tmp_path, monkeypa
     assert bad_ws.status_code == 400 and bad_ws.json()["detail"] == "workspace_not_allowed"
     assert client.get("/api/delegate/jobs/nope").status_code == 404
     assert client.get("/api/delegate/jobs").json() == {"jobs": []}
+
+
+def test_delegate_no_agent_error_includes_skipped(env, tmp_path, monkeypatch):
+    client, registry = env
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    registry.delegation = DelegationConfig(enabled=True, workspace_allowlist=[str(ws)])
+
+    async def reject(req, depth_header=""):
+        raise broker.NoAgentAvailable(["no_agent_available"], [("muse", "busy"), ("codex", "disabled")])
+
+    monkeypatch.setattr(broker, "submit", reject)
+    resp = client.post("/api/delegate/jobs", json={"task": "haz algo", "workspace": str(ws)})
+    assert resp.status_code == 400
+    body = resp.json()["detail"]
+    assert "skipped:" in body["detail"] and "muse=busy" in body["detail"]
+    assert body["skipped"] == [["muse", "busy"], ["codex", "disabled"]]

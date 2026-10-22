@@ -17,6 +17,10 @@ from app.core import quota_signals as qs
     ("401 Unauthorized", "auth"),
     ("The service is overloaded", "overloaded"),
     ("529 overloaded_error", "overloaded"),
+    ("getaddrinfo ENOTFOUND api.anthropic.com", "network_error"),
+    ("socket hang up: read ECONNRESET", "network_error"),
+    ("connect ETIMEDOUT 104.18.0.1:443", "network_error"),
+    ("Can't reach the API server (ConnectionRefused)", "network_error"),
 ])
 def test_detect_signal_kinds(text, kind):
     signal = qs.detect_signal(text)
@@ -90,3 +94,19 @@ def test_detect_signal_dsh_insufficient_balance_is_quota_exhausted():
 def test_detect_signal_dsh_missing_credential_is_auth():
     signal = qs.detect_signal("dsh: MISSING_CREDENTIAL: llm-deepseek: no API key")
     assert signal is not None and signal.kind == "auth"
+
+
+@pytest.mark.parametrize("text,kind", [
+    ("No endpoints found matching your data policy", "model_unavailable"),
+    ("xyz is not a valid model ID", "model_unavailable"),
+    ("model not found", "model_unavailable"),
+    ("is not available for free", "model_unavailable"),
+])
+def test_detect_signal_model_unavailable(text, kind):
+    signal = qs.detect_signal(text)
+    assert signal is not None and signal.kind == kind
+
+
+def test_free_models_per_day_remains_quota_exhausted():
+    signal = qs.detect_signal("Rate limit exceeded: free-models-per-day")
+    assert signal is not None and signal.kind == "quota_exhausted"

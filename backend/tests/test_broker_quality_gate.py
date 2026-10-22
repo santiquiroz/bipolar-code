@@ -2,7 +2,7 @@
 import pytest
 
 from app.models.delegate import JobRequest
-from app.services.cli_agents import broker, verifier
+from app.services.cli_agents import broker, reviewer, verifier
 from app.services.cli_agents.adapters import AdapterResult
 from app.services.cli_agents.verifier import CheckResult
 from tests.test_delegation_broker import _wait, env  # noqa: F401  (fixture)
@@ -117,3 +117,45 @@ async def test_review_disabled_skips_review(env, monkeypatch):
     _checks(monkeypatch, [])
     job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard", review=False))).id)
     assert job.status == "succeeded" and job.review_status == "n/a"
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_falla_si_la_revision_previa_pidio_cambios_y_no_hay_revisor(env, monkeypatch):
+    _setup(env)
+    original_candidates = broker._review_candidates
+    count_cand = [0]
+
+    def fake_candidates(registry, statuses, worker, tier, workspace=None):
+        count_cand[0] += 1
+        if count_cand[0] == 1:
+            return original_candidates(registry, statuses, worker, tier, workspace)
+        return []
+
+    monkeypatch.setattr(broker, "_review_candidates", fake_candidates)
+    _script(monkeypatch, [("codex", False, _ok()), ("claude", True, _verdict("revise", ["cambio pedido"])), ("codex", False, _ok("corregido"))])
+    _checks(monkeypatch, [])
+    job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard"))).id)
+    assert job.status == "failed"
+    assert job.review_status == "unreviewed"
+    assert job.error.startswith("review_unavailable")
+    # debe haber un intento review con revise
+    review_attempts = [a for a in job.attempts if a.kind == "review"]
+    assert len(review_attempts) >= 1
+    assert review_attempts[0].detail.get("verdict") == "revise"
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_sigue_aprobando_sin_revisor_si_no_hubo_revision_previa(env, monkeypatch):
+    _setup(env)
+    monkeypatch.setattr(broker, "_review_candidates", lambda *a, **kw: [])
+    _script(monkeypatch, [("codex", False, _ok())])
+    _checks(monkeypatch, [])
+    job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard"))).id)
+    assert job.status == "succeeded" and job.review_status == "skipped"
+
+
+def test_textos_revision_y_escalada_contienen_conserva_pruebas():
+    rev_text = reviewer.revision_task("t", ["i"])
+    esc_text = reviewer.escalation_task("t", ["h"])
+    assert "Conserva el código y las pruebas que ya existían" in rev_text
+    assert "Conserva el código y las pruebas que ya existían" in esc_text
