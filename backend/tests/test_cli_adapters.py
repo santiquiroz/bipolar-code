@@ -57,6 +57,17 @@ def test_claude_build_has_safety_flags_and_pointer(tmp_path, clean_env):
     assert "ANTHROPIC_BASE_URL" not in spec.env
 
 
+
+def test_claude_build_allows_build_and_test_commands(tmp_path, clean_env):
+    argv = ad.ClaudeAdapter().build(_agent("claude"), "claude.exe", "job1", "haz X", "", tmp_path, "standard", 600).argv
+    allowed = argv[argv.index("--allowedTools") + 1].split(",")
+    assert {"Bash(dotnet test:*)", "Bash(npm run:*)", "Bash(python -m pytest:*)"} <= set(allowed)
+    assert not any(tool.startswith(("Bash(git push", "Bash(git reset", "Bash(rm")) for tool in allowed)
+
+
+def test_task_constraints_say_missing_build_permission_is_not_blocked():
+    assert "NO es BLOCKED" in ad.TASK_CONSTRAINTS
+
 def test_claude_parse_json_result():
     out = json.dumps({"result": "listo", "is_error": False, "usage": {"input_tokens": 10, "output_tokens": 5}, "total_cost_usd": 0.01, "session_id": "s1"})
     r = ad.ClaudeAdapter().parse(out, "", 0, None)

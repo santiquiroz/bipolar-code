@@ -56,10 +56,19 @@ TASK_CONSTRAINTS = (
     "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
     "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
     "Deja los cambios en el working tree y termina con la lista de archivos tocados. "
+    "Si no puedes ejecutar comandos de compilación o pruebas por permisos, eso NO es BLOCKED: el broker corre la verificación al terminar; "
+    "completa los cambios y declara DONE o DONE_WITH_CONCERNS indicando qué comandos no pudiste correr. "
+    "BLOCKED es solo cuando no puedes hacer los cambios de código. "
     "La última línea de tu respuesta debe ser `STATUS: DONE`, `STATUS: DONE_WITH_CONCERNS`, `STATUS: NEEDS_CONTEXT` o `STATUS: BLOCKED`; "
     "si no es DONE, escribe en la misma línea, después de la palabra, el motivo o la pregunta concreta. "
     "NEEDS_CONTEXT = falta información y no adivinaste; BLOCKED = no se puede avanzar (permisos, dependencia rota); "
     "DONE_WITH_CONCERNS = terminado pero con riesgos que alguien debe revisar."
+)
+CLAUDE_BUILD_TOOLS = (
+    "Bash(dotnet build:*)", "Bash(dotnet test:*)", "Bash(dotnet restore:*)",
+    "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx vitest:*)", "Bash(npx ng:*)",
+    "Bash(pytest:*)", "Bash(python -m pytest:*)",
+    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (
@@ -283,6 +292,8 @@ class ClaudeAdapter:
             "--setting-sources", "project,local", "--strict-mcp-config",
             "--add-dir", ws,
         ]
+        if not read_only:
+            argv += ["--allowedTools", ",".join(CLAUDE_BUILD_TOOLS)]
         if model:
             argv += ["--model", model]
         argv += validate_extra_args(agent.extra_args)

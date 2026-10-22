@@ -20,6 +20,7 @@ def test_claude_read_only_uses_plan_mode_and_blocks_edit_tools(tmp_path):
     assert {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"} <= set(blocked)
     argv_rw = _build("claude", tmp_path, False).argv
     assert argv_rw[argv_rw.index("--permission-mode") + 1] == "acceptEdits"
+    assert "--allowedTools" not in argv and "--allowedTools" in argv_rw
 
 
 def test_codex_read_only_sandbox(tmp_path):
