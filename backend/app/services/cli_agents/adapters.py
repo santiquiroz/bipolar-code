@@ -86,7 +86,9 @@ ENV_ALLOWLIST = (
     "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "ProgramData",
     "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "TERM", "USERNAME", "USER", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
     "NODE_PATH", "GEMINI_CLI_HOME",
+    "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
 )
+ENV_ALLOWLIST_UPPER = frozenset(k.upper() for k in ENV_ALLOWLIST)
 ENV_FIXED = {
     "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "GIT_TERMINAL_PROMPT": "0",
     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes", "BIPOLAR_DELEGATION_DEPTH": "1", "MSYS_NO_PATHCONV": "1",
@@ -187,7 +189,7 @@ def validate_path_argv(path: str) -> str:
 
 
 def child_env(base: Mapping[str, str], extra: Optional[dict] = None) -> dict:
-    env = {k: v for k, v in base.items() if k in ENV_ALLOWLIST or k.upper() in ENV_ALLOWLIST}
+    env = {k: v for k, v in base.items() if k.upper() in ENV_ALLOWLIST_UPPER}
     env.update(ENV_FIXED)
     for key in list(env):
         upper = key.upper()

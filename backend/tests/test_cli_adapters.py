@@ -656,3 +656,10 @@ def test_copilot_auto_model_gets_no_effort_flag(tmp_path, model):
     agent = CliAgent(**next(d for d in DEFAULT_CLI_AGENTS if d["id"] == "copilot"))
     argv = ad.CopilotAdapter().build(agent, "copilot.exe", "job3", "tarea", model, tmp_path, "simple", 600).argv
     assert "--effort" not in argv
+
+
+def test_child_env_keeps_program_files_for_nuget():
+    env = ad.child_env({"PATH": "x", "ProgramFiles(x86)": r"C:\Program Files (x86)", "ProgramFiles": r"C:\Program Files", "SECRETO": "no"})
+    assert env["ProgramFiles(x86)"] == r"C:\Program Files (x86)" and env["ProgramFiles"] == r"C:\Program Files"
+    assert "SECRETO" not in env
+    assert ad.child_env({"PROGRAMFILES(X86)": "C:/x86"})["PROGRAMFILES(X86)"] == "C:/x86"
