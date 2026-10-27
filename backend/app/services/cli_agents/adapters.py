@@ -524,7 +524,7 @@ class AntigravityAdapter:
         ]
         if model:
             argv += ["--model", model]
-            if model.startswith("gemini-"):
+            if model.startswith("gemini-") and not model.endswith(("-low", "-medium", "-high")):
                 argv += ["--effort", effort_for_tier(tier)]
         argv += validate_extra_args(agent.extra_args)
         return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, pointer_file=pointer,

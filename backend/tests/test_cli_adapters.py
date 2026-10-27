@@ -149,10 +149,12 @@ def test_antigravity_build_with_deny_list_and_effort_only_for_gemini(tmp_path, m
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({"permissions": {"deny": ["command(regex:.*\\bgit\\s+push\\b.*)", "command(regex:.*\\brm\\b.*)"]}}), encoding="utf-8")
     adapter = ad.AntigravityAdapter()
-    gem = adapter.build(_agent("antigravity"), "agy.exe", "j1", "t", "gemini-3.1-pro-high", tmp_path, "complex", 600)
+    gem = adapter.build(_agent("antigravity"), "agy.exe", "j1", "t", "gemini-3.1-pro", tmp_path, "complex", 600)
     assert "--dangerously-skip-permissions" in gem.argv and "--disable-slash-commands" in gem.argv
     assert gem.argv[gem.argv.index("--print-timeout") + 1] == "570s"
     assert gem.argv[gem.argv.index("--effort") + 1] == "high" and gem.pool_key == "cli:antigravity#gemini"
+    con_sufijo = adapter.build(_agent("antigravity"), "agy.exe", "j3", "t", "gemini-3.1-pro-high", tmp_path, "complex", 600)
+    assert "--effort" not in con_sufijo.argv and con_sufijo.pool_key == "cli:antigravity#gemini"
     cla = adapter.build(_agent("antigravity"), "agy.exe", "j2", "t", "claude-sonnet-4-6", tmp_path, "complex", 600)
     assert "--effort" not in cla.argv and cla.pool_key == "cli:antigravity#claude"
 
