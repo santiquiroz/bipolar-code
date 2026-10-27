@@ -26,6 +26,31 @@ test("tool call seguido de tool result conserva el par de ids", () => {
   ]);
 });
 
+test("tool result con una parte prompt-tsx sale como JSON", () => {
+  const result = toAnthropicMessages([
+    { role: ROLE_USER, content: [{ callId: "c1", content: [{ value: { a: 1 } }] }] },
+  ]);
+  assert.deepEqual(result[0].content, [{ type: "tool_result", tool_use_id: "c1", content: '{"a":1}' }]);
+});
+
+test("tool result con una parte de datos de texto se decodifica en UTF-8", () => {
+  const data = new Uint8Array(Buffer.from("hola", "utf8"));
+  const result = toAnthropicMessages([
+    { role: ROLE_USER, content: [{ callId: "c1", content: [{ mimeType: "text/plain", data }] }] },
+  ]);
+  assert.deepEqual(result[0].content, [{ type: "tool_result", tool_use_id: "c1", content: "hola" }]);
+});
+
+test("los tool_result van antes que los demás bloques del usuario", () => {
+  const result = toAnthropicMessages([
+    { role: ROLE_USER, content: [{ value: "x" }, { callId: "c1", content: [{ value: "r" }] }] },
+  ]);
+  assert.deepEqual(
+    result[0].content.map((block) => block.type),
+    ["tool_result", "text"],
+  );
+});
+
 test("dos mensajes de usuario seguidos se juntan", () => {
   const result = toAnthropicMessages([
     { role: ROLE_USER, content: [{ value: "uno" }] },

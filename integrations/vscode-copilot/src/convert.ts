@@ -66,10 +66,32 @@ function isImagePart(part: unknown): part is { mimeType: string; data: Uint8Arra
   );
 }
 
+function isTextDataPart(part: unknown): part is { mimeType: string; data: Uint8Array } {
+  return (
+    isRecord(part) &&
+    typeof part.mimeType === "string" &&
+    (part.mimeType.startsWith("text/") || part.mimeType.includes("json")) &&
+    part.data instanceof Uint8Array
+  );
+}
+
+function resultPartText(part: unknown): string {
+  if (isTextPart(part)) {
+    return part.value;
+  }
+  if (isRecord(part) && part.value !== undefined) {
+    return JSON.stringify(part.value);
+  }
+  if (isTextDataPart(part)) {
+    return Buffer.from(part.data).toString("utf8");
+  }
+  return "";
+}
+
 function toolResultText(content: readonly unknown[]): string {
   return content
-    .filter(isTextPart)
-    .map((part) => part.value)
+    .map(resultPartText)
+    .filter((text) => text !== "")
     .join("\n");
 }
 
@@ -111,11 +133,22 @@ function appendMerged(merged: AnthropicMessage[], message: AnthropicMessage): An
   return merged;
 }
 
+// Anthropic exige que los tool_result vayan antes que cualquier otro bloque del turno de usuario.
+function toolResultsFirst(message: AnthropicMessage): AnthropicMessage {
+  if (message.role !== "user") {
+    return message;
+  }
+  const results = message.content.filter((block) => block.type === "tool_result");
+  const others = message.content.filter((block) => block.type !== "tool_result");
+  return { role: message.role, content: [...results, ...others] };
+}
+
 export function toAnthropicMessages(messages: readonly ChatMessageLike[]): AnthropicMessage[] {
   return messages
     .map(toMessage)
     .filter((message) => message.content.length > 0)
-    .reduce(appendMerged, []);
+    .reduce(appendMerged, [])
+    .map(toolResultsFirst);
 }
 
 export function toAnthropicTools(tools?: readonly ToolLike[]): AnthropicTool[] | undefined {
