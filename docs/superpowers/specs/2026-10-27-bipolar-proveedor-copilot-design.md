@@ -107,8 +107,12 @@ Santiago lo plantea como **compatibilidad de bipolar con Copilot**, no como un p
 **Auto** (`model = "bipolar-auto"`, sin encabezado):
 
 - Hasta la decisión el nombre viaja tal cual. Las reglas por subcadena no coinciden con él, salvo la regla comodín de patrón vacío, que es lo que se busca. El clasificador simplemente no ve pista de modelo.
-- La compresión previa a la decisión usa la ventana por defecto de `token_service` para nombres desconocidos.
-- En el punto donde hoy se calcula el modelo del upstream (`step.model or provider.active_model or model` en `_native_request` y `_oai_request`), `bipolar-auto` nunca se usa como último recurso. Si no hay `step.model` ni `active_model`, el paso falla como `fatal` con un 400 claro.
+- **Ventana de contexto (corregido al planificar):** `token_service.get_context_window` devuelve 8192 para nombres que no conoce (`bipolar-auto`, `qwen3-coder`…). Con eso se truncarían los prompts de Copilot en modo agente, que superan de largo ese tamaño. Por eso, solo en los caminos nuevos (destino fijado o Auto), la ventana se calcula después de decidir:
+  - si el modelo es el `active_model` del provider elegido, se usa su `model_info.context_window`;
+  - si no, 128000.
+  - El camino viejo no cambia.
+- Antes de intentar, Auto descarta los pasos del plan que no tienen ni `step.model` ni `active_model`. Si no queda ninguno, devuelve un 400 claro. El literal `bipolar-auto` nunca llega a un upstream.
+- Uso y costo se registran con el modelo real del paso, no con `bipolar-auto`. Así el presupuesto cuenta lo que gasta Auto.
 
 ### Extensión `integrations/vscode-copilot/`
 
