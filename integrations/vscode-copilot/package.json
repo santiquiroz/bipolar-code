@@ -1,0 +1,64 @@
+{
+  "name": "bipolar-copilot",
+  "displayName": "Bipolar para Copilot",
+  "description": "Usa los providers y el ruteo automático de bipolar-code como modelos de GitHub Copilot Chat.",
+  "publisher": "santiquiroz",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.127.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguageModelChatProvider:bipolar"
+  ],
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "bipolar",
+        "displayName": "Bipolar",
+        "configuration": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "title": "URL de bipolar",
+              "default": "http://localhost:8000",
+              "description": "URL base del servidor de bipolar-code."
+            },
+            "apiKey": {
+              "type": "string",
+              "title": "API key de bipolar",
+              "secret": true,
+              "description": "La ui_api_key de bipolar-code."
+            }
+          },
+          "required": [
+            "url",
+            "apiKey"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "bipolar.refreshModels",
+        "title": "Bipolar: Refresh models"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
+    "package": "npx @vscode/vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.120.0",
+    "typescript": "^5.8.0"
+  }
+}
