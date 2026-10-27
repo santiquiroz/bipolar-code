@@ -159,9 +159,9 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     {
         "id": "antigravity", "name": "Google Antigravity CLI (agy)",
         "supported_tiers": ["trivial", "simple", "standard", "complex"],
-        "default_model": "gemini-3.1-pro-high",
+        "default_model": "gemini-3.8-flash-high",
         "model_by_tier": {"trivial": "gemini-3.8-flash-low", "simple": "gemini-3.8-flash-low",
-                          "standard": "gemini-3.1-pro-high", "complex": "gemini-3.1-pro-high"},
+                          "standard": "gemini-3.8-flash-high", "complex": "gemini-3.8-flash-high"},
         "alt_model_on_quota": "claude-sonnet-4-6",
         "quota_reset": "weekly", "cost_weight": 1.0, "priority": 45,
     },
