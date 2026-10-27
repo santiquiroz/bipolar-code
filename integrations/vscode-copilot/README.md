@@ -52,11 +52,25 @@ Opción 2, con el CLI de VS Code. Usa la ruta completa, porque en algunos PCs el
 - El encabezado de respuesta `X-Bipolar-Route` indica el provider y el modelo que atendieron la petición.
 - La vista de decisiones de ruteo de bipolar muestra cada decisión. Las peticiones con un provider forzado aparecen con origen `pinned`.
 
+## Copilot CLI y las herramientas
+
+Copilot Chat ejecuta las sesiones con el agente de **Copilot CLI**. Antes de enviar un mensaje, comprueba que el prompt del sistema y la definición de todas las herramientas quepan en el contexto del modelo. Solo con algunas familias de modelos (por ejemplo, Claude) carga las herramientas MCP **bajo demanda**. Con cualquier otro modelo las incluye todas de entrada; si no caben, el turno falla con **«No response was returned»** y la petición nunca llega a bipolar.
+
+Para evitarlo, la extensión ajusta sola el setting de usuario `chat.agentHost.copilot.modelCapabilityOverrides` cada vez que carga el catálogo:
+
+- A cada modelo de Bipolar le asigna la familia `claude-sonnet-4.6`, así Copilot CLI carga las herramientas bajo demanda.
+- A los modelos con menos de 64K tokens de contexto, además, les deja solo las herramientas integradas (`availableTools: ["builtin:*"]`), porque ni siquiera caben las herramientas diferidas.
+- Respeta las entradas que hayas escrito a mano: nunca las sobrescribe. Solo cambia o borra las entradas que creó ella misma.
+- Después de la primera carga de modelos, **abre un chat nuevo** para que Copilot tome el ajuste.
+
+Si prefieres gestionarlo tú, desactívalo con `"bipolar.manageCopilotOverrides": false` en tus settings.
+
 ## Problemas frecuentes
 
 - **Error 401 / «API key de bipolar inválida»**: la `ui_api_key` es incorrecta. Vuelve a agregar el proveedor con la key correcta.
 - **La lista de modelos está vacía**: bipolar no está corriendo, la URL es incorrecta o no hay ningún provider usable. Ejecuta el comando **«Bipolar: Refresh models»** y revisa el canal de salida **«Bipolar»** (vista **Output**).
 - **Un modelo no aparece en modo agente**: el modo agente solo muestra modelos con soporte de herramientas.
+- **«No response was returned»**: abre un chat nuevo para que Copilot tome el ajuste de `chat.agentHost.copilot.modelCapabilityOverrides` (ver «Copilot CLI y las herramientas»). Si sigue fallando, revisa el canal de salida **«Bipolar»** (vista **Output**).
 - **El provider forzado está caído**: Copilot muestra el error en vez de pasar en silencio a otro provider. Usa Bipolar Auto o elige otro provider.
 
 ## Cómo funciona

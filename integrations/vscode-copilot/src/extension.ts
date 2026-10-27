@@ -1,9 +1,11 @@
 import * as vscode from "vscode";
+import { CopilotOverridesSync } from "./copilotSettings";
 import { BipolarChatProvider } from "./provider";
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Bipolar");
-  const provider = new BipolarChatProvider(output);
+  const sync = new CopilotOverridesSync(context, output);
+  const provider = new BipolarChatProvider(output, (models) => sync.sync(models));
   context.subscriptions.push(
     output,
     provider,

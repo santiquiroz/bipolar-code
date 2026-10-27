@@ -44,6 +44,16 @@
         }
       }
     ],
+    "configuration": {
+      "title": "Bipolar",
+      "properties": {
+        "bipolar.manageCopilotOverrides": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ajusta automáticamente chat.agentHost.copilot.modelCapabilityOverrides para los modelos de Bipolar, de modo que Copilot CLI cargue las herramientas MCP bajo demanda. Desactívalo si prefieres gestionarlo a mano."
+        }
+      }
+    },
     "commands": [
       {
         "command": "bipolar.refreshModels",

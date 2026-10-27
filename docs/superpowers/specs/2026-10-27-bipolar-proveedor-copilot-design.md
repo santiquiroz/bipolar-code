@@ -146,3 +146,11 @@ Santiago lo plantea como **compatibilidad de bipolar con Copilot**, no como un p
 ## Queda para el builder
 
 Todo lo marcado «Decide el builder» y los detalles que no cambian lo que se construye: nombres internos, mensajes de error, orden de los modelos en el catálogo, iconos y textos de la extensión.
+
+## Ajustes tras la prueba real (2026-10-27)
+
+- El agent host de Copilot CLI bloquea los modelos BYOK sin búsqueda de herramientas: solo difiere las herramientas MCP para ids que empiezan por `claude`, ciertos `gpt-5.x`/`gpt-6` o `auto`. Los ids `bipolar/<grupo>/<modelo>` no pasan, todas las herramientas van en línea y el turno se corta con `compaction_static_context_blocked` («No response was returned») sin llamar al provider.
+- La extensión gestiona `chat.agentHost.copilot.modelCapabilityOverrides` en los settings globales: familia `claude-sonnet-4.6` para cada modelo de Bipolar y, por debajo de 64K tokens de contexto, solo herramientas integradas (`availableTools: ["builtin:*"]`).
+- Nunca sobrescribe entradas que haya escrito el usuario; solo modifica o borra las que creó ella (guardadas en `globalState`).
+- Se desactiva con `bipolar.manageCopilotOverrides: false`.
+- Decisión de Santiago: cero pasos manuales después de instalar la extensión.

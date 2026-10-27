@@ -79,6 +79,10 @@ async function streamEvents(body: ReadableStream<Uint8Array>, progress: Progress
   parser.end().forEach((e) => reportEvent(e, progress));
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function partLength(part: unknown): number {
   const value = (part as { value?: unknown } | null)?.value;
   return typeof value === "string" ? value.length : 0;
@@ -95,7 +99,10 @@ export class BipolarChatProvider implements vscode.LanguageModelChatProvider<Bip
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.changed.event;
 
-  constructor(private readonly output: vscode.OutputChannel) {}
+  constructor(
+    private readonly output: vscode.OutputChannel,
+    private readonly onModelsLoaded?: (models: BipolarModelInfo[]) => Promise<void>,
+  ) {}
 
   refresh(): void {
     this.changed.fire();
@@ -123,6 +130,7 @@ export class BipolarChatProvider implements vscode.LanguageModelChatProvider<Bip
     }
     const models = parseCatalog(await res.json()).map((entry) => toModelInfo(entry, config));
     this.output.appendLine(`Se cargaron ${models.length} modelos de bipolar`);
+    this.notifyModelsLoaded(models);
     return models;
   }
 
@@ -139,6 +147,7 @@ export class BipolarChatProvider implements vscode.LanguageModelChatProvider<Bip
       if (token.isCancellationRequested) {
         return;
       }
+      this.output.appendLine(`Error en el chat con ${model.name}: ${errorText(error)}`);
       throw error;
     }
   }
@@ -158,6 +167,12 @@ export class BipolarChatProvider implements vscode.LanguageModelChatProvider<Bip
       headers: { "x-api-key": config.apiKey },
       signal: controller.signal,
     }).finally(() => clearTimeout(timer));
+  }
+
+  private notifyModelsLoaded(models: BipolarModelInfo[]): void {
+    this.onModelsLoaded?.(models).catch((error) =>
+      this.output.appendLine(`No se pudieron ajustar los modelos de Copilot CLI: ${errorText(error)}`),
+    );
   }
 
   private fail(message: string, silent: boolean): BipolarModelInfo[] {
