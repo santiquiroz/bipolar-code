@@ -2,6 +2,7 @@
 import asyncio
 import json
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -563,6 +564,26 @@ def test_job_summary_includes_concurrency_fields():
     payload = job_summary(job)
     assert payload["concurrent_jobs"] == ["j2"]
     assert payload["files_touched_exact"] is False
+
+
+@pytest.mark.asyncio
+async def test_preferred_agent_exhausted_leaves_redirect_note(env):
+    from app.api.mcp import job_summary
+    until = datetime(2099, 1, 1, 5, 7, 47, tzinfo=timezone.utc)
+    health_service.set_exhausted_until("cli:codex", until, "Subscription quota exhausted")
+    job = await broker.submit(JobRequest(task="arregla el bug", workspace=str(env["workspace"]), agent_id="codex", dry_run=True))
+    assert job.agent_id == "claude"
+    reason = next(r for aid, r in job.skipped if aid == "codex")
+    assert job.redirect == (f"el agente pedido 'codex' no estaba disponible ({reason}) "
+                            "hasta 2099-01-01T05:07:47+00:00; se usó 'claude'")
+    assert "redirected:codex->claude" in job.reasons
+    assert job_summary(job)["redirect"] == job.redirect
+
+
+@pytest.mark.asyncio
+async def test_preferred_agent_available_has_no_redirect(env):
+    job = await broker.submit(JobRequest(task="arregla el bug", workspace=str(env["workspace"]), agent_id="codex", dry_run=True))
+    assert job.agent_id == "codex" and job.redirect == ""
 
 
 def _check_ok(command="check"):

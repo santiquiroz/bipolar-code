@@ -59,6 +59,7 @@ class Job(BaseModel):
     skipped: list[list[str]] = Field(default_factory=list)
     agent_id: Optional[str] = None
     model: str = ""
+    redirect: str = ""  # el agente pedido no estaba disponible y el job fue a otro
     attempts: list[Attempt] = Field(default_factory=list)
     output_tail: str = ""
     result_text: str = ""

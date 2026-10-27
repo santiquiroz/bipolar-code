@@ -136,6 +136,7 @@ def job_summary(job: Job) -> dict:
         "tier": job.tier,
         "agent_id": job.agent_id,
         "model": job.model,
+        "redirect": job.redirect,
         "escalations": job.escalations,
         "verification_status": job.verification_status,
         "review_status": job.review_status,

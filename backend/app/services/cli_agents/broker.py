@@ -363,7 +363,10 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
         id=job_id, created_at=_now(), mode=req.mode, workspace=str(workspace), task_preview=req.task[:200],
         tier=tier, score=cls.score, reasons=list(cls.reasons) + reasons, skipped=[list(s) for s in skipped],
         agent_id=agent.id if agent else None, model=model,
+        redirect=_redirect_note(req, tier, agent, skipped, registry),
     )
+    if job.redirect:
+        job.reasons.append(f"redirected:{req.agent_id}->{agent.id}")
     if agent is None:
         raise NoAgentAvailable(job.reasons, skipped)
     if req.dry_run:
@@ -373,6 +376,22 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
     _trim_jobs(registry.delegation.job_retention)
     runtime.task = asyncio.create_task(_run_job(runtime, registry, statuses))
     return job
+
+
+def _redirect_note(req: JobRequest, tier: str, agent: Optional[CliAgent], skipped: list[tuple[str, str]],
+                   registry: ProviderRegistry) -> str:
+    """Si el agente pedido a propósito se saltó, el resultado tiene que decirlo y decir hasta cuándo."""
+    preferred = req.agent_id
+    if not preferred or agent is None or agent.id == preferred:
+        return ""
+    reason = next((r for aid, r in skipped if aid == preferred), "unavailable")
+    note = f"el agente pedido '{preferred}' no estaba disponible ({reason})"
+    wanted = next((a for a in registry.cli_agents if a.id == preferred), None)
+    if wanted is not None:
+        until = health_service.get(_pool_key(wanted, wanted.model_for(tier, req.model))).until
+        if until:
+            note += f" hasta {until}"
+    return note + f"; se usó '{agent.id}'"
 
 
 def _validate_verify(req: JobRequest, registry, workspace: Path) -> None:

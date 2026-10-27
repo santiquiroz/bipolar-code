@@ -34,6 +34,8 @@ RETRY_AFTER_RE = re.compile(
 AGY_INTERRUPTED_RE = re.compile(r"stream was interrupted", re.I)
 RESET_CLOCK_RE = re.compile(r"resets?\s+(?:(mon|tue|wed|thu|fri|sat|sun)\w*\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
 RESET_EPOCH_RE = re.compile(r"\|(\d{9,11})\s*$")
+# muse: "Your usage window resets at 2026-10-27T05:07:47Z"
+RESET_ISO_RE = re.compile(r"resets?\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)", re.I)
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 _UNIT_SECONDS = {"h": 3600, "m": 60, "s": 1}
@@ -101,10 +103,25 @@ def _next_occurrence(local_now: datetime, hour: int, minute: int, weekday: Optio
     return candidate
 
 
+def _parse_iso_reset(text: str) -> Optional[datetime]:
+    match = RESET_ISO_RE.search(text)
+    if not match:
+        return None
+    try:
+        value = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # sin zona: el CLI informa en UTC
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 def parse_reset_at(text: str, now: datetime) -> Optional[datetime]:
     epoch = RESET_EPOCH_RE.search(text or "")
     if epoch:
         return datetime.fromtimestamp(int(epoch.group(1)), tz=timezone.utc)
+    iso = _parse_iso_reset(text or "")
+    if iso is not None:
+        return iso
     match = RESET_CLOCK_RE.search(text or "")
     if not match:
         return None
