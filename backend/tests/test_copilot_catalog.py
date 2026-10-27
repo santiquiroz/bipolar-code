@@ -234,3 +234,72 @@ def test_endpoint_returns_data_list(catalog_env):
     response = client.get("/v1/bipolar/models")
     assert response.status_code == 200
     assert response.json()["data"][0]["id"] == "bipolar-auto"
+
+
+def _ollama(**kwargs) -> Provider:
+    base = {
+        "id": "ollama",
+        "name": "ollama",
+        "api_base": "http://127.0.0.1:11434",
+        "models_endpoint": "http://127.0.0.1:11434/api/tags",
+    }
+    return Provider(**{**base, **kwargs})
+
+
+def test_num_ctx_parses_parameters():
+    params = "top_p 0.95\nnum_ctx                        32768\nnum_predict 4096"
+    assert copilot_catalog._num_ctx(params) == 32768
+    assert copilot_catalog._num_ctx("") == 0
+
+
+def test_ollama_details_uses_num_ctx_and_capabilities():
+    show = {"parameters": "num_ctx 32768", "capabilities": ["completion", "tools", "vision"]}
+    details = copilot_catalog.ollama_details(show)
+    assert model_limits(details) == (24576, 8192, True, True)
+
+
+def test_ollama_details_without_num_ctx_uses_fallback():
+    details = copilot_catalog.ollama_details({"parameters": "", "capabilities": ["completion"]})
+    assert model_limits(details) == (6144, 2048, False, False)
+
+
+def test_ollama_base_strips_v1():
+    p = _ollama(api_base="http://127.0.0.1:11434/v1")
+    assert copilot_catalog._ollama_base(p) == "http://127.0.0.1:11434"
+
+
+async def test_ollama_catalog_entry_uses_real_context(catalog_env, monkeypatch):
+    async def fake_show(provider, model_id):
+        return {"parameters": "num_ctx 32768", "capabilities": ["completion", "tools"]}
+
+    monkeypatch.setattr(copilot_catalog, "_ollama_show", fake_show)
+    catalog_env["providers"] = [_ollama()]
+    catalog_env["items"]["ollama"] = [{"id": "qwen3.5-mem:latest", "name": "qwen3.5-mem:latest"}]
+    catalog = await copilot_catalog.build_catalog()
+    entry = next(e for e in catalog if e["id"] == "ollama/qwen3.5-mem:latest")
+    assert entry["max_input_tokens"] == 24576
+    assert entry["tools"] is True
+
+
+async def test_ollama_show_failure_keeps_defaults(catalog_env, monkeypatch):
+    async def failing_show(provider, model_id):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(copilot_catalog, "_ollama_show", failing_show)
+    catalog_env["providers"] = [_ollama()]
+    catalog_env["items"]["ollama"] = [{"id": "qwen3.5-mem:latest", "name": "qwen3.5-mem:latest"}]
+    catalog = await copilot_catalog.build_catalog()
+    entry = next(e for e in catalog if e["id"] == "ollama/qwen3.5-mem:latest")
+    assert entry["max_input_tokens"] == 128000
+
+
+async def test_ollama_malformed_show_keeps_item(catalog_env, monkeypatch):
+    async def malformed_show(provider, model_id):
+        return ["not", "a", "dict"]
+
+    monkeypatch.setattr(copilot_catalog, "_ollama_show", malformed_show)
+    catalog_env["providers"] = [_ollama()]
+    catalog_env["items"]["ollama"] = [{"id": "qwen3.5-mem:latest", "name": "qwen3.5-mem:latest"}]
+    catalog = await copilot_catalog.build_catalog()
+    entry = next(e for e in catalog if e["id"] == "ollama/qwen3.5-mem:latest")
+    assert entry["max_input_tokens"] == 128000

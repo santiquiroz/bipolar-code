@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+import httpx
+
 from app.core.logging import get_logger
 from app.models.provider import Provider
 from app.services import credentials, providers_service
@@ -12,6 +14,7 @@ AUTO_MODEL_NAME = "Bipolar Auto"
 DEFAULT_MAX_INPUT = 128000
 DEFAULT_MAX_OUTPUT = 16000
 CACHE_TTL_S = 300
+OLLAMA_FALLBACK_CTX = 8192
 
 _WINDOW_KEYS = ("context_length", "context_window", "max_model_len", "max_context_length")
 _OUTPUT_KEYS = ("max_output_tokens", "max_completion_tokens")
@@ -150,9 +153,65 @@ async def is_usable(provider: Provider) -> bool:
     return _has_key(provider)
 
 
+def _is_ollama(provider: Provider) -> bool:
+    endpoint = (provider.models_endpoint or "").rstrip("/")
+    return provider.id == "ollama" or endpoint.endswith("/api/tags")
+
+
+def _ollama_base(provider: Provider) -> str:
+    base = provider.api_base.rstrip("/")
+    return base[: -len("/v1")] if base.endswith("/v1") else base
+
+
+def _num_ctx(parameters: str) -> int:
+    for line in parameters.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "num_ctx" and parts[1].isdigit():
+            return int(parts[1])
+    return 0
+
+
+def ollama_details(show: dict) -> dict:
+    # ponytail: el default real depende de OLLAMA_CONTEXT_LENGTH en el servidor; mejora: leer /api/ps
+    window = _num_ctx(show.get("parameters") or "") or OLLAMA_FALLBACK_CTX
+    details: dict = {"context_length": window}
+    if "capabilities" not in show:
+        return details
+    caps = show.get("capabilities") or []
+    supports = {"tool_calls": "tools" in caps, "vision": "vision" in caps}
+    return {**details, "capabilities": {"supports": supports}}
+
+
+async def _ollama_show(provider: Provider, model_id: str) -> dict:
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.post(f"{_ollama_base(provider)}/api/show", json={"model": model_id})
+        response.raise_for_status()
+        return response.json()
+
+
+async def _with_ollama_detail(provider: Provider, item: dict) -> dict:
+    try:
+        show = await _ollama_show(provider, item["id"])
+        return {**item, **ollama_details(show)}
+    except Exception as exc:
+        log.warning(
+            "copilot_catalog_ollama_show_failed", provider=provider.id, model=item["id"], error=str(exc)
+        )
+        return item
+
+
+async def _with_ollama_details(provider: Provider, items: list[dict]) -> list[dict]:
+    return list(await asyncio.gather(*(_with_ollama_detail(provider, item) for item in items)))
+
+
+async def _fetched_items(provider: Provider) -> list[dict]:
+    items = await providers_service.fetch_model_items(provider)
+    return await _with_ollama_details(provider, items) if _is_ollama(provider) else items
+
+
 async def _safe_items(provider: Provider) -> list[dict]:
     try:
-        return await providers_service.fetch_model_items(provider)
+        return await _fetched_items(provider)
     except Exception as exc:
         log.warning("copilot_catalog_models_failed", provider=provider.id, error=str(exc))
         return []
