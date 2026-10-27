@@ -132,7 +132,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-API-Key", "x-api-key",
                        "anthropic-version", "anthropic-beta", "x-context-usage",
-                       "X-Bipolar-Tier", "X-Bipolar-Depth"],
+                       "X-Bipolar-Tier", "X-Bipolar-Provider", "X-Bipolar-Depth"],
         expose_headers=["X-Context-Usage", "X-Bipolar-Route", "X-Bipolar-Decision-Id"],
     )
 
