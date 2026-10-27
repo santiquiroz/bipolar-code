@@ -1,4 +1,11 @@
+import asyncio
+import time
+
+from app.core.logging import get_logger
 from app.models.provider import Provider
+from app.services import credentials, providers_service
+
+log = get_logger(__name__)
 
 AUTO_MODEL_ID = "bipolar-auto"
 AUTO_MODEL_NAME = "Bipolar Auto"
@@ -124,3 +131,59 @@ def auto_entry() -> dict:
         "tools": True,
         "vision": True,
     }
+
+
+_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def clear_cache() -> None:
+    _cache.clear()
+
+
+def _has_key(provider: Provider) -> bool:
+    return any(credentials.api_key_for(slot) for slot in credentials.credential_slots(provider))
+
+
+async def is_usable(provider: Provider) -> bool:
+    if providers_service._is_local_base(provider.api_base):
+        return await providers_service._is_reachable(provider.api_base)
+    return _has_key(provider)
+
+
+async def _safe_items(provider: Provider) -> list[dict]:
+    try:
+        return await providers_service.fetch_model_items(provider)
+    except Exception as exc:
+        log.warning("copilot_catalog_models_failed", provider=provider.id, error=str(exc))
+        return []
+
+
+def _model_ids(provider: Provider, by_id: dict[str, dict]) -> list[str]:
+    head = [provider.active_model] if provider.active_model else []
+    rest = sorted(m for m in by_id if m != provider.active_model and keep_model(provider, m))
+    return head + rest
+
+
+async def _fresh_entries(provider: Provider) -> list[dict]:
+    by_id = {item["id"]: item for item in await _safe_items(provider)}
+    return [catalog_entry(provider, m, by_id.get(m)) for m in _model_ids(provider, by_id)]
+
+
+async def provider_entries(provider: Provider) -> list[dict]:
+    cached = _cache.get(provider.id)
+    if cached and time.monotonic() - cached[0] < CACHE_TTL_S:
+        return cached[1]
+    entries = await _fresh_entries(provider)
+    _cache[provider.id] = (time.monotonic(), entries)
+    return entries
+
+
+async def _usable_entries(provider: Provider) -> list[dict]:
+    return await provider_entries(provider) if await is_usable(provider) else []
+
+
+async def build_catalog() -> list[dict]:
+    registry = providers_service.load_registry()
+    # En paralelo: un models_endpoint lento (hasta 10 s) no debe sumar su espera a la de los demás
+    groups = await asyncio.gather(*(_usable_entries(p) for p in registry.providers))
+    return [auto_entry()] + [entry for group in groups for entry in group]
