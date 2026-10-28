@@ -66,6 +66,25 @@ async def test_failed_check_gets_one_revision_then_passes(env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_locked_build_files_fail_without_revision(env, monkeypatch):
+    _setup(env)
+
+    async def no_revise(*args, **kwargs):
+        raise AssertionError("no debe pedir revisión por un bloqueo del entorno")
+
+    monkeypatch.setattr(broker, "_revise", no_revise)
+    _script(monkeypatch, [("codex", False, _ok())])
+    locked = CheckResult("dotnet build", 1, 1.0, "error MSB3027", environment_error=verifier.LOCKED_FILES)
+    _checks(monkeypatch, [[locked]])
+    job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard", verify=["pytest"]))).id)
+    assert job.status == "failed" and job.verification_status == "failed"
+    assert job.error.startswith("verify_environment") and "dotnet build" in job.error
+    assert job.escalations == 0
+    verify = next(a for a in job.attempts if a.kind == "verify")
+    assert verify.detail["environment_error"] == verifier.LOCKED_FILES
+
+
+@pytest.mark.asyncio
 async def test_reject_escalates_to_next_thinker(env, monkeypatch):
     _setup(env)
     _script(monkeypatch, [

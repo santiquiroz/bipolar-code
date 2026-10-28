@@ -94,6 +94,25 @@ def test_checks_passed_empty_is_true():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("output, locked", [
+    ("error MSB3027: Could not copy \"obj/App.dll\" to \"bin/App.dll\". The file is being used by another process.", True),
+    ("Program.cs(12,5): error CS0103: The name 'foo' does not exist in the current context", False),
+])
+async def test_failed_check_flags_locked_build_files(tmp_path, output, locked):
+    script = tmp_path / "build.py"
+    script.write_text(f"import sys\nprint({output!r})\nsys.exit(1)\n", encoding="utf-8")
+    results = await verifier.run_checks([f'"{PY}" build.py'], tmp_path, timeout_s=30)
+    assert results[0].returncode == 1
+    assert bool(results[0].environment_error) is locked
+
+
+def test_environment_error_ignores_case_and_spanish_message():
+    assert verifier.environment_error("El archivo ESTÁ SIENDO UTILIZADO POR OTRO PROCESO") == verifier.LOCKED_FILES
+    assert verifier.environment_error("Error: EBUSY: resource busy or locked") == verifier.LOCKED_FILES
+    assert verifier.environment_error("FAILED tests/test_x.py::test_y") == ""
+
+
+@pytest.mark.asyncio
 async def test_spawn_os_error_is_a_failed_check(tmp_path, monkeypatch):
     async def boom(*args, **kwargs):
         raise PermissionError("acceso denegado")

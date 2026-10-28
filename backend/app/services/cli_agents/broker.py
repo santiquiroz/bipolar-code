@@ -26,7 +26,7 @@ from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import budget_service, health_service, providers_service, usage_tracker
-from app.services.cli_agents import outcome_stats, registry as agents_registry, reviewer, verifier
+from app.services.cli_agents import outcome_stats, registry as agents_registry, reviewer, session, verifier
 from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
 from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
@@ -46,6 +46,8 @@ TRUNCATED_MARK = "[bipolar: salida intermedia recortada]"
 RESULT_OUTPUT_CAP = 20_000
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled", "quota", "auth_error", "needs_context", "blocked"})
 WORKER_STOP_JOB_STATUSES = tuple(s.lower() for s in STOP_STATUSES)
+# su sandbox de Windows no arranca en la sesión 0 (tarea programada sin escritorio)
+OS_SANDBOX_BASES = ("muse", "codex")
 
 
 # sentinel: el revisor modificó el árbol de trabajo
@@ -211,6 +213,8 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
     spend = (status.quota or {}).get("month_spend_usd", 0) if status is not None else 0
     if agent.max_monthly_usd > 0 and spend >= agent.max_monthly_usd:
         return "monthly_budget"
+    if agent.base in OS_SANDBOX_BASES and not session.interactive_session():
+        return "sandbox_requires_interactive_session"
     if agent.base == "muse" and not _muse_sandbox_verified(status):
         return "muse_sandbox_not_ready"
     if agent.base == "antigravity" and not AntigravityAdapter().deny_list_present():
@@ -821,9 +825,11 @@ async def _record_verify_checks(rt: JobRuntime, registry: ProviderRegistry) -> l
         job.attempts.append(Attempt(agent_id="bipolar", started_at=_now(), finished_at=_now(),
                                     returncode=check.returncode, kind="verify",
                                     detail={"command": check.command, "returncode": check.returncode,
-                                            "timed_out": check.timed_out, "error": check.error}))
+                                            "timed_out": check.timed_out, "error": check.error,
+                                            "environment_error": check.environment_error}))
         _emit(rt, {"event": "verify_result", "command": check.command, "returncode": check.returncode,
                    "timed_out": check.timed_out, "error": check.error[:300], "ok": check.ok,
+                   "environment_error": check.environment_error,
                    "text": f"{check.command} -> exit {check.returncode}{' (timeout)' if check.timed_out else ''}\n{check.output_tail[-3000:]}"})
     return checks
 
@@ -954,6 +960,9 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
         checks = await _record_verify_checks(rt, registry)
         if checks and not verifier.checks_passed(checks):
             job.verification_status = "failed"
+            check = checks[-1]
+            if check.environment_error:
+                return GateResult(False, f"verify_environment: {check.environment_error} ({check.command}); cierra el proceso que bloquea los archivos y vuelve a delegar"[:300], outcome)
             if revisions > 0:
                 revisions -= 1
                 outcome = await _revise(rt, registry, worker, model, [], checks[-1])
@@ -1039,7 +1048,8 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
     if gate.accepted:
         _finish_ok(job, gate.outcome or outcome, agent, model)
         return None
-    if gate.reason.startswith("review_unavailable") or gate.reason.startswith("review_tampered"):
+    # verify_environment: otro agente chocaría con el mismo bloqueo de archivos
+    if gate.reason.startswith(("review_unavailable", "review_tampered", "verify_environment")):
         job.status, job.error = "failed", gate.reason[:300]
         return None
     if gate.reason.startswith(WORKER_STOP_JOB_STATUSES):

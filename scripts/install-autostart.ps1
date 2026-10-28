@@ -1,4 +1,6 @@
 ﻿# Registers bipolar-code to start with Windows (before any login) and blocks its port from the LAN while keeping WSL access.
+# Two tasks: the password task covers boot without a session (session 0); the session task (install-session-task.ps1)
+# takes over the port at logon, because the Windows sandbox of Muse and Codex needs an interactive session.
 # Run once in an elevated PowerShell: powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 param(
     [string]$Launcher = 'C:\litellm\start-bipolar.ps1',
@@ -31,13 +33,13 @@ function Register-BipolarTask {
     if ($null -eq $cred) { throw 'Cancelado: sin contraseña no se registra la tarea.' }
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
         -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`""
-    $triggers = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn -User $user))
+    $trigger = New-ScheduledTaskTrigger -AtStartup
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 3 `
         -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings `
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
         -User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Limited -Force | Out-Null
-    Write-Host "Tarea '$TaskName': al encender y al iniciar sesión, con reinicio ante fallos."
+    Write-Host "Tarea '$TaskName': al encender, con reinicio ante fallos."
 }
 
 function Restart-Bipolar {
@@ -57,5 +59,7 @@ if (-not (Test-Path $Launcher)) { throw "No existe $Launcher" }
 Set-PortFirewall -Port $Port
 Register-BipolarTask -TaskName $TaskName -Launcher $Launcher
 Restart-Bipolar -TaskName $TaskName -Port $Port
+# Con la sesión abierta, la tarea de sesión le quita el puerto a la instancia de la sesión 0 ya mismo
+& (Join-Path $PSScriptRoot 'install-session-task.ps1') -IniciarAhora
 Write-Host 'Listo. Puedes cerrar esta ventana.'
 Read-Host 'Enter para cerrar'

@@ -91,6 +91,8 @@ pyinstaller bipolar-code.spec   # run from repo root
 
 - `get-copilot-token.ps1` — obtiene manualmente un token OAuth de GitHub Copilot (útil para diagnóstico)
 
+Arranque automático: `install-autostart.ps1` (como administrador) registra dos tareas programadas. «bipolar-code backend» corre con contraseña y solo `-AtStartup`, así que bipolar queda arriba sin sesión abierta, pero en la sesión 0. «bipolar-code backend sesion» (`install-session-task.ps1`, sin administrador) corre `start-bipolar.ps1 -TomarSesion` al iniciar sesión: le quita el puerto a la instancia de la sesión 0, porque el sandbox de Windows de Muse y Codex necesita una sesión interactiva. Si el puerto ya está ocupado en cualquier otro caso, `start-bipolar.ps1` sale con 0 sin lanzar otra instancia. Mientras bipolar corra en la sesión 0, `_reject_agent` descarta a Muse y Codex (como trabajadores y como revisores) con `sandbox_requires_interactive_session` (`services/cli_agents/session.py`).
+
 ### Settings / env file
 
 The backend reads `.env` from the config dir at startup. `get_settings()` is `@lru_cache`'d; call `get_settings.cache_clear()` after writing a new token to pick up the change in the same process.

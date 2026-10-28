@@ -72,10 +72,22 @@ class CheckResult:
     output_tail: str
     timed_out: bool = False
     error: str = ""
+    environment_error: str = ""
 
     @property
     def ok(self) -> bool:
         return not self.timed_out and not self.error and self.returncode == 0
+
+
+LOCKED_FILE_MARKERS = ("msb3027", "msb3021", "being used by another process",
+                       "está siendo utilizado por otro proceso", "ebusy", "resource busy or locked")
+LOCKED_FILES = "archivos del build bloqueados por otro proceso"
+
+
+def environment_error(output: str) -> str:
+    """Fallos que no se corrigen en el código: otro proceso tiene bloqueados los archivos del build."""
+    text = output.lower()
+    return LOCKED_FILES if any(marker in text for marker in LOCKED_FILE_MARKERS) else ""
 
 
 def _kill_tree_pid(pid: int) -> None:
@@ -120,7 +132,8 @@ async def _run_one(command: str, workspace: Path, timeout_s: int) -> CheckResult
             pass
         raise
     tail = (out or b"").decode("utf-8", "replace")[-OUTPUT_TAIL_CHARS:]
-    return CheckResult(command, proc.returncode, time.monotonic() - start, tail)
+    env_error = environment_error(tail) if proc.returncode != 0 else ""
+    return CheckResult(command, proc.returncode, time.monotonic() - start, tail, environment_error=env_error)
 
 
 async def run_checks(commands: list[str], workspace: Path, timeout_s: int) -> list[CheckResult]:

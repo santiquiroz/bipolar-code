@@ -42,6 +42,17 @@ def dotenv_config_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def interactive_windows_session(monkeypatch):
+    # la suite también corre desde la tarea programada (sesión 0): sin esto rechazaría a codex y muse
+    from app.services.cli_agents import session
+    interactive_session = session.interactive_session
+    monkeypatch.setattr(session, "windows_session_id", lambda: 1)
+    interactive_session.cache_clear()
+    yield
+    interactive_session.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def user_env_calls(monkeypatch) -> list:
     calls: list = []
     monkeypatch.setattr(proxy_service, "_set_registry_env", _registry_env_recorder(calls))
