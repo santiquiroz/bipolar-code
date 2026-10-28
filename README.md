@@ -84,11 +84,28 @@ OpenClaw quema tokens con ganas (system prompt grande, heartbeats). Apuntado a b
 
 ## Caso de uso 4 — VS Code Copilot Chat, Cursor, Cline, Continue…
 
+### VS Code Copilot Chat (proveedor Bipolar)
+
+bipolar aparece como proveedor propio en el selector de modelos de Copilot Chat, con su catálogo de providers/modelos más «Bipolar Auto».
+
+1. Compila la extensión: `cd integrations/vscode-copilot && npm install && npm run package` (genera un `.vsix`).
+2. Instálala en VS Code: Extensions → «…» → «Install from VSIX…» → elige el `.vsix`.
+3. En Copilot Chat → «Manage Models…» → «Add Models…» → «Bipolar».
+4. Escribe la URL `http://<ip>:8000` y la API key de bipolar-code.
+
+En el selector verás:
+
+- **«Bipolar Auto»**: bipolar decide en cada mensaje (reglas, routing inteligente, failover).
+- **«&lt;provider&gt; · &lt;modelo&gt;»**: fuerza ese provider (sin failover a otro provider).
+
+Detalles y solución de problemas: [integrations/vscode-copilot/README.md](integrations/vscode-copilot/README.md).
+
+### Cursor, Cline, Continue y otros clientes OpenAI-compatible
+
 Cualquier cliente BYOK con proveedor "OpenAI compatible":
 
 - **URL**: `http://<ip>:8000/v1`
 - **API key**: la de bipolar-code
-- En VS Code: Copilot Chat → *Manage models* → OpenAI compatible.
 
 El request llega al provider activo (o al que diga el routing).
 

@@ -14,7 +14,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
-from app.services import compression_service, credentials, providers_service, smart_router, token_service, upstream, usage_service, usage_tracker
+from app.models.provider import Provider
+from app.services import compression_service, copilot_catalog, credentials, providers_service, smart_router, token_service, upstream, usage_service, usage_tracker
+from app.services.copilot_catalog import AUTO_MODEL_ID
 from app.services.pricing_service import estimate_cost
 from app.services.smart_router import PlanStep
 
@@ -540,6 +542,38 @@ def _stream_messages(opened, stack, decision, started, usage_buf, message_id, tr
     return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
 
 
+# ── Copilot: destino fijado y Auto ───────────────────────────────────────────
+
+def _copilot_context_window(provider: Provider | None, model: str | None) -> int:
+    if provider is None or (model and model != provider.active_model):
+        return copilot_catalog.DEFAULT_MAX_INPUT
+    window = int((provider.model_info or {}).get("context_window") or 0)
+    return window if window > 0 else copilot_catalog.DEFAULT_MAX_INPUT
+
+
+def _steps_with_model(plan: list[PlanStep]) -> list[PlanStep]:
+    return [step for step in plan if step.model or step.provider.active_model]
+
+
+def _attempt_model(step: PlanStep, model: str) -> str:
+    if model != AUTO_MODEL_ID:
+        return model
+    return step.model or step.provider.active_model
+
+
+async def _decide(body: dict, model: str, used: int, request: Request, pinned_id: str):
+    if pinned_id:
+        return await smart_router.decide_pinned(body, pinned_id, model, used, surface="messages")
+    return await smart_router.decide(body, model, used, request.headers, surface="messages")
+
+
+def _resolve_plan(decision, active: Provider | None, routed_model: str | None, is_active_provider: bool) -> list[PlanStep]:
+    plan = decision.plan
+    if not plan and active is not None:
+        plan = [PlanStep(active, routed_model, credentials.credential_slots(active)[0], is_active_provider)]
+    return plan
+
+
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("/v1/messages")
@@ -549,19 +583,28 @@ async def messages_passthrough(request: Request):
 
     messages = body.get("messages", [])
     model = body.get("model", "__default__")
+    pinned_id = request.headers.get("x-bipolar-provider", "").strip()
+    is_copilot = bool(pinned_id) or model == AUTO_MODEL_ID
 
     ctx_window = token_service.get_context_window(model)
     used = token_service.count_tokens(messages)
 
-    decision = await smart_router.decide(body, model, used, request.headers, surface="messages")
+    try:
+        decision = await _decide(body, model, used, request, pinned_id)
+    except smart_router.PinnedRouteError as e:
+        return JSONResponse(status_code=e.status, content=upstream.anthropic_error_body(e.status, e.message))
     active, routed_model, is_active_provider = decision.as_pick()
+    if is_copilot:
+        ctx_window = _copilot_context_window(active, model if pinned_id else routed_model)
     messages, truncated = await _compress_if_needed(body, messages, used, ctx_window, active, model, settings)
     response_headers = _route_headers(decision, used, ctx_window)
     started = time.monotonic()
 
-    plan = decision.plan
-    if not plan and active is not None:
-        plan = [PlanStep(active, routed_model, credentials.credential_slots(active)[0], is_active_provider)]
+    plan = _resolve_plan(decision, active, routed_model, is_active_provider)
+    if model == AUTO_MODEL_ID:
+        plan = _steps_with_model(plan)
+        if not plan:
+            return JSONResponse(status_code=400, content=upstream.anthropic_error_body(400, "Bipolar Auto no encontró un modelo: configura active_model en el provider elegido"), headers=response_headers)
     if not plan:
         return JSONResponse(status_code=502, content=upstream.anthropic_error_body(502, "Sin provider configurado"), headers=response_headers)
 
@@ -570,7 +613,7 @@ async def messages_passthrough(request: Request):
     client = await stack.enter_async_context(httpx.AsyncClient(timeout=timeout))
 
     async def open_attempt(step: PlanStep) -> upstream.Opened | upstream.Failed:
-        return await _open_attempt(client, step, body, request, settings, model)
+        return await _open_attempt(client, step, body, request, settings, _attempt_model(step, model))
 
     try:
         result = await upstream.attempt_plan(plan, open_attempt, lambda s: s.provider.id, smart_router.mark_step_health)

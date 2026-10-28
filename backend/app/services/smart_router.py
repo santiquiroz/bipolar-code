@@ -14,7 +14,7 @@ from typing import Mapping, Optional
 
 from app.core.logging import get_logger
 from app.core.quota_signals import QuotaSignal, detect_signal
-from app.services.credentials import CredentialSlot, available_slots, credential_slots, provider_key
+from app.services.credentials import CredentialSlot, api_key_for, available_slots, credential_slots, provider_key
 from app.services.upstream import AttemptFailure
 from app.models.provider import Provider, ProviderRegistry
 from app.models.smart import TIER_ORDER, RouteTarget, tier_index
@@ -402,6 +402,59 @@ async def decide(
             _sticky_put(conversation_key(body), decision.chosen_provider.id, decision.chosen_model or "")
         _spawn(decisions_log.insert(decision.to_row()))
         log.info("route_decision", **{k: v for k, v in decision.to_row().items() if k not in ("reasons", "rejected")})
+    return decision
+
+
+# ── destino fijado ───────────────────────────────────────────────────────────
+
+class PinnedRouteError(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def _pinned_provider(registry: ProviderRegistry, provider_id: str) -> Provider:
+    provider = next((p for p in registry.providers if p.id == provider_id), None)
+    if provider is None:
+        raise PinnedRouteError(400, f"El provider '{provider_id}' no existe en bipolar")
+    return provider
+
+
+def _has_credential(provider: Provider) -> bool:
+    if providers_service._is_local_base(provider.api_base):
+        return True
+    return any(api_key_for(slot) for slot in credential_slots(provider))
+
+
+async def _check_pinned_budget(registry: ProviderRegistry, provider: Provider) -> None:
+    reason = await budget_service.check_budget(registry.smart.budgets, provider_key(provider.id))
+    if reason:
+        raise PinnedRouteError(429, f"Presupuesto agotado para '{provider.id}': {reason}")
+
+
+async def decide_pinned(
+    body: dict, provider_id: str, model: str, prompt_tokens: int, *, surface: str = "messages"
+) -> RouteDecision:
+    t0 = time.perf_counter()
+    registry = providers_service.load_registry()
+    provider = _pinned_provider(registry, provider_id)
+    if not _has_credential(provider):
+        raise PinnedRouteError(400, f"El provider '{provider_id}' no tiene credencial configurada")
+    await _check_pinned_budget(registry, provider)
+
+    cls = classify_request(body, prompt_tokens, registry.smart.thresholds, surface)
+    is_active = provider.id == registry.active_provider_id
+    decision = RouteDecision(
+        decision_id=uuid.uuid4().hex[:12], surface=surface, tier=cls.tier, score=cls.score, intent=cls.intent,
+        requested_model=model, prompt_tokens=prompt_tokens,
+        chosen_provider=provider, chosen_model=model or None, is_active=is_active,
+        source="pinned", mode="pinned", reasons=["pinned"],
+    )
+    decision.plan = build_plan((provider, model or None, is_active), [], registry.smart.max_failover_attempts)
+    decision.decision_ms = (time.perf_counter() - t0) * 1000
+    _spawn(decisions_log.insert(decision.to_row()))
+    log.info("route_decision", **{k: v for k, v in decision.to_row().items() if k not in ("reasons", "rejected")})
     return decision
 
 

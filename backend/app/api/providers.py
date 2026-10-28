@@ -13,19 +13,6 @@ from app.services.settings_service import is_valid_env_key
 _PROVIDER_ID_RE = re.compile(r'^[a-z0-9_-]{1,64}$')
 _ALLOWED_URL_PREFIXES = ("https://", "http://localhost", "http://127.0.0.1")
 
-# Patrones en el model ID que indican que NO es un LLM de chat compatible con Claude Code
-_NON_CHAT_PATTERNS = re.compile(
-    r'(rerank|embed|encod|classif|safety|moderat|detect|segment|caption|'
-    r'whisper|tts|speech|transcri|ocr|vision-only|image-gen|diffusion|'
-    r'speaker|lip.?sync|religh|rembg|ising|synthetic-video)',
-    re.IGNORECASE,
-)
-
-
-def _is_chat_model(model_id: str) -> bool:
-    return not _NON_CHAT_PATTERNS.search(model_id)
-
-
 def _validate_provider_id(pid: str) -> None:
     if not _PROVIDER_ID_RE.match(pid):
         raise HTTPException(status_code=422, detail="provider id solo puede contener a-z, 0-9, _ y - (máx 64 chars)")
@@ -246,6 +233,15 @@ async def set_provider_model(provider_id: str, body: SetModelRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+def _model_vendor(m: dict) -> str | None:
+    vendor = m.get("vendor")
+    return (vendor or {}).get("name") if isinstance(vendor, dict) else vendor
+
+
+def _model_summary(m: dict) -> dict:
+    return {"id": m["id"], "name": m.get("name", m["id"]), "vendor": _model_vendor(m)}
+
+
 @router.get("/{provider_id}/models")
 async def list_provider_models(provider_id: str):
     """Lista modelos disponibles llamando al models_endpoint del proveedor."""
@@ -255,40 +251,10 @@ async def list_provider_models(provider_id: str):
     if not provider.models_endpoint:
         return {"models": [], "note": "Este proveedor no tiene endpoint de modelos configurado"}
 
-    settings = get_settings()
-    env_var = provider.models_auth_env_var or provider.auth_env_var
-    token = env_value(env_var) if env_var else ""
-
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    headers.update(provider.extra_headers)
-
     log.info("fetching_provider_models", provider=provider_id, endpoint=provider.models_endpoint)
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(provider.models_endpoint, headers=headers)
-            resp.raise_for_status()
-            raw = resp.json()
-
-        # Normalizar respuesta: OpenAI devuelve {"data": [{"id":...}]}, otros pueden devolver lista directa
-        items = raw if isinstance(raw, list) else raw.get("data", raw.get("models", []))
-        seen_ids: set = set()
-        models = []
-        for m in items:
-            if not isinstance(m, dict):
-                continue
-            model_id = m.get("id", m.get("name", ""))
-            if not model_id or model_id in seen_ids:
-                continue
-            if not _is_chat_model(model_id):
-                continue
-            seen_ids.add(model_id)
-            models.append({
-                "id": model_id,
-                "name": m.get("name", model_id),
-                "vendor": (m.get("vendor", {}) or {}).get("name") if isinstance(m.get("vendor"), dict) else m.get("vendor"),
-            })
+        items = await providers_service.fetch_model_items(provider)
+        models = [_model_summary(m) for m in items]
         log.info("provider_models_fetched", provider=provider_id, count=len(models))
         return {"models": models}
     except httpx.HTTPStatusError as e:

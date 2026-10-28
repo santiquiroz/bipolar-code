@@ -6,9 +6,11 @@ import asyncio
 import ipaddress
 import json
 import os
+import re
 import shutil
 import threading
 import time
+import httpx
 import yaml
 import subprocess
 from datetime import datetime
@@ -17,7 +19,7 @@ from typing import Optional
 from urllib.parse import SplitResult, urlsplit
 from app.models.provider import Provider, ProviderRegistry
 from app.models.smart import DEFAULT_CLI_AGENTS, CliAgent, default_tier_table
-from app.core.config import get_settings
+from app.core.config import env_value, get_settings
 from app.core.logging import get_logger
 from app.services.process_identity import (
     ProcessIdentity,
@@ -325,6 +327,56 @@ def save_registry(registry: ProviderRegistry) -> None:
 def get_provider(provider_id: str) -> Optional[Provider]:
     registry = load_registry()
     return next((p for p in registry.providers if p.id == provider_id), None)
+
+
+# Patrones en el model ID que indican que NO es un LLM de chat compatible con Claude Code
+_NON_CHAT_PATTERNS = re.compile(
+    r'(rerank|embed|encod|classif|safety|moderat|detect|segment|caption|'
+    r'whisper|tts|speech|transcri|ocr|vision-only|image-gen|diffusion|'
+    r'speaker|lip.?sync|religh|rembg|ising|synthetic-video)',
+    re.IGNORECASE,
+)
+
+
+def is_chat_model(model_id: str) -> bool:
+    return not _NON_CHAT_PATTERNS.search(model_id)
+
+
+def _models_headers(provider: Provider) -> dict:
+    env_var = provider.models_auth_env_var or provider.auth_env_var
+    token = env_value(env_var) if env_var else ""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    headers.update(provider.extra_headers)
+    return headers
+
+
+def _raw_model_items(raw) -> list:
+    # OpenAI devuelve {"data": [...]}, otros una lista directa o {"models": [...]}
+    return raw if isinstance(raw, list) else raw.get("data", raw.get("models", []))
+
+
+def _chat_model_items(items: list) -> list[dict]:
+    seen: set[str] = set()
+    result = []
+    for m in items:
+        if not isinstance(m, dict):
+            continue
+        model_id = m.get("id") or m.get("name")
+        if not model_id or model_id in seen or not is_chat_model(model_id):
+            continue
+        seen.add(model_id)
+        result.append({**m, "id": model_id})
+    return result
+
+
+async def fetch_model_items(provider: Provider) -> list[dict]:
+    if not provider.models_endpoint:
+        return []
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(provider.models_endpoint, headers=_models_headers(provider))
+        resp.raise_for_status()
+        raw = resp.json()
+    return _chat_model_items(_raw_model_items(raw))
 
 
 def set_routing(enabled: bool, rules: list, fallback_provider_ids: Optional[list[str]] = None) -> dict:

@@ -14,6 +14,7 @@ from app.api import mcp as mcp_router
 from app.api import pricing as pricing_router
 from app.api import llamacpp as llamacpp_router
 from app.api import openai_compat as openai_compat_router
+from app.api import copilot as copilot_router
 from app.api import smart as smart_router_api
 from app.api import delegate as delegate_router
 from app.api import accounts as accounts_router
@@ -23,7 +24,7 @@ from app.core.config import get_settings
 setup_logging()
 log = get_logger(__name__)
 
-APP_VERSION = "2.20.1"
+APP_VERSION = "2.21.0"
 
 _REFRESH_MARGIN = 120   # refresh when less than 2 min remain
 _RETRY_ON_ERROR = 60    # retry after 1 min on failure
@@ -131,7 +132,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-API-Key", "x-api-key",
                        "anthropic-version", "anthropic-beta", "x-context-usage",
-                       "X-Bipolar-Tier", "X-Bipolar-Depth"],
+                       "X-Bipolar-Tier", "X-Bipolar-Provider", "X-Bipolar-Depth"],
         expose_headers=["X-Context-Usage", "X-Bipolar-Route", "X-Bipolar-Decision-Id"],
     )
 
@@ -156,6 +157,7 @@ def create_app() -> FastAPI:
     app.include_router(pricing_router.router, prefix="/api")
     app.include_router(llamacpp_router.router, prefix="/api")
     app.include_router(openai_compat_router.router)
+    app.include_router(copilot_router.router)
     app.include_router(smart_router_api.router, prefix="/api")
     app.include_router(delegate_router.router, prefix="/api")
     app.include_router(accounts_router.router, prefix="/api")
