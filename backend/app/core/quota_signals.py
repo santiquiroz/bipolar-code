@@ -9,18 +9,24 @@ from typing import Literal, Optional
 
 SignalKind = Literal["rate_limit", "quota_exhausted", "auth", "overloaded", "network_error", "model_unavailable"]
 
-RATE_LIMIT_RE = re.compile(r"rate.?limit|\b429\b|too many requests|slow down", re.I)
+
+def _status_code(code: int) -> str:
+    # un número suelto ("sequence":401, line 503) no es un código HTTP
+    return rf"(?:\bhttp(?:/\d(?:\.\d)?)?|\bstatus(?:[ _-]?code)?|\berror|\bcode)\W{{0,3}}{code}\b"
+
+
+RATE_LIMIT_RE = re.compile(rf"rate.?limit|{_status_code(429)}|too many requests|slow down", re.I)
 EXHAUSTED_RE = re.compile(
     r"quota|usage limit|insufficient_quota|resource_exhausted|out of (?:ai )?credits"
     r"|credit balance (?:is )?too low|credit_balance_too_low|credits? (?:limit|exhausted)|weekly limit|hit your limit|hit your (?:\w+ )?limit|limit reached|insufficient balance|free-models-per-day",
     re.I,
 )
 AUTH_RE = re.compile(
-    r"not (?:logged in|authenticated)|authentication required|invalid api key|\b401\b"
+    rf"not (?:logged in|authenticated)|authentication required|invalid api key|{_status_code(401)}"
     r"|login required|unauthori[sz]ed|please (?:run|sign in)|missing_credential",
     re.I,
 )
-OVERLOADED_RE = re.compile(r"overloaded|\b529\b|\b503\b|service unavailable", re.I)
+OVERLOADED_RE = re.compile(rf"overloaded|{_status_code(529)}|{_status_code(503)}|service unavailable", re.I)
 NETWORK_RE = re.compile(r"ENOTFOUND|ECONNRESET|ETIMEDOUT|Can't reach the API server", re.I)
 MODEL_UNAVAILABLE_RE = re.compile(
     r"No endpoints found|is not a valid model ID|model not found|is not available for free",

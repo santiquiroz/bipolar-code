@@ -33,6 +33,38 @@ def test_detect_signal_negatives(text):
     assert qs.detect_signal(text) is None
 
 
+@pytest.mark.parametrize("text", [
+    '{"schema_version":1,"sequence":401,"record_type":"event"}',
+    '"sequence":429',
+    "line 503 of file",
+    "count: 529 items",
+])
+def test_bare_numeric_codes_are_not_signals(text):
+    assert qs.detect_signal(text) is None
+
+
+@pytest.mark.parametrize("text,kind", [
+    ("HTTP 401", "auth"),
+    ("HTTP/1.1 401", "auth"),
+    ('"status":401', "auth"),
+    ("status code: 401", "auth"),
+    ("Error 401", "auth"),
+    ("HTTP 429", "rate_limit"),
+    ('"status_code": 429', "rate_limit"),
+    ("Error: 503", "overloaded"),
+    ("HTTP 529", "overloaded"),
+    ("401 Unauthorized", "auth"),
+])
+def test_numeric_codes_with_http_context(text, kind):
+    signal = qs.detect_signal(text)
+    assert signal is not None and signal.kind == kind
+
+
+def test_signal_from_attempt_ignores_sequence_number_in_jsonl():
+    stdout = '{"schema_version":1,"sequence":401,"record_type":"event"}\n'
+    assert qs.signal_from_attempt(1, stdout, "") is None
+
+
 def test_status_code_drives_kind_without_text():
     assert qs.detect_signal("", status=429).kind == "rate_limit"
     assert qs.detect_signal("", status=401).kind == "auth"
