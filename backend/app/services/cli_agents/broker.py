@@ -575,7 +575,9 @@ def _status_lines(workspace: Path) -> list[str]:
     if not (workspace / ".git").exists():
         return []
     try:
-        out = subprocess.run(["git", "-C", str(workspace), "status", "--porcelain"], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        out = subprocess.run([
+            "git", "-c", "core.quotePath=false", "-C", str(workspace), "status", "--porcelain"
+        ], capture_output=True, encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return []
     return [line for line in out.stdout.splitlines() if line.strip() and not line[3:].startswith(".bipolar/")]

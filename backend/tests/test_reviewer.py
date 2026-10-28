@@ -26,6 +26,31 @@ def test_collect_diff_includes_modified_and_new_files(tmp_path):
     assert "=== nuevo: b.py ===" in diff and "y = 3" in diff
 
 
+@pytest.mark.skipif(subprocess.run(["git", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0, reason="git no disponible")
+def test_collect_diff_keeps_utf8_text_in_modified_file(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    path = tmp_path / "área.txt"
+    path.write_text("Área\n", encoding="utf-8")
+    _git(tmp_path, "add", "área.txt")
+    _git(tmp_path, "commit", "-qm", "base")
+    path.write_text("Área\nÍtem Á\n", encoding="utf-8")
+    diff = reviewer.collect_diff(tmp_path, ["área.txt"])
+    assert "Ítem Á" in diff
+
+
+@pytest.mark.skipif(subprocess.run(["git", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0, reason="git no disponible")
+def test_collect_diff_keeps_utf8_text_in_untracked_file(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    path = tmp_path / "propiedad-pública.txt"
+    path.write_text("hola\n", encoding="utf-8")
+    diff = reviewer.collect_diff(tmp_path, ["propiedad-pública.txt"])
+    assert "=== nuevo: propiedad-pública.txt ===" in diff
+
+
 def test_collect_diff_caps_size(tmp_path):
     (tmp_path / "big.txt").write_text("z" * (reviewer.MAX_DIFF_CHARS + 500), encoding="utf-8")
     diff = reviewer.collect_diff(tmp_path, ["big.txt"])

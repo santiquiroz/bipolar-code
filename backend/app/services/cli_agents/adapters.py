@@ -476,6 +476,8 @@ class CopilotAdapter:
 
     def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
         events = _jsonl(stdout)
+        if any(ev.get("type") for ev in events):
+            return self._parse_typed_events(events)
         chunks, structured_error = [], False
         for ev in events:
             if "error" in ev and ev.get("error"):
@@ -487,6 +489,19 @@ class CopilotAdapter:
                     break
         text = "\n".join(chunks) if chunks else stdout.strip()
         return AdapterResult(text=text, structured_error=structured_error)
+
+    @staticmethod
+    def _parse_typed_events(events: list[dict]) -> AdapterResult:
+        # formato con "type": la respuesta final es el último assistant.message; los deltas y tool.* no cuentan
+        text = ""
+        for ev in events:
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            content = data.get("content") if ev.get("type") == "assistant.message" else None
+            if isinstance(content, str) and content.strip():
+                text = content.strip()
+        failed = any((ev.get("type") == "result" and ev.get("exitCode") not in (None, 0))
+                     or ev.get("error") not in (None, "", [], {}) for ev in events)
+        return AdapterResult(text=text, structured_error=failed)
 
 
 class AntigravityAdapter:

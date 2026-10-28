@@ -1,6 +1,7 @@
 """Tests del broker: workspace, elección de agente, failover por cuota y ciclo de vida del job."""
 import asyncio
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -547,6 +548,19 @@ def test_overlap_note_lists_previews_only_when_overlapping(env):
     _overlap_rt(env, "j2", "2026-10-14T10:30:00+00:00", None, "migrar config/gow2.toml")
     note = broker._overlap_note(rt1)
     assert "migrar config/gow2.toml" in note and "NO son parte" in note
+
+
+@pytest.mark.skipif(subprocess.run(["git", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0, reason="git no disponible")
+def test_status_lines_keeps_utf8_paths(env):
+    subprocess.run(["git", "-C", str(env["workspace"]), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(env["workspace"]), "config", "user.email", "t@t"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(env["workspace"]), "config", "user.name", "t"], check=True, capture_output=True)
+    file = env["workspace"] / "pública.txt"
+    file.write_text("hola\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(env["workspace"]), "add", "pública.txt"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(env["workspace"]), "commit", "-qm", "base"], check=True, capture_output=True)
+    file.write_text("hola\nmodificada\n", encoding="utf-8")
+    assert broker._files_touched(env["workspace"], set()) == ["pública.txt"]
 
 
 def test_review_prompt_carries_overlap_note():

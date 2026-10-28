@@ -121,8 +121,8 @@ def _split_files(workspace: Path, files: list[str]) -> tuple[list[str], list[str
 def _git_diff(workspace: Path, files: list[str]) -> str:
     try:
         res = subprocess.run(
-            ["git", "-C", str(workspace), "diff", "--", *files],
-            capture_output=True, text=True, timeout=10)
+            ["git", "-c", "core.quotePath=false", "-C", str(workspace), "diff", "--", *files],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=10)
     except Exception:
         return ""
     return res.stdout or ""
@@ -131,8 +131,8 @@ def _git_diff(workspace: Path, files: list[str]) -> str:
 def _untracked(workspace: Path, files: list[str]) -> list[str]:
     try:
         res = subprocess.run(
-            ["git", "-C", str(workspace), "status", "--porcelain", "--", *files],
-            capture_output=True, text=True, timeout=10)
+            ["git", "-c", "core.quotePath=false", "-C", str(workspace), "status", "--porcelain", "--", *files],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=10)
     except Exception:
         return []
     paths = []

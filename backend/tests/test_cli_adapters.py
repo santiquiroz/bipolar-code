@@ -137,6 +137,31 @@ def test_copilot_parse_collects_assistant_text_and_errors():
     assert "hola" in r.text and r.structured_error is True
 
 
+def test_copilot_parse_jsonl_prefers_last_assistant_message_and_keeps_error_flags():
+    out = "\n".join([
+        json.dumps({"type": "assistant.message", "data": {"content": "primero"}}),
+        json.dumps({"type": "assistant.message_delta", "data": {"content": "..."}}),
+        json.dumps({"type": "assistant.message", "data": {"content": "final\nSTATUS: DONE"}}),
+        json.dumps({"type": "result", "exitCode": 0, "usage": {"input_tokens": 1, "output_tokens": 2}}),
+    ])
+    r = ad.CopilotAdapter().parse(out, "", 0, None)
+    assert r.text == "final\nSTATUS: DONE" and r.structured_error is False
+
+    failed = "\n".join([
+        json.dumps({"type": "session.started", "data": {"id": "s1"}}),
+        json.dumps({"type": "result", "exitCode": 1, "usage": {"input_tokens": 1, "output_tokens": 2}}),
+    ])
+    r2 = ad.CopilotAdapter().parse(failed, "", 1, None)
+    assert r2.text == "" and r2.structured_error is True
+
+    no_msg = "\n".join([
+        json.dumps({"type": "session.started", "data": {"id": "s1"}}),
+        json.dumps({"type": "result", "exitCode": 0, "usage": {"input_tokens": 1, "output_tokens": 2}}),
+    ])
+    r3 = ad.CopilotAdapter().parse(no_msg, "", 0, None)
+    assert r3.text == "" and r3.structured_error is False
+
+
 def test_antigravity_refuses_without_deny_list(tmp_path, monkeypatch, clean_env):
     monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path))
     with pytest.raises(ad.AdapterUnsafe, match="agy_deny_list_missing"):

@@ -136,7 +136,7 @@ def list_devices(exe: str) -> list[dict]:
     try:
         result = subprocess.run(
             [exe, "--list-devices"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         return parse_devices(result.stdout + "\n" + result.stderr)
