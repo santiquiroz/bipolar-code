@@ -1,4 +1,7 @@
 """Puerta de calidad: verificación, revisión, revisiones y escalado."""
+import shutil
+import subprocess
+
 import pytest
 
 from app.models.delegate import JobRequest
@@ -53,6 +56,91 @@ async def test_pass_checks_and_approve(env, monkeypatch):
     assert job.status == "succeeded"
     assert job.verification_status == "passed" and job.review_status == "passed"
     assert [a.kind for a in job.attempts] == ["work", "verify", "review"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("git") is None, reason="git no disponible")
+async def test_worker_aplica_manifiesto_y_emite_evento_files_deleted(env, monkeypatch):
+    workspace = env["workspace"]
+    target = workspace / "obsolete.txt"
+    target.write_text("old", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=workspace, capture_output=True, check=True)
+    subprocess.run(["git", "add", "obsolete.txt"], cwd=workspace, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+
+    async def fake_worker(rt, agent, model, timeout_s, task=None, read_only=False):
+        manifest = workspace / ".bipolar" / "jobs" / rt.job.id / "borrar.txt"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("obsolete.txt\n", encoding="utf-8")
+        return _ok("borrado solicitado")
+
+    monkeypatch.setattr(broker, "_run_attempt", fake_worker)
+    job = await _wait((await broker.submit(JobRequest(
+        task="elimina archivo obsolete", workspace=str(workspace), tier_hint="standard", review=False,
+    ))).id)
+
+    assert job.status == "succeeded"
+    assert not target.exists()
+    assert job.attempts[0].detail["deleted"] == ["obsolete.txt"]
+    assert any(event.get("event") == "files_deleted" and event.get("deleted") == ["obsolete.txt"]
+               for event in broker._jobs[job.id].lines)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("git") is None, reason="git no disponible")
+async def test_worker_borra_archivo_nuevo_en_directorio_nuevo(env, monkeypatch):
+    workspace = env["workspace"]
+    subprocess.run(["git", "init"], cwd=workspace, capture_output=True, check=True)
+    seed = workspace / "seed.txt"
+    seed.write_text("seed", encoding="utf-8")
+    subprocess.run(["git", "add", "seed.txt"], cwd=workspace, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+    )
+
+    async def fake_worker(rt, agent, model, timeout_s, task=None, read_only=False):
+        nested = workspace / "fresh" / "nested.txt"
+        nested.parent.mkdir()
+        nested.write_text("new", encoding="utf-8")
+        manifest = workspace / ".bipolar" / "jobs" / rt.job.id / "borrar.txt"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("fresh/nested.txt\n", encoding="utf-8")
+        return _ok("borrado solicitado")
+
+    monkeypatch.setattr(broker, "_run_attempt", fake_worker)
+    job = await _wait((await broker.submit(JobRequest(
+        task="elimina el archivo nuevo", workspace=str(workspace), tier_hint="standard", review=False,
+    ))).id)
+
+    assert job.status == "succeeded"
+    assert not (workspace / "fresh" / "nested.txt").exists()
+    assert job.attempts[0].detail["deleted"] == ["fresh/nested.txt"]
+
+
+def test_job_texto_no_aplica_manifiesto_de_borrado(env):
+    workspace = env["workspace"]
+    target = workspace / "keep.txt"
+    target.write_text("keep", encoding="utf-8")
+    manifest = workspace / ".bipolar" / "jobs" / "readonly" / "borrar.txt"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("keep.txt\n", encoding="utf-8")
+    runtime = broker.JobRuntime(
+        job=broker.Job(id="readonly", created_at="now", tier="standard"),
+        request=JobRequest(task="solo lectura", workspace=str(workspace), mode="text"),
+        workspace=workspace,
+    )
+
+    broker._apply_job_deletions(runtime)
+
+    assert target.exists() and manifest.exists()
 
 
 @pytest.mark.asyncio
