@@ -125,6 +125,23 @@ def test_native_no_auth_header_without_env_var(client):
     assert "x-api-key" not in kwargs["headers"]
 
 
+def test_litellm_branch_uses_master_key():
+    from app.api.messages import _native_request
+    from app.core.config import get_settings
+    from app.services import credentials
+    from app.services.smart_router import PlanStep
+    settings = get_settings()
+    provider = Provider(id="anthropic", name="Anthropic", api_base="https://api.anthropic.com", litellm_prefix="anthropic")
+    step = PlanStep(provider, None, credentials.credential_slots(provider)[0], True)
+    request = MagicMock(headers={})
+
+    url, headers, _ = _native_request(step, {"model": "x"}, request, settings, "x")
+
+    assert url == f"{settings.proxy_url}/v1/messages"
+    assert headers["Authorization"] == f"Bearer {settings.litellm_master_key}"
+    assert settings.litellm_master_key.startswith("sk-")
+
+
 def test_routing_overrides_active_provider(client):
     routed = Provider(
         id="llamacpp-small",

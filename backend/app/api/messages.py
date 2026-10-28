@@ -345,7 +345,7 @@ def _native_request(step: PlanStep, body: dict, request: Request, settings, mode
         if name in request.headers:
             headers[name] = request.headers[name]
     if provider.litellm_prefix == "anthropic" and not provider.anthropic_native and step.is_active:
-        headers["Authorization"] = f"Bearer {settings.proxy_api_key}"
+        headers["Authorization"] = f"Bearer {settings.litellm_master_key}"
         return f"{settings.proxy_url}/v1/messages", headers, payload
     key = credentials.api_key_for(step.slot)
     if key:

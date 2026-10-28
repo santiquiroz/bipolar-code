@@ -37,7 +37,7 @@ async def chat_completions(body: ChatRequest):
         # Anthropic: pasar por litellm que ya maneja el formato
         model = providers_service.PROXY_ALIASES[0]
         url = f"{settings.proxy_url}/v1/chat/completions"
-        forward_headers = {"Authorization": f"Bearer {settings.proxy_api_key}"}
+        forward_headers = {"Authorization": f"Bearer {settings.litellm_master_key}"}
     else:
         # No-Anthropic: llamar al proveedor directamente, igual que /v1/messages
         model = provider.active_model if provider and provider.active_model else "gpt-4o"

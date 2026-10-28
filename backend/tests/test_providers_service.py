@@ -61,6 +61,16 @@ def test_generate_config_model_ref(tmp_path):
     assert data["model_list"][0]["litellm_params"]["model"] == "anthropic/my-model"
 
 
+def test_generate_config_sets_master_key_from_env(tmp_path):
+    provider = Provider(id="myprov", name="My Prov", api_base="https://api.example.com", litellm_prefix="openai")
+    with patch("app.services.providers_service._config_dir", return_value=tmp_path):
+        config_path = generate_litellm_config(provider)
+
+    import yaml
+    data = yaml.safe_load(config_path.read_text())
+    assert data["general_settings"]["master_key"] == "os.environ/LITELLM_MASTER_KEY"
+
+
 def test_detect_active_provider_by_api_base():
     registry = ProviderRegistry(
         active_provider_id="copilot",
@@ -92,7 +102,8 @@ def test_start_litellm_ps1_skips_env_names_that_are_not_valid_identifiers(tmp_pa
         "GOOD_API_KEY=ok\nX; Start-Process calc; $y_TOKEN=evil\n", encoding="utf-8"
     )
     monkeypatch.setattr(
-        providers_service, "get_settings", lambda: SimpleNamespace(litellm_config_dir=str(tmp_path))
+        providers_service, "get_settings",
+        lambda: SimpleNamespace(litellm_config_dir=str(tmp_path), litellm_master_key="sk-master"),
     )
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
@@ -105,6 +116,47 @@ def test_start_litellm_ps1_skips_env_names_that_are_not_valid_identifiers(tmp_pa
     assert "$env:GOOD_API_KEY = 'ok'" in script
     assert "start-process calc" not in script.lower()
     popen.assert_called_once()
+
+
+def _stub_start_litellm(tmp_path, monkeypatch, platform: str) -> MagicMock:
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+    from app.services import providers_service
+
+    # El .env aún no tiene la clave: simula que get_settings la generó en este proceso
+    (tmp_path / ".env").write_text("OTHER=1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        providers_service, "get_settings",
+        lambda: SimpleNamespace(litellm_config_dir=str(tmp_path), litellm_master_key="sk-master"),
+    )
+    monkeypatch.setattr(providers_service, "_litellm_executable", lambda: "litellm")
+    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    popen = MagicMock()
+    popen.return_value.pid = 4242
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return popen
+
+
+def test_start_litellm_ps1_passes_master_key(tmp_path, monkeypatch):
+    from app.services import providers_service
+    _stub_start_litellm(tmp_path, monkeypatch, "win32")
+
+    providers_service._start_litellm(tmp_path / "config.yaml")
+
+    script = (tmp_path / "_start_litellm.ps1").read_text(encoding="utf-8")
+    assert "$env:LITELLM_MASTER_KEY = 'sk-master'" in script
+
+
+def test_start_litellm_posix_passes_master_key(tmp_path, monkeypatch):
+    from app.services import providers_service
+    popen = _stub_start_litellm(tmp_path, monkeypatch, "linux")
+
+    providers_service._start_litellm(tmp_path / "config.yaml")
+
+    assert popen.call_args.kwargs["env"]["LITELLM_MASTER_KEY"] == "sk-master"
 
 
 def _fake_process(pid, name, cmdline):

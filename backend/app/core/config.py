@@ -21,18 +21,24 @@ _ENV_FILE = os.path.join(_DEFAULT_CONFIG_DIR, ".env")
 Path(_DEFAULT_CONFIG_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def _generate_api_key() -> str:
-    """Genera una clave aleatoria segura y la persiste en el .env."""
-    key = "bc-" + secrets.token_hex(24)
+def _persist_generated_key(env_var: str, key: str) -> str:
     env_path = Path(_ENV_FILE)
     try:
         lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-        lines = [l for l in lines if not l.startswith("UI_API_KEY=")]
-        lines.append(f"UI_API_KEY={key}")
+        lines = [l for l in lines if not l.startswith(f"{env_var}=")]
+        lines.append(f"{env_var}={key}")
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception:
         pass
     return key
+
+
+def _generate_api_key() -> str:
+    return _persist_generated_key("UI_API_KEY", "bc-" + secrets.token_hex(24))
+
+
+def _generate_litellm_master_key() -> str:
+    return _persist_generated_key("LITELLM_MASTER_KEY", "sk-" + secrets.token_hex(32))
 
 
 class Settings(BaseSettings):
@@ -42,6 +48,9 @@ class Settings(BaseSettings):
 
     # UI auth — si no está en .env, se genera y persiste automáticamente
     ui_api_key: str = ""
+
+    # Clave maestra interna de litellm (bipolar → litellm); se genera y persiste si falta
+    litellm_master_key: str = ""
 
     # CORS origins separados por coma, ej: "http://192.168.1.10:8000,http://10.0.0.5:8000"
     # Dejar vacío o "*" para permitir cualquier origen (útil en red local)
@@ -85,6 +94,8 @@ def get_settings() -> Settings:
     if not s.ui_api_key:
         key = _generate_api_key()
         object.__setattr__(s, "ui_api_key", key)
+    if not s.litellm_master_key:
+        object.__setattr__(s, "litellm_master_key", _generate_litellm_master_key())
     return s
 
 

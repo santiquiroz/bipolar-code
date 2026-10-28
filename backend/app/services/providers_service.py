@@ -629,6 +629,7 @@ def generate_litellm_config(provider: Provider) -> Path:
             # Non-Anthropic backends need this so litellm translates /v1/messages → /v1/chat/completions
             "use_chat_completions_url_for_anthropic_messages": provider.litellm_prefix != "anthropic",
         },
+        "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY"},
     }
 
     config_path = _config_dir() / f"config-{provider.id}.yaml"
@@ -852,6 +853,8 @@ def _start_litellm(config_path: Path) -> None:
             child_env[k.strip()] = v.strip()
     except Exception as e:
         log.warning("env_load_warning", error=str(e))
+    # El .env puede no tener aún la clave si get_settings la generó en este mismo proceso
+    child_env["LITELLM_MASTER_KEY"] = settings.litellm_master_key
 
     litellm_exe = _litellm_executable()
     log.info("litellm_executable", path=litellm_exe)
@@ -865,7 +868,7 @@ def _start_litellm(config_path: Path) -> None:
         lines = ["$ErrorActionPreference = 'Stop'"]
         # Pasar todas las variables de credenciales (cualquier *_KEY, *_TOKEN, *_SECRET)
         _CRED_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
-        _ALWAYS_PASS = ("PYTHONIOENCODING", "PYTHONUTF8")
+        _ALWAYS_PASS = ("PYTHONIOENCODING", "PYTHONUTF8", "LITELLM_MASTER_KEY")
         for k, v in child_env.items():
             if not is_valid_env_key(k):
                 continue

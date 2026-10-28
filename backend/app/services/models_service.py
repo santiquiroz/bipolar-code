@@ -18,7 +18,7 @@ async def list_active_models() -> List[ModelEntry]:
         async with httpx.AsyncClient(timeout=5.0) as client:
             models_resp = await client.get(
                 f"{settings.proxy_url}/v1/models",
-                headers={"Authorization": f"Bearer {settings.proxy_api_key}"},
+                headers={"Authorization": f"Bearer {settings.litellm_master_key}"},
             )
             models_resp.raise_for_status()
             models_data = models_resp.json()

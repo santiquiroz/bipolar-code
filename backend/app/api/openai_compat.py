@@ -43,7 +43,7 @@ def resolve_target(step: PlanStep, settings) -> tuple[str, dict, str]:
     if provider.litellm_prefix == "anthropic":
         # litellm traduce OAI→Anthropic; usar alias conocido del config
         url = f"{settings.proxy_url}/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {settings.proxy_api_key}"}
+        headers = {"Authorization": f"Bearer {settings.litellm_master_key}"}
         return url, headers, step.model or providers_service.PROXY_ALIASES[0]
 
     if provider.api_base:
