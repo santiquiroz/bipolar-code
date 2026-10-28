@@ -255,7 +255,7 @@ El script:
 - Crea una regla de firewall que **bloquea el puerto 8000 salvo** desde loopback y la red de WSL (`172.16.0.0/12`).
 - Reinicia bipolar con la tarea nueva.
 
-El lanzador puede ser `scripts\start-bipolar.ps1` del repo: arranca uvicorn con el Python del venv (`C:\litellm\venv`, ver [Dev Setup](#dev-setup-código-fuente)). Pásalo con `-Launcher <repo>\scripts\start-bipolar.ps1` a `install-autostart.ps1`; no lo copies a otra carpeta, porque resuelve la raíz del repo desde su propia ubicación.
+El lanzador puede ser `scripts\start-bipolar.ps1` del repo: arranca uvicorn con el Python del venv (`%LOCALAPPDATA%\bipolar-code\venv`, ver [Dev Setup](#dev-setup-código-fuente)) y no arranca si el venv no existe. Pásalo con `-Launcher <repo>\scripts\start-bipolar.ps1` a `install-autostart.ps1`; no lo copies a otra carpeta, porque resuelve la raíz del repo desde su propia ubicación.
 
 Para que WSL lo alcance, el lanzador (`C:\litellm\start-bipolar.ps1`) debe usar `--host 0.0.0.0`. Desde WSL, Windows es la puerta de enlace: `curl http://$(ip route show default | awk '{print $3}'):8000/api/health`.
 
@@ -277,10 +277,10 @@ Requisitos: Python 3.11+, Node 20+.
 
 bipolar corre en su propio venv para que el proxy de LiteLLM y las versiones de FastAPI/Starlette no toquen el Python global ni las herramientas que dependen de él. LiteLLM va fijado en `backend/requirements-litellm.txt` porque varias versiones tienen CVEs críticos y una publicación de PyPI fue comprometida; súbelo solo a una versión verificada.
 
-En Windows el venv vive en `C:\litellm\venv`, fuera del repo: los sandboxes de Muse y Codex marcan su workspace con integridad baja, y un `python.exe` dentro del repo no podría escribir en `%TEMP%` ni en `C:\litellm`. Cambia la ruta con `-VenvDir` en ambos scripts.
+En Windows el venv vive en `%LOCALAPPDATA%\bipolar-code\venv`, fuera del repo: los sandboxes de Muse y Codex marcan su workspace con integridad baja, y un `python.exe` dentro del repo no podría escribir en `%TEMP%` ni en `C:\litellm`. Va en una carpeta por usuario porque la tarea programada lo ejecuta con tu cuenta y otro usuario del equipo no debe poder reemplazarlo. Cambia la ruta con `-VenvDir` en ambos scripts.
 
 ```powershell
-# Windows: crea C:\litellm\venv e instala todo
+# Windows: crea %LOCALAPPDATA%\bipolar-code\venv e instala todo
 powershell -ExecutionPolicy Bypass -File scripts\setup-venv.ps1
 ```
 
@@ -289,7 +289,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-venv.ps1
 python -m venv backend/.venv && backend/.venv/bin/pip install -r backend/requirements.txt -r backend/requirements-litellm.txt
 ```
 
-Activa el venv antes de arrancar el backend: `C:\litellm\venv\Scripts\Activate.ps1` (Windows) o `source backend/.venv/bin/activate` (Linux/macOS).
+Activa el venv antes de arrancar el backend: `$env:LOCALAPPDATA\bipolar-code\venv\Scripts\Activate.ps1` (Windows) o `source backend/.venv/bin/activate` (Linux/macOS).
 
 ```bash
 # Backend (con el venv activado)

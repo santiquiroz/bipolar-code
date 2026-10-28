@@ -1,10 +1,11 @@
-﻿# Crea el entorno virtual de bipolar (por defecto C:\litellm\venv) e instala sus dependencias.
+﻿# Crea el entorno virtual de bipolar (por defecto %LOCALAPPDATA%\bipolar-code\venv) e instala sus dependencias.
 # Fuera del repo a propósito: los sandboxes de Muse y Codex marcan el workspace con integridad
-# baja, y un python.exe dentro de él no podría escribir en %TEMP% ni en C:\litellm.
+# baja, y un python.exe dentro de él no podría escribir en %TEMP% ni en C:\litellm. Y en una carpeta
+# por usuario porque la tarea programada lo ejecuta con tu cuenta: otro usuario no debe poder reemplazarlo.
 param(
     [string]$Python = 'py',
     [string]$PythonArgs = '-3.11',
-    [string]$VenvDir = 'C:\litellm\venv'
+    [string]$VenvDir = (Join-Path $env:LOCALAPPDATA 'bipolar-code\venv')
 )
 
 $ErrorActionPreference = 'Stop'
