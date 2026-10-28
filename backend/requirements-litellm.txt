@@ -1,0 +1,3 @@
+# Fijado por seguridad: las 1.83.x tienen CVEs críticos y la 1.107.0 de PyPI fue
+# un paquete comprometido (supply chain). Solo subir a una versión verificada.
+litellm[proxy]==1.106.2

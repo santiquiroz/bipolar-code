@@ -10,8 +10,8 @@ RUN npm run build
 
 FROM python:3.11-slim
 WORKDIR /app/backend
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt "litellm[proxy]>=1.60"
+COPY backend/requirements.txt backend/requirements-litellm.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-litellm.txt
 COPY backend/ .
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
 

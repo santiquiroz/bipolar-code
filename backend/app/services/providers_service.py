@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import httpx
@@ -818,8 +819,21 @@ def _pid_file_path() -> Path:
     return Path(get_settings().litellm_config_dir) / "litellm.pid"
 
 
+def _litellm_executable() -> str:
+    is_windows = sys.platform == "win32"
+    name = "litellm.exe" if is_windows else "litellm"
+    bin_dir = Path(sys.executable).parent
+    # En un venv python y litellm comparten Scripts/; en la instalación base litellm vive en Scripts/
+    sibling = bin_dir / name
+    base_scripts = bin_dir / "Scripts" / name
+    for candidate in (sibling, base_scripts):
+        if candidate.exists():
+            return str(candidate)
+    fallback = base_scripts if is_windows else sibling
+    return shutil.which("litellm") or str(fallback)
+
+
 def _start_litellm(config_path: Path) -> None:
-    import sys
     import os
     import copy
     import shutil
@@ -839,12 +853,7 @@ def _start_litellm(config_path: Path) -> None:
     except Exception as e:
         log.warning("env_load_warning", error=str(e))
 
-    # Resolver path del ejecutable litellm
-    if sys.platform == "win32":
-        fallback = Path(sys.executable).parent / "Scripts" / "litellm.exe"
-    else:
-        fallback = Path(sys.executable).parent / "litellm"
-    litellm_exe = shutil.which("litellm") or str(fallback)
+    litellm_exe = _litellm_executable()
     log.info("litellm_executable", path=litellm_exe)
 
     out_log = Path(settings.litellm_config_dir) / "litellm-out.log"
