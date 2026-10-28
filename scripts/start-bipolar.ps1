@@ -6,7 +6,8 @@ param(
     [string]$LogFile = 'C:\litellm\bipolar-backend.log',
     [string]$VenvDir = (Join-Path $env:LOCALAPPDATA 'bipolar-code\venv'),
     # La tarea de sesión lo usa para quitarle el puerto a la instancia de la sesión 0
-    [switch]$TomarSesion
+    [switch]$TomarSesion,
+    [string]$TareaSesionCero = 'bipolar-code backend'
 )
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -15,11 +16,13 @@ $venvPython = Join-Path $VenvDir 'Scripts\python.exe'
 
 $logDir = Split-Path -Parent $LogFile
 if ($logDir -and -not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+# Log propio: el del backend queda abierto por la instancia en marcha y Add-Content fallaría
+$launcherLog = Join-Path $logDir 'bipolar-launcher.log'
 
 function Write-Log {
     param([string]$Message)
     $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Add-Content -Path $LogFile -Value "$stamp $Message"
+    Add-Content -Path $launcherLog -Value "$stamp $Message" -ErrorAction SilentlyContinue
 }
 
 function Get-PortOwner {
@@ -51,8 +54,18 @@ if ($null -ne $ownerPid) {
     # El sandbox de Windows de Muse y Codex no arranca en la sesión 0
     if ($TomarSesion -and $mySession -ne 0 -and $ownerSession -eq 0) {
         Write-Log "Tomando el puerto $Port desde la sesión interactiva (PID $ownerPid en sesión 0)"
-        Stop-Process -Id $ownerPid -Force
+        # Un proceso lanzado por la tarea con contraseña no se puede terminar desde la sesión interactiva
+        # (OpenProcess da acceso denegado); el Programador de tareas sí detiene su propio árbol
+        Stop-ScheduledTask -TaskName $TareaSesionCero -ErrorAction SilentlyContinue
         Wait-PortFree -Port $Port
+        if ($null -ne (Get-PortOwner -Port $Port)) {
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+            Wait-PortFree -Port $Port
+        }
+        if ($null -ne (Get-PortOwner -Port $Port)) {
+            Write-Log "No se pudo liberar el puerto $Port; sigue la instancia de la sesión 0"
+            exit 0
+        }
     } else {
         # exit 0 para que la tarea programada no entre en reintentos
         Write-Log "bipolar ya escucha en $Port (PID $ownerPid, sesión $ownerSession); no se inicia otra instancia"
