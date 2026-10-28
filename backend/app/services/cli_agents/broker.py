@@ -26,9 +26,9 @@ from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import budget_service, health_service, providers_service, usage_tracker
-from app.services.cli_agents import outcome_stats, registry as agents_registry, reviewer, session, verifier
+from app.services.cli_agents import deletions, outcome_stats, registry as agents_registry, reviewer, session, verifier
 from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
-from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TASK_CONSTRAINTS, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
+from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -654,6 +654,37 @@ def _keep_result(job: Job, outcome: AttemptOutcome) -> None:
         job.result_text = outcome.result.text
 
 
+def _apply_job_deletions(rt: JobRuntime) -> None:
+    if rt.request.mode != "task":
+        return
+    created_during_job: set[str] = set()
+    for line in _status_lines(rt.workspace):
+        if not line.startswith("??") or line in rt.status_before:
+            continue
+        path = line[3:].strip().replace("\\", "/").rstrip("/")
+        candidate = rt.workspace / path
+        if candidate.is_dir() and not candidate.is_symlink():
+            created_during_job.update(
+                child.relative_to(rt.workspace).as_posix()
+                for child in candidate.rglob("*")
+                if child.is_file() and not child.is_symlink()
+            )
+        else:
+            created_during_job.add(path)
+    report = deletions.apply_deletions(rt.workspace, rt.job.id, created_during_job)
+    if not report.deleted and not report.rejected:
+        return
+    _emit(rt, {
+        "event": "files_deleted",
+        "deleted": report.deleted,
+        "rejected": [[path, reason] for path, reason in report.rejected],
+    })
+    attempt = next((item for item in reversed(rt.job.attempts) if item.kind == "work"), None)
+    if attempt is not None:
+        attempt.detail["deleted"] = report.deleted
+        attempt.detail["deletion_rejected"] = report.rejected
+
+
 def _write_log(rt: JobRuntime) -> str:
     path = jobs_dir() / f"{rt.job.id}.log"
     try:
@@ -809,6 +840,7 @@ async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: C
     if outcome.signal is not None:
         attempt.signal = outcome.signal.kind
     _keep_result(job, outcome)
+    _apply_job_deletions(rt)
     return outcome
 
 
@@ -862,6 +894,7 @@ async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, 
     if outcome.signal is not None:
         attempt.signal = outcome.signal.kind
     _keep_result(job, outcome)
+    _apply_job_deletions(rt)
     _emit(rt, {"event": "revision", "agent_id": worker.id, "ok": outcome.ok, "error": outcome.error[:300]})
     return outcome
 

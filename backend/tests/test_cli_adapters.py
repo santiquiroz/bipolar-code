@@ -52,7 +52,7 @@ def test_claude_build_has_safety_flags_and_pointer(tmp_path, clean_env):
     assert argv[argv.index("--add-dir") + 1] == str(tmp_path)
     assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
     assert "haz X" not in " ".join(argv)
-    assert spec.pointer_file.exists() and ad.TASK_CONSTRAINTS in spec.pointer_file.read_text(encoding="utf-8")
+    assert spec.pointer_file.exists() and ad.task_constraints("job1") in spec.pointer_file.read_text(encoding="utf-8")
     assert (tmp_path / ".bipolar" / ".gitignore").read_text() == "*\n"
     assert "ANTHROPIC_BASE_URL" not in spec.env
 
@@ -66,7 +66,11 @@ def test_claude_build_allows_build_and_test_commands(tmp_path, clean_env):
 
 
 def test_task_constraints_say_missing_build_permission_is_not_blocked():
-    assert "NO es BLOCKED" in ad.TASK_CONSTRAINTS
+    constraints = ad.task_constraints("abc")
+    assert "NO es BLOCKED" in constraints
+    assert ".bipolar/jobs/abc/borrar.txt" in constraints
+    assert "no borres archivos." not in constraints
+    assert "; no borres archivos" in constraints
 
 def test_claude_parse_json_result():
     out = json.dumps({"result": "listo", "is_error": False, "usage": {"input_tokens": 10, "output_tokens": 5}, "total_cost_usd": 0.01, "session_id": "s1"})
@@ -219,7 +223,7 @@ def test_cursor_build_uses_pointer_and_minimal_environment(tmp_path, monkeypatch
     assert spec.argv[spec.argv.index("--workspace") + 1] == str(tmp_path)
     assert spec.argv[spec.argv.index("--model") + 1] == "auto"
     assert "tarea" not in spec.argv
-    assert ad.TASK_CONSTRAINTS in spec.pointer_file.read_text(encoding="utf-8")
+    assert ad.task_constraints("j") in spec.pointer_file.read_text(encoding="utf-8")
     assert spec.env["CURSOR_CONFIG_DIR"] == str(config_dir)
     assert spec.env["CURSOR_API_KEY"] == "sk-x"
 
@@ -324,7 +328,7 @@ def test_deepseek_build_uses_electron_launcher_and_model_patch(tmp_path, dsh_env
     assert "--json" in argv and argv[-1] == "-"
     assert spec.env["ELECTRON_RUN_AS_NODE"] == "1"
     assert spec.env["DSH_PERMISSION_MODE"] == "workspace-write"
-    assert spec.stdin_payload.decode("utf-8") == "haz X" + ad.TASK_CONSTRAINTS
+    assert spec.stdin_payload.decode("utf-8") == "haz X" + ad.task_constraints("jobdsh")
     assert spec.pointer_file is None
     assert spec.cwd == str(workspace)
 
@@ -507,7 +511,7 @@ def test_muse_build_uses_binary_pointer_and_fixed_safety_flags(tmp_path, muse_en
         "--reasoning-effort", effort,
     ]
     assert spec.pointer_file == pointer
-    assert pointer.read_text(encoding="utf-8") == "haz X" + ad.TASK_CONSTRAINTS
+    assert pointer.read_text(encoding="utf-8") == "haz X" + ad.task_constraints("jobmuse")
     assert (workspace / ".bipolar" / ".gitignore").read_text() == "*\n"
     assert spec.cwd == str(workspace)
     assert spec.stdin_payload is None

@@ -3,7 +3,7 @@ import pytest
 
 from app.models.delegate import JobRequest
 from app.services.cli_agents import broker, reviewer
-from app.services.cli_agents.adapters import TASK_CONSTRAINTS
+from app.services.cli_agents.adapters import task_constraints
 from app.services.cli_agents.verifier import CheckResult
 from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
 from tests.test_broker_quality_gate import _checks, _ok, _script, _setup, _verdict
@@ -55,8 +55,9 @@ def test_parse_detalle_truncado_y_solo_cola():
 
 def test_stop_statuses_y_restricciones():
     assert STOP_STATUSES == ("NEEDS_CONTEXT", "BLOCKED")
+    constraints = task_constraints("abc")
     for status in ("STATUS: DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"):
-        assert status in TASK_CONSTRAINTS
+        assert status in constraints
 
 
 # ── review_prompt ────────────────────────────────────────────────────────────

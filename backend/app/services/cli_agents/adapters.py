@@ -51,19 +51,23 @@ SAFE_ARG_RE = re.compile(r"^--?[A-Za-z0-9][\w-]*(=[\w./:,-]*)?$")
 WIN_PATH_RE = re.compile(r"^[A-Za-z]:[\\/][^&|<>^%!\"'\r\n]*$")
 POSIX_PATH_RE = re.compile(r"^/[^\x00-\x1f]*$")
 
-TASK_CONSTRAINTS = (
-    "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
-    "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
-    "No hagas git commit, push, reset, checkout ni clean; no borres archivos. "
-    "Deja los cambios en el working tree y termina con la lista de archivos tocados. "
-    "Si no puedes ejecutar comandos de compilación o pruebas por permisos, eso NO es BLOCKED: el broker corre la verificación al terminar; "
-    "completa los cambios y declara DONE o DONE_WITH_CONCERNS indicando qué comandos no pudiste correr. "
-    "BLOCKED es solo cuando no puedes hacer los cambios de código. "
-    "La última línea de tu respuesta debe ser `STATUS: DONE`, `STATUS: DONE_WITH_CONCERNS`, `STATUS: NEEDS_CONTEXT` o `STATUS: BLOCKED`; "
-    "si no es DONE, escribe en la misma línea, después de la palabra, el motivo o la pregunta concreta. "
-    "NEEDS_CONTEXT = falta información y no adivinaste; BLOCKED = no se puede avanzar (permisos, dependencia rota); "
-    "DONE_WITH_CONCERNS = terminado pero con riesgos que alguien debe revisar."
-)
+def task_constraints(job_id: str) -> str:
+    return (
+        "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
+        "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
+        "No hagas git commit, push, reset, checkout ni clean; "
+        f"no borres archivos con comandos ni los vacíes para simular un borrado. Si la tarea pide eliminar archivos, "
+        f"escribe sus rutas relativas a la raíz del workspace, una por línea, en `{POINTER_DIR}/{job_id}/borrar.txt`; "
+        "el broker los elimina al terminar tu turno. "
+        "Deja los cambios en el working tree y termina con la lista de archivos tocados. "
+        "Si no puedes ejecutar comandos de compilación o pruebas por permisos, eso NO es BLOCKED: el broker corre la verificación al terminar; "
+        "completa los cambios y declara DONE o DONE_WITH_CONCERNS indicando qué comandos no pudiste correr. "
+        "BLOCKED es solo cuando no puedes hacer los cambios de código. "
+        "La última línea de tu respuesta debe ser `STATUS: DONE`, `STATUS: DONE_WITH_CONCERNS`, `STATUS: NEEDS_CONTEXT` o `STATUS: BLOCKED`; "
+        "si no es DONE, escribe en la misma línea, después de la palabra, el motivo o la pregunta concreta. "
+        "NEEDS_CONTEXT = falta información y no adivinaste; BLOCKED = no se puede avanzar (permisos, dependencia rota); "
+        "DONE_WITH_CONCERNS = terminado pero con riesgos que alguien debe revisar."
+    )
 CLAUDE_BUILD_TOOLS = (
     "Bash(dotnet build:*)", "Bash(dotnet test:*)", "Bash(dotnet restore:*)",
     "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx vitest:*)", "Bash(npx ng:*)",
@@ -226,7 +230,7 @@ def write_pointer(workspace: Path, job_id: str, task: str) -> tuple[Path, str]:
     if not gitignore.exists():
         gitignore.write_text("*\n", encoding="utf-8")
     pointer = job_dir / "task.md"
-    pointer.write_text(task + TASK_CONSTRAINTS, encoding="utf-8")
+    pointer.write_text(task + task_constraints(job_id), encoding="utf-8")
     return pointer, f"{POINTER_DIR}/{job_id}/task.md"
 
 
@@ -336,7 +340,7 @@ class AnthropicAdapter:
             argv.append("--read-only")
         env = child_env(os.environ, {"ANTHROPIC_API_KEY": key,
                                    "CLAUDE_CONFIG_DIR": str(Path.home() / ".bipolar" / "anthropic-sdk")})
-        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
+        constraints = READ_ONLY_CONSTRAINTS if read_only else task_constraints(job_id)
         return LaunchSpec(argv=argv, env=env, cwd=ws, stdin_payload=(task + constraints).encode("utf-8"),
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
 
@@ -421,7 +425,7 @@ class CodexAdapter:
             argv += ["-m", model]
         argv += validate_extra_args(agent.extra_args)
         argv.append("-")
-        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
+        constraints = READ_ONLY_CONSTRAINTS if read_only else task_constraints(job_id)
         return LaunchSpec(argv=argv, env=child_env(os.environ), cwd=ws, stdin_payload=(task + constraints).encode("utf-8"),
                           out_file=out_file, timeout_s=timeout_s, redacted=redact(argv, len(task)))
 
@@ -743,7 +747,7 @@ class DeepseekAdapter:
         argv += ["--profile", "headless", "--patch", validate_path_argv(str(patch)), "--json"]
         argv += validate_extra_args(agent.extra_args)
         argv.append("-")
-        constraints = READ_ONLY_CONSTRAINTS if read_only else TASK_CONSTRAINTS
+        constraints = READ_ONLY_CONSTRAINTS if read_only else task_constraints(job_id)
         return LaunchSpec(argv=argv, env=child_env(os.environ, extra_env), cwd=ws,
                           stdin_payload=(task + constraints).encode("utf-8"),
                           timeout_s=timeout_s, redacted=redact(argv, len(task)))
