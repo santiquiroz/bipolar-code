@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from app.models.delegate import JobRequest
+from app.models.delegate import Attempt, Job, JobRequest
 from app.services.cli_agents import broker, reviewer, verifier
 from app.services.cli_agents.adapters import AdapterResult
 from app.services.cli_agents.verifier import CheckResult
@@ -266,3 +266,39 @@ def test_textos_revision_y_escalada_contienen_conserva_pruebas():
     esc_text = reviewer.escalation_task("t", ["h"])
     assert "Conserva el código y las pruebas que ya existían" in rev_text
     assert "Conserva el código y las pruebas que ya existían" in esc_text
+
+
+def _review_attempt(verdict, issues, unsupported=False):
+    return Attempt(agent_id="claude", started_at="t", kind="review",
+                   detail={"verdict": verdict, "issues": issues, "unsupported": unsupported})
+
+
+def test_review_requests_junta_pedidos_revise_sin_repetidos():
+    job = Job(id="j", created_at="t", attempts=[
+        _review_attempt("revise", ["a"]),
+        Attempt(agent_id="codex", started_at="t", kind="work"),
+        _review_attempt("revise", ["z"], unsupported=True),
+        _review_attempt("approve", ["q"]),
+        _review_attempt("revise", ["a", "b"]),
+    ])
+    assert broker._review_requests(job) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_segunda_revision_y_correccion_conservan_pedidos_anteriores(env, monkeypatch):
+    _setup(env)
+    calls = _script(monkeypatch, [
+        ("codex", False, _ok()), ("claude", True, _verdict("revise", ["uno"])),
+        ("codex", False, _ok("corregido")), ("claude", True, _verdict("revise", ["dos"])),
+        ("codex", False, _ok("corregido otra vez")), ("claude", True, _verdict("approve")),
+    ])
+    _checks(monkeypatch, [])
+    job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard", max_revisions=2))).id)
+    assert job.status == "succeeded"
+    prior = "Revisiones anteriores de esta misma tarea pidieron estos cambios"
+    assert prior not in calls[1][2]
+    second_review = calls[3][2]
+    assert prior in second_review and second_review.index(prior) < second_review.index("- uno") < second_review.index("Diff:")
+    earlier = "Estos cambios los pidieron revisiones anteriores y ya se aplicaron; consérvalos:"
+    second_fix = calls[4][2]
+    assert second_fix.index("- dos") < second_fix.index(earlier) < second_fix.index("- uno")

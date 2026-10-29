@@ -98,6 +98,25 @@ def test_review_prompt_marks_data_before_verdict_instruction():
     assert prompt.rindex('"verdict"') > notice
 
 
+_PRIOR = "Revisiones anteriores de esta misma tarea pidieron estos cambios; ya forman parte del alcance"
+_EARLIER = "Estos cambios los pidieron revisiones anteriores y ya se aplicaron; consérvalos:"
+
+
+def test_review_prompt_incluye_pedidos_de_revisiones_anteriores():
+    prompt = reviewer.review_prompt("agrega X", "+x", [], prior_requests=["a", "b"])
+    assert _PRIOR in prompt and "- a" in prompt and "- b" in prompt
+    assert prompt.index("Tarea original:") < prompt.index(_PRIOR) < prompt.index("- b") < prompt.index("Diff:")
+    assert _PRIOR not in reviewer.review_prompt("agrega X", "+x", [])
+    assert reviewer.review_prompt("agrega X", "+x", [], prior_requests=[]) == reviewer.review_prompt("agrega X", "+x", [])
+
+
+def test_revision_task_pide_conservar_lo_de_revisiones_anteriores():
+    rev = reviewer.revision_task("agrega X", ["actual"], earlier_issues=["x"])
+    assert _EARLIER in rev and "- x" in rev
+    assert rev.index("- actual") < rev.index(_EARLIER) < rev.index("- x")
+    assert _EARLIER not in reviewer.revision_task("agrega X", ["actual"])
+
+
 def test_collect_diff_omits_symlink_outside_workspace(tmp_path):
     outside = tmp_path.parent / "secreto_externo.txt"
     outside.write_text("SECRETO-FUERA", encoding="utf-8")

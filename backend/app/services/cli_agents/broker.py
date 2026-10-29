@@ -882,9 +882,22 @@ async def _run_attempt_guarded(rt: JobRuntime, registry: ProviderRegistry, agent
         agents_registry.adjust_running(agent.id, -1)
 
 
+def _review_requests(job: Job) -> list[str]:
+    requests: list[str] = []
+    for attempt in job.attempts:
+        detail = attempt.detail or {}
+        if attempt.kind != "review" or detail.get("verdict") != "revise" or detail.get("unsupported"):
+            continue
+        for issue in detail.get("issues") or []:
+            if isinstance(issue, str) and issue not in requests:
+                requests.append(issue)
+    return requests
+
+
 async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, model: str, issues: list, failed_check) -> AttemptOutcome:
     job = rt.job
-    task = reviewer.revision_task(rt.request.task, issues, failed_check)
+    earlier = [issue for issue in _review_requests(job) if issue not in issues]
+    task = reviewer.revision_task(rt.request.task, issues, failed_check, earlier_issues=earlier)
     attempt = Attempt(agent_id=worker.id, model=model, started_at=_now(), kind="work", detail={"revision": True})
     job.attempts.append(attempt)
     t0 = time.monotonic()
@@ -941,7 +954,8 @@ async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, wo
         return None
     diff = reviewer.collect_diff(rt.workspace, _files_touched(rt.workspace, rt.status_before))
     concerns = job.worker_detail if job.worker_status == "DONE_WITH_CONCERNS" else ""
-    prompt = reviewer.review_prompt(rt.request.task, diff, checks, _overlap_note(rt), worker_concerns=concerns)
+    prompt = reviewer.review_prompt(rt.request.task, diff, checks, _overlap_note(rt), worker_concerns=concerns,
+                                    prior_requests=_review_requests(job))
     for cand in candidates:
         model_cand = _review_model(cand, job.tier)
         before = reviewer.tree_fingerprint(rt.workspace) if rt.workspace else ""

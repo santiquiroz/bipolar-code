@@ -189,9 +189,13 @@ def collect_diff(workspace: Path, files: list[str]) -> str:
     return _collect_plain(workspace, accepted, omitted)
 
 
-def review_prompt(task: str, diff: str, checks: list[CheckResult], overlap_note: str = "", worker_concerns: str = "") -> str:
+def review_prompt(task: str, diff: str, checks: list[CheckResult], overlap_note: str = "", worker_concerns: str = "",
+                  prior_requests: Optional[list[str]] = None) -> str:
     lines = ["Eres el revisor de un cambio hecho por otro agente. Solo lectura."]
     lines += ["", "Tarea original:", task]
+    if prior_requests:
+        lines += ["", "Revisiones anteriores de esta misma tarea pidieron estos cambios; ya forman parte del alcance: no los marques como fuera de alcance ni pidas revertirlos."]
+        lines += [f"- {request}" for request in prior_requests]
     if overlap_note:
         lines += ["", overlap_note]
     lines += ["", "Verificación:"]
@@ -316,10 +320,14 @@ def parse_verdict(text: str) -> Optional[Verdict]:
     return _as_verdict(obj) if obj is not None else None
 
 
-def revision_task(task: str, issues: list[str], failed_check: Optional[CheckResult] = None) -> str:
+def revision_task(task: str, issues: list[str], failed_check: Optional[CheckResult] = None,
+                  earlier_issues: Optional[list[str]] = None) -> str:
     lines = [task, "", "Corrige lo siguiente sin rehacer lo que ya está bien:"]
     for issue in issues:
         lines.append(f"- {issue}")
+    if earlier_issues:
+        lines += ["", "Estos cambios los pidieron revisiones anteriores y ya se aplicaron; consérvalos:"]
+        lines += [f"- {issue}" for issue in earlier_issues]
     if failed_check is not None:
         lines += ["", f"Check fallido: {failed_check.command} (exit {failed_check.returncode})"]
         if failed_check.error:
