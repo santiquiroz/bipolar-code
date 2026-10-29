@@ -295,10 +295,12 @@ async def test_segunda_revision_y_correccion_conservan_pedidos_anteriores(env, m
     _checks(monkeypatch, [])
     job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard", max_revisions=2))).id)
     assert job.status == "succeeded"
-    prior = "Revisiones anteriores de esta misma tarea pidieron estos cambios"
-    assert prior not in calls[1][2]
+    prior = "Pedidos de revisiones anteriores de esta tarea:"
+    assert prior not in calls[1][2] and "<<<PRIOR" not in calls[1][2]
     second_review = calls[3][2]
-    assert prior in second_review and second_review.index(prior) < second_review.index("- uno") < second_review.index("Diff:")
+    assert prior in second_review
+    assert second_review.index(prior) < second_review.index("<<<PRIOR") < second_review.index("- uno") \
+        < second_review.index("PRIOR>>>") < second_review.index("Diff:")
     earlier = "Estos cambios los pidieron revisiones anteriores y ya se aplicaron; consérvalos:"
     second_fix = calls[4][2]
     assert second_fix.index("- dos") < second_fix.index(earlier) < second_fix.index("- uno")
