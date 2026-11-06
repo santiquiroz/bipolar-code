@@ -16,6 +16,19 @@ Claude Code / OpenClaw / VS Code / Cursor / bot Telegram
                       ──routing──►  GitHub Copilot / Anthropic / NIM / …
 ```
 
+## Capturas
+
+| | |
+|---|---|
+| ![Dashboard: estado del proxy y proveedor activo](docs/screenshots/dashboard.png) | ![Providers: routing por escenario y gestión inteligente](docs/screenshots/routing.png) |
+| **Dashboard**: estado del proxy y cambio de proveedor con un clic. | **Providers**: reglas por escenario, failover y tabla tier → providers (modo shadow). |
+| ![Agentes: delegación y orden por tier](docs/screenshots/agentes.png) | ![Agentes CLI detectados con versión y cuota](docs/screenshots/agentes-cli.png) |
+| **Agentes**: workspaces permitidos, orden de agentes por tier y pensadores. | **Agentes CLI**: CLIs detectados con versión, auth, cuota y tope mensual. |
+| ![Usage: gasto por período y por provider](docs/screenshots/uso.png) | ![Settings: claves de cada provider enmascaradas](docs/screenshots/settings.png) |
+| **Usage**: gasto por período y requests/tokens por provider. | **Settings**: claves de cada provider, siempre enmascaradas. |
+
+*Las capturas ocultan montos, rutas y claves.*
+
 ---
 
 ## Quick Start (desde cero, sin experiencia)
@@ -98,6 +111,8 @@ En el selector verás:
 - **«Bipolar Auto»**: bipolar decide en cada mensaje (reglas, routing inteligente, failover).
 - **«&lt;provider&gt; · &lt;modelo&gt;»**: fuerza ese provider (sin failover a otro provider).
 
+La extensión ajusta Copilot CLI para los modelos de Bipolar y el catálogo consulta Ollama para usar el contexto y las capacidades reales de cada modelo. Detalles: [Copilot CLI y las herramientas](integrations/vscode-copilot/README.md#copilot-cli-y-las-herramientas).
+
 Detalles y solución de problemas: [integrations/vscode-copilot/README.md](integrations/vscode-copilot/README.md).
 
 ### Cursor, Cline, Continue y otros clientes OpenAI-compatible
@@ -173,13 +188,15 @@ Providers → **Routing inteligente**. Cada request a `/v1/messages` o `/v1/chat
 - **Explicable**: `POST /api/smart/explain` con un body de ejemplo devuelve tier, puntaje, motivos y destino sin llamar a nadie; `X-Bipolar-Tier: complex` fuerza el tier desde el cliente.
 - **Presupuestos** por destino y ventana (día, semana, mes) sobre `usage.db`.
 
-Pestaña **Agentes**: bipolar-code detecta los CLIs instalados en el host (`claude`, `codex`, `copilot`, `agy` de Antigravity, `ollama`, `cursor-agent` de Cursor, `dsh` de DeepSeek Harness, `muse` de Meta), muestra versión, auth y estado de cuota (Antigravity expone sus dos pools con `agy -p "/usage"`, gratis; Cursor informa con `cursor-agent about`, sin gastar cuota) y delega tareas de código al mejor disponible:
+Pestaña **Agentes**: bipolar-code detecta los CLIs instalados en el host (`claude`, `codex`, `copilot`, `agy` de Antigravity, `ollama`, `cursor-agent` de Cursor, `dsh` de DeepSeek Harness, `muse` de Meta y `openrouter`, que usa Claude Code), muestra versión, auth y estado de cuota (Antigravity expone sus dos pools con `agy -p "/usage"`, gratis; Cursor informa con `cursor-agent about`, sin gastar cuota) y delega tareas de código al mejor disponible:
 
 DeepSeek Harness (`dsh`, la app de escritorio de DeepSeek) es el último carril de todos los tiers (último recurso: cobra por token contra saldo prepago): `deepseek-flash` en trivial y simple, `deepseek-v4-pro` en standard y complex. Corre `dsh --profile headless --json -` con la tarea por stdin y `DSH_PERMISSION_MODE=workspace-write`: el sandbox del propio dsh (token restringido en Windows) confina las escrituras al workspace y, como el modo headless no tiene a quién pedir aprobación, toda escalada se rechaza. Usa el login de la app (`~/.dsh/.credentials.yaml`, provider `deepseek-account`) o, sin login, `DEEPSEEK_API_KEY`; cobra contra el saldo de platform.deepseek.com (`Insufficient Balance` marca al agente como agotado). Al actualizar desde una versión anterior, `deepseek` se agrega una sola vez al final de tu `tier_order` (y `muse` al principio); después el orden es tuyo. En Windows, el sandbox de dsh necesita que tu usuario tenga control total explícito sobre el workspace: con solo derechos de dueño (típico en carpetas fuera del perfil, como `C:\proyectos`) su herramienta de shell falla con `SetNamedSecurityInfoW failed (Win32 5)` aunque las ediciones de archivos funcionen. Arreglo, una vez por árbol: `icacls C:\proyectos /grant <usuario>:(OI)(CI)F`.
 
 Muse Code de Meta es el primer carril de todos los tiers del broker y usa el modelo predeterminado de tu cuenta. Se ejecuta en modo headless con `--no-foreign-personal-context` para no cargar reglas personales de Claude Code; en Windows, comprueba el sandbox con `muse sandbox windows check` y configúralo con `muse sandbox windows setup` si no está listo. Las ejecuciones headless pueden ser lentas; evita workspaces privados bajo `%USERPROFILE%\AppData`, donde el shell aislado de Muse puede quedarse colgado.
 
 Cursor requiere `~/.cursor-rescue/cli-config.json`, generado por `/cursor:setup` del plugin `cursor-plugin-cc`; sus reglas `permissions.deny` prevalecen sobre `--force`. En el plan Free de Cursor solo funciona el modelo `auto`.
+
+OpenRouter (`openrouter`) usa `claude -p` contra la API Anthropic de `https://openrouter.ai/api` y solo admite modelos `:free`. Requiere una `workspace_allowlist` propia; si está vacía, el broker rechaza el job. Como los modelos gratis pueden guardar los prompts, no incluyas secretos en la tarea. Claude Code usa un `CLAUDE_CONFIG_DIR` aislado y el sondeo valida la clave con `GET /api/v1/key` sin consumir requests. Si un modelo recibe rate limit, está sobrecargado o deja de estar disponible, el broker prueba otro modelo `:free` configurado; el agotamiento de cuota diaria no activa ese cambio.
 
 ```bash
 curl -sS -H "x-api-key: $KEY" -H "content-type: application/json" -d '{"task":"Genera tests para src/pagos.py (firmas abajo) ...","workspace":"C:/repos/miapp"}' http://localhost:8000/api/delegate/jobs
@@ -188,6 +205,7 @@ curl -sS -H "x-api-key: $KEY" -H "content-type: application/json" -d '{"task":"G
 - El broker clasifica la tarea, recorre el orden de agentes de ese tier y salta los agotados, no instalados u ocupados. Si un intento muere por cuota (`429`, `out of credits`, `RESOURCE_EXHAUSTED`, el `stream was interrupted` de agy) marca al agente como `exhausted` hasta su reset (5 h, diario o semanal) y reintenta en el siguiente; Antigravity prueba primero su otro pool.
 - Cada job corre como subproceso acotado (timeout, kill del árbol de procesos) dentro de un workspace de la lista blanca, vacía por defecto, así que nada corre hasta que la configures. Los flags de seguridad de cada CLI son fijos: claude `acceptEdits` sin `Task/Agent`, codex `workspace-write`, copilot con deny list de `rm`, `git push`, `reset`, `clean` y `checkout`, agy solo si existe tu deny list global. El log se sigue por SSE en `GET /api/delegate/jobs/{id}/stream`; al terminar, el job trae `files_touched`.
 - Los CLIs autentican con sus propias sesiones: el hijo recibe un entorno mínimo sin claves del gateway ni `ANTHROPIC_BASE_URL`, para que un `claude` hijo no vuelva a entrar por bipolar.
+- Si una tarea pide borrar archivos, el agente los enumera, uno por línea, en `.bipolar/jobs/<job>/borrar.txt`; no usa comandos de borrado, que siguen bloqueados. bipolar solo acepta rutas relativas, sin `..` ni rutas bajo `.git` o `.bipolar`, dentro del workspace y sin symlinks; cada ruta debe ser un archivo regular versionado en Git o creado por ese job. El manifiesto se elimina al procesarlo.
 
 `/v1` enruta solo entre providers HTTP; los agentes CLI reciben tareas por la API de jobs (un CLI trae su propio loop de herramientas y no puede devolver `tool_use` a Claude Code a mitad de turno).
 
@@ -198,6 +216,13 @@ curl -sS -H "x-api-key: $KEY" -H "content-type: application/json" -d '{"task":"G
 - `revise` con revisiones restantes (`max_revisions`, por defecto 1): el trabajador vuelve a correr con los issues del revisor. `reject`, revisiones agotadas o verificación que sigue fallando: se **escala** al siguiente pensador disponible (o al siguiente carril del tier), que parte del estado que dejó el intento anterior — nunca se revierte nada.
 - Sin pensadores disponibles, la revisión se salta (`skipped`): tener revisor no es requisito para aprobar.
 - `allow_request_verify` (Agentes → ajustes, **apagado por defecto**): con él apagado, pedir `verify` por API o MCP se rechaza con 400.
+- bipolar compara el árbol antes y después de cada revisión. Si detecta un cambio sin jobs concurrentes en el mismo workspace, invalida el veredicto y termina el job en `failed` con `review_status="tampered"`; no escala ni revierte los cambios.
+- Los hallazgos pueden incluir `{issue, file, quote}`. Las citas se validan contra el archivo o el diff; las que no aparecen se descartan. Si un `revise` o `reject` solo tiene citas descartadas, no cuenta como petición de cambios.
+- El trabajador debe terminar con `STATUS: DONE|DONE_WITH_CONCERNS|NEEDS_CONTEXT|BLOCKED`. `NEEDS_CONTEXT` y `BLOCKED` terminan el job sin escalar; `DONE_WITH_CONCERNS` entrega sus dudas al revisor.
+- En las rondas posteriores, los pedidos de revisiones anteriores se presentan al revisor como datos delimitados para contrastarlos con la tarea original; la corrección los recibe para conservar los cambios ya pedidos.
+- Si `verify` falla porque otro proceso bloquea archivos de build, el job termina con `verify_environment`, sin otra ronda de corrección ni escalada.
+- `GET /api/delegate/stats` resume aprobaciones por agente y tier. `delegation.demote_low_acceptance` (apagado por defecto) mueve al final a los agentes cuya aprobación queda bajo `demote_below_pct` tras al menos `demote_min_samples` resultados.
+- Los códigos 401/429/503/529 en la salida de un CLI solo cuentan como señales si aparecen con contexto de código HTTP; un número suelto no cambia el estado de cuota, autenticación o sobrecarga. Un status HTTP recibido como tal sí se usa.
 
 **Cuentas por CLI**: `claude`, `codex` y `deepseek` admiten varias cuentas, una entrada más por cuenta con su propia carpeta de config bajo `<config_dir>/accounts/`. Agentes → **Agregar cuenta** crea la entrada (`<base>-<n>`, deshabilitada hasta que la habilites) y muestra los comandos de login; para Claude:
 
@@ -243,21 +268,31 @@ Gateway + UI en `:8000`, config en el volumen `bipolar-data`. `llama-server` NO 
 
 ## Arranque con Windows (sin iniciar sesión)
 
-Para que bipolar arranque al encender el PC, sin esperar a que alguien inicie sesión, y para que lo alcance un servicio dentro de WSL:
+Se registran dos tareas. `bipolar-code backend` permite arrancar sin sesión iniciada; `bipolar-code backend sesion` mueve el backend a la sesión interactiva al iniciar sesión, porque el sandbox de Windows de Muse y Codex necesita una sesión interactiva. Mientras bipolar corre en la sesión 0, el broker descarta a Muse y Codex como trabajadores y revisores con `sandbox_requires_interactive_session`.
 
 ```powershell
-# PowerShell como administrador; pide tu contraseña de Windows una vez
+# PowerShell como administrador; pide la contraseña de Windows para la tarea de arranque
 powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 ```
 
+La instalación principal registra `bipolar-code backend` solo al encender, con tu cuenta y contraseña, así funcionan las credenciales del llavero de Windows (gh, Copilot); la tarea se reinicia hasta 3 veces si falla. También registra la tarea de sesión y la inicia en ese momento.
+
 El script:
-- Registra la tarea `bipolar-code backend` con dos disparadores, al encender y al iniciar sesión. La tarea corre con tu cuenta y tu contraseña, así las credenciales del llavero de Windows (gh, Copilot) funcionan. Se reinicia hasta 3 veces si falla.
-- Crea una regla de firewall que **bloquea el puerto 8000 salvo** desde loopback y la red de WSL (`172.16.0.0/12`).
-- Reinicia bipolar con la tarea nueva.
+- Crea una regla de firewall que bloquea el puerto 8000 salvo desde loopback y la red de WSL (`172.16.0.0/12`).
+- Reinicia bipolar con la tarea de arranque nueva.
+- Registra `bipolar-code backend sesion` para ejecutarse al iniciar sesión, de forma interactiva y sin administrador. Para instalar o registrar esta tarea por separado:
+
+  ```powershell
+  # PowerShell sin administrador
+  powershell -ExecutionPolicy Bypass -File scripts\install-session-task.ps1
+  ```
+
+- Al ejecutarse con `-TomarSesion`, si encuentra el puerto ocupado por la instancia de la sesión 0, `start-bipolar.ps1` detiene la tarea con contraseña para liberarlo y arranca bipolar en la sesión interactiva. El lanzador escribe sus mensajes en `bipolar-launcher.log`, junto al log del backend.
+- Si el puerto está ocupado en otro caso, `start-bipolar.ps1` sale con código 0 sin lanzar otra instancia.
 
 El lanzador puede ser `scripts\start-bipolar.ps1` del repo: arranca uvicorn con el Python del venv (`%LOCALAPPDATA%\bipolar-code\venv`, ver [Dev Setup](#dev-setup-código-fuente)) y no arranca si el venv no existe. Pásalo con `-Launcher <repo>\scripts\start-bipolar.ps1` a `install-autostart.ps1`; no lo copies a otra carpeta, porque resuelve la raíz del repo desde su propia ubicación.
 
-Para que WSL lo alcance, el lanzador (`C:\litellm\start-bipolar.ps1`) debe usar `--host 0.0.0.0`. Desde WSL, Windows es la puerta de enlace: `curl http://$(ip route show default | awk '{print $3}'):8000/api/health`.
+`start-bipolar.ps1` escucha por defecto en `0.0.0.0`; la regla de firewall limita el acceso a loopback y WSL. Desde WSL, Windows es la puerta de enlace: `curl http://$(ip route show default | awk '{print $3}'):8000/api/health`.
 
 ## Seguridad
 
@@ -266,6 +301,7 @@ Para que WSL lo alcance, el lanzador (`C:\litellm\start-bipolar.ps1`) debe usar 
 - El plano de control (`/api/*`) responde 403 a cualquier IP que no sea loopback, LAN privada (RFC1918/ULA), link-local o Tailscale (`100.64.0.0/10`), aunque traiga la key. Se mira solo la IP de la conexión, nunca `X-Forwarded-For`. `/v1/*` no se filtra. En Docker, si el reenvío de puertos no conserva la IP de origen (Docker Desktop, `userland-proxy`), las conexiones llegan con la IP privada del gateway y el filtro no distingue el tráfico público.
 - Fuera de la LAN: VPN. No abras el puerto al internet público.
 - `/mcp` es plano de control, igual que `/api`: exige la API key y respeta el mismo filtro de redes (`CONTROL_PLANE_ALLOWED_CIDRS`).
+- bipolar y LiteLLM se autentican entre sí con `LITELLM_MASTER_KEY`. Si falta, bipolar genera una clave aleatoria de 32 bytes y la guarda en el `.env` del directorio de configuración; no es la API key que usas para acceder al gateway.
 - Los comandos de `verify` corren en tu host sin shell y con entorno mínimo, pero **fuera de cualquier sandbox** y con tu usuario. Como mitigaciones, el workspace debe estar en la lista permitida y `allow_request_verify` viene **apagado** en instalaciones nuevas.
 - Ojo con lo que implica: verificar es **ejecutar código que el agente delegado pudo modificar**. `pytest` carga el `conftest.py` del repo, `npm test` corre los scripts de `package.json`, y un script del propio repo puede haber sido reescrito por el agente. Los agentes trabajan dentro de su sandbox, pero la verificación corre afuera. Delega con `verify` solo en repos y agentes en los que confíes, y revisa el diff antes de ejecutar cualquier cosa por tu cuenta.
 
@@ -313,6 +349,7 @@ El backend lee `.env` del directorio de configuración (`C:\litellm\` / `~/.lite
 | Variable | Para qué |
 |---|---|
 | `UI_API_KEY` | API key del gateway (se autogenera si falta) |
+| `LITELLM_MASTER_KEY` | Clave aleatoria para la autenticación interna entre bipolar y LiteLLM (se autogenera si falta) |
 | `ANTHROPIC_API_KEY` | Provider Anthropic real |
 | `GITHUB_OAUTH_TOKEN` | Auto-refresh del token de Copilot |
 | `NVIDIA_NIM_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY` | Providers cloud |
