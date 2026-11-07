@@ -25,11 +25,19 @@ function Write-Log {
     Add-Content -Path $launcherLog -Value "$stamp $Message" -ErrorAction SilentlyContinue
 }
 
+function Test-PortInUse {
+    param([int]$Port)
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try { $client.Connect('127.0.0.1', $Port); return $true } catch { return $false } finally { $client.Dispose() }
+}
+
 function Get-PortOwner {
     param([int]$Port)
     $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $listener) { return $null }
-    return $listener.OwningProcess
+    if ($null -ne $listener) { return $listener.OwningProcess }
+    # Desde la sesión interactiva, Get-NetTCPConnection no ve el proceso de la tarea de la sesión 0 (netstat da PID 0)
+    if (Test-PortInUse -Port $Port) { return -1 }
+    return $null
 }
 
 function Wait-PortFree {
@@ -49,8 +57,9 @@ if (-not (Test-Path $venvPython)) {
 $ownerPid = Get-PortOwner -Port $Port
 if ($null -ne $ownerPid) {
     $mySession = (Get-Process -Id $PID).SessionId
-    $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
-    $ownerSession = if ($null -ne $owner) { $owner.SessionId } else { -1 }
+    $owner = if ($ownerPid -gt 0) { Get-Process -Id $ownerPid -ErrorAction SilentlyContinue } else { $null }
+    # Dueño invisible (-1) = proceso de la sesión 0: los de la sesión interactiva sí se ven
+    $ownerSession = if ($null -ne $owner) { $owner.SessionId } elseif ($ownerPid -eq -1) { 0 } else { -1 }
     # El sandbox de Windows de Muse y Codex no arranca en la sesión 0
     if ($TomarSesion -and $mySession -ne 0 -and $ownerSession -eq 0) {
         Write-Log "Tomando el puerto $Port desde la sesión interactiva (PID $ownerPid en sesión 0)"
@@ -58,7 +67,7 @@ if ($null -ne $ownerPid) {
         # (OpenProcess da acceso denegado); el Programador de tareas sí detiene su propio árbol
         Stop-ScheduledTask -TaskName $TareaSesionCero -ErrorAction SilentlyContinue
         Wait-PortFree -Port $Port
-        if ($null -ne (Get-PortOwner -Port $Port)) {
+        if ($null -ne (Get-PortOwner -Port $Port) -and $ownerPid -gt 0) {
             Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
             Wait-PortFree -Port $Port
         }
@@ -73,5 +82,6 @@ if ($null -ne $ownerPid) {
     }
 }
 
+Write-Log "Iniciando bipolar en $BindHost`:$Port (sesión $((Get-Process -Id $PID).SessionId))"
 Set-Location $backendDir
 & $venvPython -m uvicorn app.main:app --host $BindHost --port $Port *>> $LogFile
