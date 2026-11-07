@@ -68,6 +68,19 @@ def task_constraints(job_id: str) -> str:
         "NEEDS_CONTEXT = falta información y no adivinaste; BLOCKED = no se puede avanzar (permisos, dependencia rota); "
         "DONE_WITH_CONCERNS = terminado pero con riesgos que alguien debe revisar."
     )
+def verify_hint(commands: Optional[list[str]]) -> str:
+    # Claude Code niega `cd` con ruta absoluta, `; echo $?` y Set-Location encadenado aunque estén en la allowlist (07-nov)
+    if not commands:
+        return ""
+    listed = "\n".join(f"- `{command}`" for command in commands)
+    return (
+        "\n\nVerificación: al terminar, el broker corre estos comandos en el host. Puedes correrlos tú antes con la "
+        "herramienta Bash, tal cual están escritos: ruta relativa, una llamada por comando, sin `; echo $?`, sin rutas "
+        "absolutas y sin PowerShell (esas formas piden aprobación y se niegan). La herramienta ya informa el código de salida.\n"
+        + listed
+    )
+
+
 CLAUDE_BUILD_TOOLS = (
     "Bash(dotnet build:*)", "Bash(dotnet test:*)", "Bash(dotnet restore:*)",
     "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx vitest:*)", "Bash(npx ng:*)",

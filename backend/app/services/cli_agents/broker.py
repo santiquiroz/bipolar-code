@@ -28,7 +28,7 @@ from app.models.smart import CliAgent
 from app.services import budget_service, health_service, providers_service, usage_tracker
 from app.services.cli_agents import deletions, outcome_stats, registry as agents_registry, reviewer, session, verifier
 from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
-from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only
+from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only, verify_hint
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -554,7 +554,8 @@ async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: i
     if not exe:
         return AttemptOutcome(ok=False, error="not_installed")
     try:
-        spec = adapter_for(agent.base).build(agent, exe, rt.job.id, task or rt.request.task, model, rt.workspace, rt.job.tier, timeout_s, read_only=read_only)
+        text = (task or rt.request.task) + ("" if read_only else verify_hint(rt.request.verify))
+        spec = adapter_for(agent.base).build(agent, exe, rt.job.id, text, model, rt.workspace, rt.job.tier, timeout_s, read_only=read_only)
         spec.env.update(account_env(agent))
     except AdapterUnsafe as e:
         return AttemptOutcome(ok=False, error=str(e))
