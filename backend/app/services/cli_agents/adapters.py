@@ -72,7 +72,8 @@ CLAUDE_BUILD_TOOLS = (
     "Bash(dotnet build:*)", "Bash(dotnet test:*)", "Bash(dotnet restore:*)",
     "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx vitest:*)", "Bash(npx ng:*)",
     "Bash(pytest:*)", "Bash(python -m pytest:*)",
-    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
+    "Bash(npx tsc:*)", "Bash(cd:*)",
+    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (
@@ -284,7 +285,12 @@ class ClaudeAdapter:
     id = "claude"
     prompt_via = "pointer"
     supports_read_only = True
-    max_turns = 50
+    # un front Angular o .NET gasta 50 turnos solo en leer y verificar: se cortaba con error_max_turns (06-nov)
+    MAX_TURNS = {"trivial": 20, "simple": 40, "standard": 80, "complex": 150}
+    max_turns: Optional[int] = None
+
+    def turns_for(self, tier: str) -> int:
+        return self.max_turns or self.MAX_TURNS.get(tier, self.MAX_TURNS["standard"])
 
     def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
         ws = validate_path_argv(str(workspace))
@@ -294,7 +300,7 @@ class ClaudeAdapter:
             "--output-format", "json",
             "--permission-mode", "plan" if read_only else "acceptEdits",
             "--disallowedTools", "Task,Agent,WebFetch,WebSearch,Edit,Write,MultiEdit,NotebookEdit,Bash" if read_only else "Task,Agent,WebFetch,WebSearch",
-            "--max-turns", str(self.max_turns),
+            "--max-turns", str(self.turns_for(tier)),
             "--setting-sources", "project,local", "--strict-mcp-config",
             "--add-dir", ws,
         ]

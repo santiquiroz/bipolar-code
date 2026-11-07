@@ -65,6 +65,22 @@ def test_claude_build_allows_build_and_test_commands(tmp_path, clean_env):
     assert not any(tool.startswith(("Bash(git push", "Bash(git reset", "Bash(rm")) for tool in allowed)
 
 
+@pytest.mark.parametrize("tier,turns", [("trivial", "20"), ("simple", "40"), ("standard", "80"), ("complex", "150")])
+def test_claude_build_scales_max_turns_with_tier(tmp_path, clean_env, tier, turns):
+    argv = ad.ClaudeAdapter().build(_agent("claude"), "claude.exe", "job1", "haz X", "", tmp_path, tier, 600).argv
+    assert argv[argv.index("--max-turns") + 1] == turns
+
+
+def test_openrouter_keeps_its_fixed_max_turns(tmp_path, clean_env):
+    assert ad.OpenRouterAdapter().turns_for("trivial") == 120
+
+
+def test_claude_build_allows_type_check_and_cd_for_front_end_verification(tmp_path, clean_env):
+    argv = ad.ClaudeAdapter().build(_agent("claude"), "claude.exe", "job1", "haz X", "", tmp_path, "standard", 600).argv
+    allowed = set(argv[argv.index("--allowedTools") + 1].split(","))
+    assert {"Bash(npx tsc:*)", "Bash(cd:*)", "Bash(npx ng:*)"} <= allowed
+
+
 def test_task_constraints_say_missing_build_permission_is_not_blocked():
     constraints = ad.task_constraints("abc")
     assert "NO es BLOCKED" in constraints
