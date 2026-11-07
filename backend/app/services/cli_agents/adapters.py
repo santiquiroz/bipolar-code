@@ -74,6 +74,12 @@ CLAUDE_BUILD_TOOLS = (
     "Bash(pytest:*)", "Bash(python -m pytest:*)",
     "Bash(npx tsc:*)", "Bash(cd:*)",
     "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
+    # los delegados encadenan la salida (| tail, ; echo $?): sin estos, Claude Code niega el comando entero
+    "Bash(tail:*)", "Bash(head:*)", "Bash(echo:*)",
+    # en Windows Claude Code también ofrece la herramienta PowerShell para los mismos comandos
+    "PowerShell(Set-Location:*)", "PowerShell(npx tsc:*)", "PowerShell(npx ng:*)", "PowerShell(npx vitest:*)",
+    "PowerShell(npm test:*)", "PowerShell(npm run:*)",
+    "PowerShell(dotnet build:*)", "PowerShell(dotnet test:*)", "PowerShell(dotnet restore:*)",
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (

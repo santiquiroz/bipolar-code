@@ -81,6 +81,14 @@ def test_claude_build_allows_type_check_and_cd_for_front_end_verification(tmp_pa
     assert {"Bash(npx tsc:*)", "Bash(cd:*)", "Bash(npx ng:*)"} <= allowed
 
 
+def test_claude_build_allows_piped_output_helpers_and_powershell_equivalents(tmp_path, clean_env):
+    argv = ad.ClaudeAdapter().build(_agent("claude"), "claude.exe", "job1", "haz X", "", tmp_path, "standard", 600).argv
+    allowed = set(argv[argv.index("--allowedTools") + 1].split(","))
+    assert {"Bash(tail:*)", "Bash(head:*)", "Bash(echo:*)"} <= allowed
+    assert {"PowerShell(Set-Location:*)", "PowerShell(npx tsc:*)", "PowerShell(npx ng:*)", "PowerShell(dotnet test:*)"} <= allowed
+    assert not any(tool.startswith(("PowerShell(Remove-Item", "PowerShell(git push", "Bash(rm")) for tool in allowed)
+
+
 def test_task_constraints_say_missing_build_permission_is_not_blocked():
     constraints = ad.task_constraints("abc")
     assert "NO es BLOCKED" in constraints
