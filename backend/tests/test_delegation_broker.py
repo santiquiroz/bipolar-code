@@ -269,6 +269,30 @@ async def test_quota_signal_fails_over_to_next_agent_and_marks_exhausted(env, mo
     assert "attempt" in events and events[-1] == "done"
 
 
+def _codex_signed_out():
+    return 1, "", "ACCOUNT_SIGN_IN_REQUIRED: Sign in to Codex to use the account provider.", False
+
+
+@pytest.mark.asyncio
+async def test_auth_signal_fails_over_to_next_agent(env, monkeypatch):
+    run, _ = _fake_subprocess([_codex_signed_out(), _claude_ok()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    job = await broker.submit(JobRequest(task="implementa el endpoint", workspace=str(env["workspace"])))
+    job = await _wait(job.id)
+    assert job.status == "succeeded" and job.agent_id == "claude"
+    assert [a.agent_id for a in job.attempts] == ["codex", "claude"]
+    assert job.attempts[0].signal == "auth"
+
+
+@pytest.mark.asyncio
+async def test_pinned_agent_with_auth_signal_stops_with_auth_error(env, monkeypatch):
+    run, _ = _fake_subprocess([_codex_signed_out()])
+    monkeypatch.setattr(broker, "_run_subprocess", run)
+    job = await broker.submit(JobRequest(task="implementa el endpoint de facturas", workspace=str(env["workspace"]), agent_id="codex"))
+    job = await _wait(job.id)
+    assert job.status == "auth_error" and len(job.attempts) == 1
+
+
 @pytest.mark.asyncio
 async def test_pinned_agent_does_not_fail_over(env, monkeypatch):
     run, _ = _fake_subprocess([_codex_quota()])

@@ -1187,9 +1187,16 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
             if not network and not fallback_eligible:
                 _apply_signal(agent, model, outcome.signal)
             _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt})
-            if outcome.signal.kind == "auth":
+            if outcome.signal.kind == "auth" and rt.request.agent_id:
                 job.status, job.error = "auth_error", outcome.signal.excerpt
                 break
+            if outcome.signal.kind == "auth":
+                # sin agente fijado, una sesión caída en un carril no debe tumbar el job: pasa al siguiente
+                tried.append(agent.id)
+                agent, model = await _next_available_agent(rt, registry, statuses, tried)
+                if agent is None:
+                    job.status, job.error = "auth_error", outcome.signal.excerpt
+                continue
             if agent.base == "antigravity" and agent.alt_model_on_quota and not alt_pool_tried and rt.request.model == "":
                 alt_pool_tried = True
                 model = agent.alt_model_on_quota

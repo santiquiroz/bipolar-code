@@ -23,7 +23,8 @@ EXHAUSTED_RE = re.compile(
 )
 AUTH_RE = re.compile(
     rf"not (?:logged in|authenticated)|authentication required|invalid api key|{_status_code(401)}"
-    r"|login required|unauthori[sz]ed|please (?:run|sign in)|missing_credential",
+    r"|login required|unauthori[sz]ed|please (?:run|sign in)|missing_credential"
+    r"|sign[_ -]?in[_ -]?required|sign in to \w+ to use",
     re.I,
 )
 OVERLOADED_RE = re.compile(rf"overloaded|{_status_code(529)}|{_status_code(503)}|service unavailable", re.I)

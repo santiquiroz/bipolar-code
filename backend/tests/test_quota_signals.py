@@ -15,6 +15,8 @@ from app.core import quota_signals as qs
     ("authentication required", "auth"),
     ("Not logged in. Run codex login", "auth"),
     ("401 Unauthorized", "auth"),
+    ("ACCOUNT_SIGN_IN_REQUIRED: Sign in to DeepSeek to use the account provider.", "auth"),
+    ("Sign in to DeepSeek to use the account provider", "auth"),
     ("The service is overloaded", "overloaded"),
     ("529 overloaded_error", "overloaded"),
     ("getaddrinfo ENOTFOUND api.anthropic.com", "network_error"),
