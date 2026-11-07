@@ -81,6 +81,13 @@ def test_claude_build_allows_type_check_and_cd_for_front_end_verification(tmp_pa
     assert {"Bash(npx tsc:*)", "Bash(cd:*)", "Bash(npx ng:*)"} <= allowed
 
 
+def test_claude_build_allows_gradle_wrapper_and_repo_scripts_for_android_verification(tmp_path, clean_env):
+    argv = ad.ClaudeAdapter().build(_agent("claude"), "claude.exe", "job1", "haz X", "", tmp_path, "standard", 600).argv
+    allowed = set(argv[argv.index("--allowedTools") + 1].split(","))
+    assert {"Bash(cmd /c gradlew.bat:*)", "Bash(./gradlew:*)", "Bash(python scripts/:*)", "PowerShell(.\\gradlew.bat:*)"} <= allowed
+    assert "Bash(python:*)" not in allowed
+
+
 def test_claude_build_allows_piped_output_helpers_and_powershell_equivalents(tmp_path, clean_env):
     argv = ad.ClaudeAdapter().build(_agent("claude"), "claude.exe", "job1", "haz X", "", tmp_path, "standard", 600).argv
     allowed = set(argv[argv.index("--allowedTools") + 1].split(","))

@@ -86,6 +86,8 @@ CLAUDE_BUILD_TOOLS = (
     "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx vitest:*)", "Bash(npx ng:*)",
     "Bash(pytest:*)", "Bash(python -m pytest:*)",
     "Bash(npx tsc:*)", "Bash(cd:*)",
+    # Android/Kotlin: el broker verifica con gradlew y los scripts del repo; sin esto el delegado no puede autoverificarse
+    "Bash(cmd /c gradlew.bat:*)", "Bash(./gradlew.bat:*)", "Bash(./gradlew:*)", "Bash(python scripts/:*)",
     "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
     # los delegados encadenan la salida (| tail, ; echo $?): sin estos, Claude Code niega el comando entero
     "Bash(tail:*)", "Bash(head:*)", "Bash(echo:*)",
@@ -93,6 +95,7 @@ CLAUDE_BUILD_TOOLS = (
     "PowerShell(Set-Location:*)", "PowerShell(npx tsc:*)", "PowerShell(npx ng:*)", "PowerShell(npx vitest:*)",
     "PowerShell(npm test:*)", "PowerShell(npm run:*)",
     "PowerShell(dotnet build:*)", "PowerShell(dotnet test:*)", "PowerShell(dotnet restore:*)",
+    "PowerShell(.\\gradlew.bat:*)", "PowerShell(cmd /c gradlew.bat:*)", "PowerShell(python scripts/:*)",
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (
