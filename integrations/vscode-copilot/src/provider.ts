@@ -102,6 +102,7 @@ export class BipolarChatProvider implements vscode.LanguageModelChatProvider<Bip
   constructor(
     private readonly output: vscode.OutputChannel,
     private readonly onModelsLoaded?: (models: BipolarModelInfo[]) => Promise<void>,
+    private readonly onConfig?: (cfg: BipolarConfig) => void,
   ) {}
 
   refresh(): void {
@@ -121,6 +122,7 @@ export class BipolarChatProvider implements vscode.LanguageModelChatProvider<Bip
     if (config === undefined) {
       return [];
     }
+    this.onConfig?.(config);
     const res = await this.fetchCatalog(config, token).catch(() => undefined);
     if (res === undefined) {
       return this.fail(`No se pudo conectar con bipolar en ${config.url}`, options.silent);
