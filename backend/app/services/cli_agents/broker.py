@@ -114,8 +114,8 @@ class JobRuntime:
 
 
 _jobs: "OrderedDict[str, JobRuntime]" = OrderedDict()
-_global_sem: Optional[asyncio.Semaphore] = None
-_agent_sems: dict[str, asyncio.Semaphore] = {}
+_global_sem: Optional[tuple[int, asyncio.Semaphore]] = None
+_agent_sems: dict[str, tuple[int, asyncio.Semaphore]] = {}
 
 
 def _now() -> str:
@@ -257,13 +257,17 @@ def _candidate_order(tier: str, registry: ProviderRegistry, preferred: str) -> l
     return ordered
 
 
+def _is_metered(agent: CliAgent) -> bool:
+    return agent.base in ("anthropic", "deepseek") or agent.max_monthly_usd > 0
+
+
 def _queued_busy(agents: dict[str, CliAgent], skipped: list[tuple[str, str]], tier: str,
-                model_override: str, alt_pool: bool) -> tuple[Optional[CliAgent], str]:
+                model_override: str, alt_pool: bool, unmetered_only: bool = False) -> tuple[Optional[CliAgent], str]:
     for aid, reason in skipped:
         if reason != "busy":
             continue
         agent = agents.get(aid)
-        if agent is None:
+        if agent is None or (unmetered_only and _is_metered(agent)):
             continue
         model = agent.model_for(tier, model_override)
         if alt_pool and agent.alt_model_on_quota:
@@ -306,6 +310,12 @@ def choose_agent(
         if reason:
             skipped.append((aid, reason))
             continue
+        if aid != preferred and _is_metered(agent):
+            # esperar el turno de un carril propio sale gratis; derramar a uno medido gasta plata
+            queued, queued_model = _queued_busy(agents, skipped, tier, model_override, alt_pool, unmetered_only=True)
+            if queued is not None:
+                reasons.append(f"agent:{queued.id}:queued_busy:avoid_metered")
+                return queued, queued_model, reasons, skipped
         reasons.append(f"agent:{aid}" + (":preferred" if preferred == aid else f":{tier}"))
         pct = outcome_stats.accept_pct(aid, tier, registry.delegation.demote_min_samples)
         if registry.delegation.demote_low_acceptance and aid != preferred and pct is not None and pct < registry.delegation.demote_below_pct:
@@ -324,12 +334,16 @@ def choose_agent(
 
 def _sems(registry: ProviderRegistry, agent_id: str) -> tuple[asyncio.Semaphore, asyncio.Semaphore]:
     global _global_sem
-    if _global_sem is None:
-        _global_sem = asyncio.Semaphore(max(1, registry.delegation.max_parallel_jobs))
-    if agent_id not in _agent_sems:
-        agent = next((a for a in registry.cli_agents if a.id == agent_id), None)
-        _agent_sems[agent_id] = asyncio.Semaphore(max(1, agent.max_concurrency if agent else 1))
-    return _global_sem, _agent_sems[agent_id]
+    global_limit = max(1, registry.delegation.max_parallel_jobs)
+    # el límite viaja con el semáforo: si la config cambia se recrea; los jobs en curso sueltan el viejo
+    if _global_sem is None or _global_sem[0] != global_limit:
+        _global_sem = (global_limit, asyncio.Semaphore(global_limit))
+    agent = next((a for a in registry.cli_agents if a.id == agent_id), None)
+    agent_limit = max(1, agent.max_concurrency if agent else 1)
+    cached = _agent_sems.get(agent_id)
+    if cached is None or cached[0] != agent_limit:
+        cached = _agent_sems[agent_id] = (agent_limit, asyncio.Semaphore(agent_limit))
+    return _global_sem[1], cached[1]
 
 
 async def _statuses(registry: ProviderRegistry, preferred: str) -> dict[str, AgentStatus]:
@@ -937,7 +951,9 @@ async def _revise(rt: JobRuntime, registry: ProviderRegistry, worker: CliAgent, 
 
 
 def _review_model(agent: CliAgent, tier: str) -> str:
-    return "claude-sonnet-5-5" if agent.base == "anthropic" else agent.model_for(tier)
+    if agent.base == "anthropic":
+        return "claude-sonnet-5-5"
+    return "sonnet" if agent.base == "claude" else agent.model_for(tier)
 
 
 def _worker_stop(rt: JobRuntime, agent: CliAgent, outcome: AttemptOutcome) -> str:
@@ -949,6 +965,22 @@ def _worker_stop(rt: JobRuntime, agent: CliAgent, outcome: AttemptOutcome) -> st
         return ""
     _emit(rt, {"event": "worker_stop", "agent_id": agent.id, "status": status, "detail": detail[:300]})
     return f"{status.lower()}: {detail}"[:300]
+
+
+async def _blocked_failover_target(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, agent: CliAgent,
+                                   model: str, stop: str, tried: list, blocked_escalated: bool) -> tuple:
+    # BLOCKED sin cambios y sin agente fijado suele ser el entorno del carril (p. ej. sandbox): se prueba otro, una vez
+    if (not stop.startswith("blocked") or blocked_escalated or rt.request.agent_id
+            or _files_touched(rt.workspace, rt.status_before)):
+        return None, ""
+    tried.append(agent.id)
+    nxt, nxt_model = await _next_available_agent(rt, registry, statuses, tried)
+    if nxt is None:
+        return None, ""
+    health_service.mark_failure(_pool_key(agent, model), "worker_blocked")
+    rt.job.escalations += 1
+    _emit(rt, {"event": "escalated", "from": agent.id, "to": nxt.id, "reason": "blocked_no_changes"})
+    return nxt, nxt_model
 
 
 def _stop_job(job: Job, reason: str) -> None:
@@ -1158,6 +1190,7 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
     alt_pool_tried = False
     openrouter_models_tried: set[str] = set()
     network_retried: set[str] = set()
+    blocked_escalated = False
     global_sem, _ = _sems(registry, agent.id if agent else "")
     async with global_sem:
         job.status = "running"
@@ -1168,8 +1201,13 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 # el worker pidió parar: el problema está en la tarea, escalar solo gastaría cuota de otro agente
                 stop = _worker_stop(rt, agent, outcome)
                 if stop:
-                    _stop_job(job, stop)
-                    break
+                    nxt, nxt_model = await _blocked_failover_target(rt, registry, statuses, agent, model, stop, tried, blocked_escalated)
+                    if nxt is None:
+                        _stop_job(job, stop)
+                        break
+                    blocked_escalated = True
+                    agent, model = nxt, nxt_model
+                    continue
                 nxt = await _handle_gate_ok(rt, registry, statuses, agent, model, outcome, tried, history)
                 if nxt is None:
                     break

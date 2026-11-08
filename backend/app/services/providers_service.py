@@ -276,6 +276,17 @@ def _seed_agent_order(registry: ProviderRegistry, existing: set[str], agent_id: 
     }
 
 
+def _seed_claude_tier_models(registry: ProviderRegistry) -> list[str]:
+    tier_models = next(d["model_by_tier"] for d in DEFAULT_CLI_AGENTS if d["id"] == "claude")
+    seeded: list[str] = []
+    for agent in registry.cli_agents:
+        # sin modelo explícito Claude Code corre todo en Opus con la cuenta Max
+        if agent.base == "claude" and not agent.model_by_tier and not agent.default_model:
+            agent.model_by_tier = dict(tier_models)
+            seeded.append(f"{agent.key}.model_by_tier")
+    return seeded
+
+
 def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
     """Agrega agentes CLI faltantes (deshabilitados) y una tabla de tiers inicial
     cuando no hay ninguna. Nunca toca lo que el usuario ya configuró."""
@@ -285,6 +296,7 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
         if defaults["id"] not in existing:
             registry.cli_agents.append(CliAgent(**defaults))
             seeded.append(f"cli:{defaults['id']}")
+    seeded += _seed_claude_tier_models(registry)
     _seed_agent_order(registry, existing, "deepseek")
     _seed_agent_order(registry, existing, "muse")
     _seed_agent_order(registry, existing, "openrouter")

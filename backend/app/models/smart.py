@@ -146,7 +146,8 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     },
     {
         "id": "claude", "name": "Claude Code", "supported_tiers": ["simple", "standard", "complex"],
-        "quota_reset": "5h", "cost_weight": 1.0, "priority": 40,
+        "quota_reset": "5h", "cost_weight": 1.0, "priority": 40, "max_concurrency": 2,
+        "model_by_tier": {"trivial": "haiku", "simple": "sonnet", "standard": "sonnet", "complex": "opus"},
     },
     {
         "id": "codex", "name": "OpenAI Codex CLI", "supported_tiers": ["simple", "standard", "complex"],

@@ -90,7 +90,7 @@ async def test_worker_que_pide_parar_corta_sin_gate_ni_escalada(env, monkeypatch
     monkeypatch.setattr(broker.health_service, "mark_failure", lambda *a, **kw: failures.append(a))
     calls = _script(monkeypatch, [("codex", False, _ok(f"busqué\nSTATUS: {status}: ¿qué endpoint?"))])
     _no_verify(monkeypatch)
-    job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard", verify=["pytest"]))).id)
+    job = await _wait((await broker.submit(JobRequest(task="t", workspace=str(env["workspace"]), tier_hint="standard", verify=["pytest"], agent_id="codex"))).id)
     assert job.status == job_status
     assert job.error == f"{job_status}: ¿qué endpoint?"
     assert job.worker_status == status and job.worker_detail == "¿qué endpoint?"
