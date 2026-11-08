@@ -686,13 +686,32 @@ def _apply_job_deletions(rt: JobRuntime) -> None:
         attempt.detail["deletion_rejected"] = report.rejected
 
 
+LOG_VALUE_CAP = 300
+LOG_SKIP_KEYS = frozenset({"event", "stream", "text", "status", "argv"})
+
+
+def _log_value(value) -> str:
+    text = ",".join(str(v) for v in value) if isinstance(value, (list, tuple)) else str(value)
+    return text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")[:LOG_VALUE_CAP]
+
+
+def _log_line(ev: dict) -> str:
+    if "text" in ev:
+        return f"[{ev.get('stream', ev.get('event'))}] {ev['text']}"
+    head = f"[{ev.get('event')}]"
+    if ev.get("status"):
+        head += f" {ev['status']}"
+    extras = [f"{k}={_log_value(v)}" for k, v in ev.items() if k not in LOG_SKIP_KEYS]
+    return " ".join([head, *extras])
+
+
 def _write_log(rt: JobRuntime) -> str:
     path = jobs_dir() / f"{rt.job.id}.log"
     try:
         with path.open("w", encoding="utf-8") as fh:
             written = 0
             for ev in rt.lines:
-                line = f"[{ev.get('stream', ev.get('event'))}] {ev.get('text', ev.get('status', ''))}\n"
+                line = _log_line(ev) + "\n"
                 written += len(line)
                 if written > LOG_CAP:
                     break
@@ -702,15 +721,6 @@ def _write_log(rt: JobRuntime) -> str:
         log.warning("job_log_write_failed", job=rt.job.id, error=str(e))
         return ""
     return str(path)
-
-
-async def _record(job: Job) -> None:
-    if job.agent_id.split("-", 1)[0] == "anthropic":
-        return
-    try:
-        await usage_tracker.record(f"cli:{job.agent_id}", job.model or "default", job.tokens_in, job.tokens_out, job.cost_usd, False)
-    except Exception as e:
-        log.warning("job_usage_record_failed", job=job.id, error=str(e))
 
 
 def _apply_signal(agent: CliAgent, model: str, signal: QuotaSignal) -> None:
@@ -784,8 +794,6 @@ async def _collect_job_artifacts(rt: JobRuntime, status_before: set[str]) -> Non
         job.concurrent_jobs = _overlapping_jobs(rt)
         job.files_touched_exact = not job.concurrent_jobs
     job.log_path = _write_log(rt)
-    if job.agent_id:
-        await _record(job)
 
 
 def _work_count(job: Job) -> int:
@@ -800,17 +808,32 @@ async def _monthly_budget_reached(agent: CliAgent) -> bool:
     return spend["cost_usd"] >= agent.max_monthly_usd
 
 
-async def _record_anthropic_attempt(agent: CliAgent, model: str, outcome: AttemptOutcome) -> None:
-    if agent.base != "anthropic" or outcome.result is None:
+async def _record_attempt_usage(agent: CliAgent, model: str, outcome: AttemptOutcome) -> None:
+    if outcome.result is None:
         return
     usage = outcome.result.usage
     try:
-        await usage_tracker.record(budget_service.provider_id_of(agent.key), model,
+        await usage_tracker.record(budget_service.provider_id_of(agent.key), model or "default",
                                    int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0),
                                    usage.get("cost_usd"), False)
     except Exception as error:
         log.warning("agent_usage_record_failed", agent=agent.id, error=sanitize_error(str(error)))
-    budget_service.clear_cache()
+    if agent.base == "anthropic":
+        budget_service.clear_cache()
+
+
+def _add_usage_to_job(job: Job, usage: dict) -> None:
+    job.tokens_in += int(usage.get("input_tokens") or 0)
+    job.tokens_out += int(usage.get("output_tokens") or 0)
+    cost = usage.get("cost_usd")
+    if cost is not None:
+        job.cost_usd = (job.cost_usd or 0.0) + float(cost)
+
+
+async def _account_attempt(rt: JobRuntime, agent: CliAgent, model: str, outcome: AttemptOutcome) -> None:
+    await _record_attempt_usage(agent, model, outcome)
+    if outcome.result is not None:
+        _add_usage_to_job(rt.job, outcome.result.usage)
 
 
 async def _refresh_budget_statuses(registry: ProviderRegistry, statuses: dict[str, AgentStatus]) -> None:
@@ -833,7 +856,7 @@ async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: C
                 outcome = AttemptOutcome(ok=False, error="monthly_budget")
             else:
                 outcome = await _run_attempt(rt, agent, model, rt.request.timeout_s or agent.timeout_s, task=rt.current_task)
-            await _record_anthropic_attempt(agent, model, outcome)
+            await _account_attempt(rt, agent, model, outcome)
     finally:
         agents_registry.adjust_running(agent.id, -1)
     attempt.finished_at, attempt.duration_s, attempt.returncode = _now(), round(time.monotonic() - t0, 2), outcome.returncode
@@ -877,7 +900,7 @@ async def _run_attempt_guarded(rt: JobRuntime, registry: ProviderRegistry, agent
             if await _monthly_budget_reached(agent):
                 return AttemptOutcome(ok=False, error="monthly_budget")
             outcome = await _run_attempt(rt, agent, model, timeout_s, task=task, read_only=read_only)
-            await _record_anthropic_attempt(agent, model, outcome)
+            await _account_attempt(rt, agent, model, outcome)
             return outcome
     finally:
         agents_registry.adjust_running(agent.id, -1)
@@ -1226,9 +1249,6 @@ def _finish_ok(job: Job, outcome: AttemptOutcome, agent: CliAgent, model: str) -
     result = outcome.result or AdapterResult()
     job.status = "succeeded"
     job.output_tail = result.text[-20_000:]
-    job.tokens_in = int(result.usage.get("input_tokens") or 0)
-    job.tokens_out = int(result.usage.get("output_tokens") or 0)
-    job.cost_usd = result.usage.get("cost_usd")
     health_service.mark_success(_pool_key(agent, model))
 
 

@@ -96,6 +96,10 @@ CLAUDE_BUILD_TOOLS = (
     "PowerShell(npm test:*)", "PowerShell(npm run:*)",
     "PowerShell(dotnet build:*)", "PowerShell(dotnet test:*)", "PowerShell(dotnet restore:*)",
     "PowerShell(.\\gradlew.bat:*)", "PowerShell(cmd /c gradlew.bat:*)", "PowerShell(python scripts/:*)",
+    # lectura y build que los delegados piden y se negaban (sin find ni sed: tienen -delete/-exec y -i)
+    "Bash(ls:*)", "Bash(cat:*)", "Bash(grep:*)", "Bash(rg:*)", "Bash(wc:*)",
+    "Bash(npm ci:*)", "Bash(dotnet format:*)", "Bash(cmake:*)", "Bash(ninja:*)",
+    "PowerShell(Get-Content:*)", "PowerShell(Get-ChildItem:*)", "PowerShell(Test-Path:*)", "PowerShell(Select-String:*)",
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (
@@ -301,6 +305,11 @@ def _jsonl(text: str) -> list[dict]:
     return items
 
 
+def _input_with_cache(usage: dict) -> int:
+    keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    return sum(int(usage.get(k) or 0) for k in keys)
+
+
 # ── adaptadores ──────────────────────────────────────────────────────────────
 
 class ClaudeAdapter:
@@ -340,7 +349,7 @@ class ClaudeAdapter:
         return AdapterResult(
             text=str(obj.get("result") or "") or stdout.strip(),
             structured_error=bool(obj.get("is_error")),
-            usage={"input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0),
+            usage={"input_tokens": _input_with_cache(usage), "output_tokens": usage.get("output_tokens", 0),
                    "cost_usd": obj.get("total_cost_usd")},
             session_id=str(obj.get("session_id") or ""),
         )
@@ -386,7 +395,7 @@ class AnthropicAdapter:
             text = f"{text}\nAPI Error: {status}".strip()
         return AdapterResult(
             text=text, structured_error=bool(obj.get("is_error") or error) or returncode not in (0, None),
-            usage={"input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0),
+            usage={"input_tokens": _input_with_cache(usage), "output_tokens": usage.get("output_tokens", 0),
                    "cost_usd": obj.get("total_cost_usd")}, session_id=str(obj.get("session_id") or ""),
         )
 
@@ -433,6 +442,12 @@ class OpenRouterAdapter(ClaudeAdapter):
         spec = super().build(agent, exe, job_id, task, model, workspace, tier, timeout_s, read_only)
         spec.env.update(self.openrouter_env(model, key))
         return spec
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        result = super().parse(stdout, stderr, returncode, out_file)
+        # Claude Code calcula precio de lista aunque el modelo sea :free
+        result.usage["cost_usd"] = 0.0
+        return result
 
 
 class CodexAdapter:
