@@ -6,7 +6,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.models.delegate import JobRequest
+from app.services import providers_service
 from app.services.cli_agents import broker
+from app.services.cli_agents import job_ledger
 from app.services.cli_agents import outcome_stats
 
 router = APIRouter(prefix="/delegate", tags=["delegate"])
@@ -39,6 +41,11 @@ async def list_jobs(limit: int = Query(50, ge=1, le=500), status: Optional[str] 
 @router.get("/stats")
 async def delegation_stats(days: int = Query(30, ge=1, le=365)):
     return await outcome_stats.summary(days)
+
+
+@router.get("/efficiency")
+async def delegation_efficiency(days: int = Query(30, ge=1, le=365)):
+    return await job_ledger.efficiency(days, providers_service.load_registry().cli_agents)
 
 
 @router.get("/jobs/{job_id}")
