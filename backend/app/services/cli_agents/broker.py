@@ -26,9 +26,9 @@ from app.models.delegate import AgentStatus, Attempt, Job, JobRequest
 from app.models.provider import ProviderRegistry
 from app.models.smart import CliAgent
 from app.services import budget_service, health_service, providers_service, usage_tracker
-from app.services.cli_agents import deletions, outcome_stats, registry as agents_registry, reviewer, session, verifier
+from app.services.cli_agents import deletions, job_ledger, outcome_stats, registry as agents_registry, reviewer, session, verifier
 from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
-from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only, verify_hint
+from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only, verify_hint, verify_tools, with_allowed_tools
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -570,6 +570,9 @@ async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: i
     try:
         text = (task or rt.request.task) + ("" if read_only else verify_hint(rt.request.verify))
         spec = adapter_for(agent.base).build(agent, exe, rt.job.id, text, model, rt.workspace, rt.job.tier, timeout_s, read_only=read_only)
+        if not read_only and agent.base in ("claude", "openrouter") and rt.request.verify:
+            # El broker ya corre estos comandos en el host; permitírselos al delegado no amplía nada
+            spec.argv = with_allowed_tools(spec.argv, verify_tools(rt.request.verify))
         spec.env.update(account_env(agent))
     except AdapterUnsafe as e:
         return AttemptOutcome(ok=False, error=str(e))
@@ -808,6 +811,7 @@ async def _collect_job_artifacts(rt: JobRuntime, status_before: set[str]) -> Non
         job.concurrent_jobs = _overlapping_jobs(rt)
         job.files_touched_exact = not job.concurrent_jobs
     job.log_path = _write_log(rt)
+    await job_ledger.record_job(job)
 
 
 def _work_count(job: Job) -> int:

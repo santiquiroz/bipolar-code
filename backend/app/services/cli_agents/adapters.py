@@ -81,6 +81,19 @@ def verify_hint(commands: Optional[list[str]]) -> str:
     )
 
 
+def verify_tools(commands: Optional[list[str]]) -> list[str]:
+    tools = [f"{shell}({c})" for c in commands or [] if c for shell in ("Bash", "PowerShell")]
+    return list(dict.fromkeys(tools))
+
+
+def with_allowed_tools(argv: list[str], extra: list[str]) -> list[str]:
+    out = list(argv)
+    if extra and "--allowedTools" in out and out.index("--allowedTools") + 1 < len(out):
+        i = out.index("--allowedTools") + 1
+        out[i] = ",".join([out[i], *extra])
+    return out
+
+
 CLAUDE_BUILD_TOOLS = (
     "Bash(dotnet build:*)", "Bash(dotnet test:*)", "Bash(dotnet restore:*)",
     "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx vitest:*)", "Bash(npx ng:*)",
