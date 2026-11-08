@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
     from app.services.llamacpp_service import autostart_if_configured
     from app.services.telegram_bot import run_telegram_bot
     from app.services import decisions_log
-    from app.services.cli_agents import broker
+    from app.services.cli_agents import broker, job_ledger
     from app.services import providers_service
     try:
         _startup_registry = providers_service.load_registry()
@@ -86,6 +86,10 @@ async def lifespan(app: FastAPI):
         await decisions_log.init_tables()
     except Exception as e:
         log.warning("decisions_log_init_failed", error=str(e))
+    try:
+        await job_ledger.init_tables()
+    except Exception as e:
+        log.warning("job_ledger_init_failed", error=str(e))
     asyncio.create_task(autostart_if_configured())
     asyncio.create_task(run_telegram_bot())
     task = asyncio.create_task(_copilot_token_refresh_loop())
