@@ -23,16 +23,16 @@ npm test
 npm run package
 ```
 
-El último comando genera `bipolar-copilot-0.1.0.vsix`.
+El último comando genera `bipolar-copilot-0.2.0.vsix`.
 
 ## Instalar
 
-Opción 1, desde VS Code: vista **Extensions** → menú **«…»** → **«Install from VSIX…»** → elige `bipolar-copilot-0.1.0.vsix`.
+Opción 1, desde VS Code: vista **Extensions** → menú **«…»** → **«Install from VSIX…»** → elige `bipolar-copilot-0.2.0.vsix`.
 
 Opción 2, con el CLI de VS Code. Usa la ruta completa, porque en algunos PCs el comando `code` abre Cursor en vez de VS Code:
 
 ```bat
-"%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd" --install-extension bipolar-copilot-0.1.0.vsix
+"%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd" --install-extension bipolar-copilot-0.2.0.vsix
 ```
 
 ## Agregar el proveedor
@@ -64,6 +64,12 @@ Para evitarlo, la extensión ajusta sola el setting de usuario `chat.agentHost.c
 - Después de la primera carga de modelos, **abre un chat nuevo** para que Copilot tome el ajuste.
 
 Si prefieres gestionarlo tú, desactívalo con `"bipolar.manageCopilotOverrides": false` en tus settings.
+
+## Delegar desde Copilot Chat
+
+Desde la versión 0.2.0 la extensión registra el servidor MCP **bipolar** (herramientas `delegate`, `job_status`, `job_output`, `cancel_job`, `list_agents`) usando la misma URL y API key del proveedor. El comando **«Bipolar: Instalar agente orquestador en este workspace»** crea `.github/agents/bipolar-orquestador.agent.md`; elige el agente **Bipolar Orquestador** en el chat para delegar código a Muse, Codex, Copilot CLI, Claude Code, etc.
+
+Tutorial completo: [docs/delegar-desde-copilot.md](../../docs/delegar-desde-copilot.md).
 
 ## Problemas frecuentes
 

@@ -72,6 +72,10 @@ export function messagesUrl(baseUrl: string): string {
   return stripTrailingSlashes(baseUrl) + "/v1/messages";
 }
 
+export function mcpUrl(baseUrl: string): string {
+  return stripTrailingSlashes(baseUrl) + "/mcp";
+}
+
 function parseEntry(raw: unknown): CatalogEntry | undefined {
   if (!isRecord(raw)) {
     return undefined;

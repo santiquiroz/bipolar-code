@@ -115,6 +115,8 @@ La extensión ajusta Copilot CLI para los modelos de Bipolar y el catálogo cons
 
 Detalles y solución de problemas: [integrations/vscode-copilot/README.md](integrations/vscode-copilot/README.md).
 
+Para delegar código a los agentes CLI de bipolar desde Copilot Chat (igual que desde Claude Code), mira el tutorial [docs/delegar-desde-copilot.md](docs/delegar-desde-copilot.md).
+
 ### Cursor, Cline, Continue y otros clientes OpenAI-compatible
 
 Cualquier cliente BYOK con proveedor "OpenAI compatible":
