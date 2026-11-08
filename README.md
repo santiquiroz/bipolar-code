@@ -220,11 +220,21 @@ curl -sS -H "x-api-key: $KEY" -H "content-type: application/json" -d '{"task":"G
 - `allow_request_verify` (Agentes → ajustes, **apagado por defecto**): con él apagado, pedir `verify` por API o MCP se rechaza con 400.
 - bipolar compara el árbol antes y después de cada revisión. Si detecta un cambio sin jobs concurrentes en el mismo workspace, invalida el veredicto y termina el job en `failed` con `review_status="tampered"`; no escala ni revierte los cambios.
 - Los hallazgos pueden incluir `{issue, file, quote}`. Las citas se validan contra el archivo o el diff; las que no aparecen se descartan. Si un `revise` o `reject` solo tiene citas descartadas, no cuenta como petición de cambios.
-- El trabajador debe terminar con `STATUS: DONE|DONE_WITH_CONCERNS|NEEDS_CONTEXT|BLOCKED`. `NEEDS_CONTEXT` y `BLOCKED` terminan el job sin escalar; `DONE_WITH_CONCERNS` entrega sus dudas al revisor.
+- El trabajador debe terminar con `STATUS: DONE|DONE_WITH_CONCERNS|NEEDS_CONTEXT|BLOCKED`. `NEEDS_CONTEXT` termina el job sin escalar. `BLOCKED` también, salvo que el intento no haya cambiado archivos y el job no fije agente: entonces se prueba otro carril una sola vez (suele ser el entorno del carril, p. ej. un sandbox que no arranca). `DONE_WITH_CONCERNS` entrega sus dudas al revisor.
 - En las rondas posteriores, los pedidos de revisiones anteriores se presentan al revisor como datos delimitados para contrastarlos con la tarea original; la corrección los recibe para conservar los cambios ya pedidos.
 - Si `verify` falla porque otro proceso bloquea archivos de build, el job termina con `verify_environment`, sin otra ronda de corrección ni escalada.
 - `GET /api/delegate/stats` resume aprobaciones por agente y tier. `delegation.demote_low_acceptance` (apagado por defecto) mueve al final a los agentes cuya aprobación queda bajo `demote_below_pct` tras al menos `demote_min_samples` resultados.
 - Los códigos 401/429/503/529 en la salida de un CLI solo cuentan como señales si aparecen con contexto de código HTTP; un número suelto no cambia el estado de cuota, autenticación o sobrecarga. Un status HTTP recibido como tal sí se usa.
+
+**Eficiencia de la delegación (2.22)**: Dashboard y Agentes muestran el panel *Eficiencia de la delegación* (`GET /api/delegate/efficiency?days=N`): jobs, tasa de éxito, qué porcentaje de los éxitos hizo Claude (tu misma cuenta o la API pagada), costo reportado, reparto por fondo (suscripción Claude, API Anthropic, suscripciones externas, prepago, gratis) y avisos accionables. Lo que aprendimos midiendo 507 jobs reales:
+
+- Delegar en Claude Code con la misma cuenta no ahorra cupo; hacerlo en Opus lo gasta al precio más alto. Claude Code trae ahora modelos por tier (`haiku` / `sonnet` / `sonnet` / `opus`), editables en Agentes → *Por tier*, y su revisor usa `sonnet`.
+- Si un carril propio está solo ocupado, el job espera su turno en vez de saltar a uno medido (`anthropic`, `deepseek` o cualquiera con tope mensual). Los límites de concurrencia se aplican sin reiniciar.
+- Cada corrida (trabajo, revisiones y revisores) registra su uso con la caché incluida; OpenRouter registra costo 0; los jobs quedan en `delegate_jobs` y el log de cada job conserva los campos de cada evento.
+- El delegado de Claude Code puede correr exactamente los comandos de `verify` de su job (antes se le negaban y corregía a ciegas), además de comandos de lectura (`ls`, `cat`, `grep`, `rg`, `wc`, `Get-Content`…).
+- Entregar una tarea chica a otro agente cuesta casi lo mismo que hacerla: escribir el contrato y revisar el diff no son gratis. Conviene delegar tareas grandes, de mucha lectura o fáciles de verificar con `verify`.
+
+Para delegar desde GitHub Copilot Chat (o Copilot CLI) igual que desde Claude Code: [docs/delegar-desde-copilot.md](docs/delegar-desde-copilot.md).
 
 **Cuentas por CLI**: `claude`, `codex` y `deepseek` admiten varias cuentas, una entrada más por cuenta con su propia carpeta de config bajo `<config_dir>/accounts/`. Agentes → **Agregar cuenta** crea la entrada (`<base>-<n>`, deshabilitada hasta que la habilites) y muestra los comandos de login; para Claude:
 
