@@ -13,6 +13,9 @@ export function useSubmitJob() {
   const qc = useQueryClient()
   return useMutation({ mutationFn: (body: JobRequest) => delegateApi.submitJob(body), onSuccess: () => qc.invalidateQueries({ queryKey: ['delegate', 'jobs'] }) })
 }
+export function useDelegationEfficiency(days: number) {
+  return useQuery({ queryKey: ['delegate', 'efficiency', days], queryFn: () => delegateApi.efficiency(days), refetchInterval: 60_000 })
+}
 export function useCancelJob() {
   const qc = useQueryClient()
   return useMutation({ mutationFn: delegateApi.cancelJob, onSuccess: () => qc.invalidateQueries({ queryKey: ['delegate', 'jobs'] }) })

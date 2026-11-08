@@ -3,6 +3,7 @@ import { Card } from '@/components/Card'
 import { Badge } from '@/components/Badge'
 import { Button } from '@/components/Button'
 import { Spinner } from '@/components/Spinner'
+import { DelegationEfficiency } from '@/components/DelegationEfficiency'
 import { ModelPicker } from '@/components/ModelPicker'
 import { useProxyStatus, useStartProxy } from '@/hooks/useProxy'
 import { useProxyRoute } from '@/hooks/useProxyRoute'
@@ -24,6 +25,8 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <DelegationEfficiency />
+
       {/* Proxy status */}
       <Card title="Proxy Status">
         {statusLoading ? <Spinner className="h-5 w-5 text-brand-500" /> : (
@@ -34,7 +37,7 @@ export function Dashboard() {
             />
             <span className="text-sm text-gray-500">Puerto <strong>{status?.port ?? 4001}</strong></span>
             {status?.running && (
-              <Badge label={`${status.healthy_models} healthy`} variant="success" />
+              <Badge label={`${status.healthy_models} healthy`} variant={status.healthy_models === 0 ? 'warning' : 'success'} />
             )}
             {status?.unhealthy_models ? (
               <Badge label={`${status.unhealthy_models} unhealthy`} variant="error" />
