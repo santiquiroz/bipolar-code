@@ -109,10 +109,8 @@ CLAUDE_BUILD_TOOLS = (
     "PowerShell(npm test:*)", "PowerShell(npm run:*)",
     "PowerShell(dotnet build:*)", "PowerShell(dotnet test:*)", "PowerShell(dotnet restore:*)",
     "PowerShell(.\\gradlew.bat:*)", "PowerShell(cmd /c gradlew.bat:*)", "PowerShell(python scripts/:*)",
-    # lectura y build que los delegados piden y se negaban (sin find ni sed: tienen -delete/-exec y -i)
-    "Bash(ls:*)", "Bash(cat:*)", "Bash(grep:*)", "Bash(rg:*)", "Bash(wc:*)",
-    "Bash(npm ci:*)", "Bash(dotnet format:*)", "Bash(cmake:*)", "Bash(ninja:*)",
-    "PowerShell(Get-Content:*)", "PowerShell(Get-ChildItem:*)", "PowerShell(Test-Path:*)", "PowerShell(Select-String:*)",
+    # sin cat/grep/ls/Get-Content: leen fuera del workspace (Read lo niega); sin rg (--pre ejecuta) ni cmake (-E rm borra)
+    "Bash(npm ci:*)", "Bash(dotnet format:*)", "Bash(ninja:*)",
 )
 TEXT_CONSTRAINTS = "\n\nResponde solo con texto, directo al punto. No hay archivos ni comandos que ejecutar."
 READ_ONLY_CONSTRAINTS = (

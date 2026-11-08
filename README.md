@@ -231,7 +231,7 @@ curl -sS -H "x-api-key: $KEY" -H "content-type: application/json" -d '{"task":"G
 - Delegar en Claude Code con la misma cuenta no ahorra cupo; hacerlo en Opus lo gasta al precio más alto. Claude Code trae ahora modelos por tier (`haiku` / `sonnet` / `sonnet` / `opus`), editables en Agentes → *Por tier*, y su revisor usa `sonnet`.
 - Si un carril propio está solo ocupado, el job espera su turno en vez de saltar a uno medido (`anthropic`, `deepseek` o cualquiera con tope mensual). Los límites de concurrencia se aplican sin reiniciar.
 - Cada corrida (trabajo, revisiones y revisores) registra su uso con la caché incluida; OpenRouter registra costo 0; los jobs quedan en `delegate_jobs` y el log de cada job conserva los campos de cada evento.
-- El delegado de Claude Code puede correr exactamente los comandos de `verify` de su job (antes se le negaban y corregía a ciegas), además de comandos de lectura (`ls`, `cat`, `grep`, `rg`, `wc`, `Get-Content`…).
+- El delegado de Claude Code puede correr exactamente los comandos de `verify` de su job (antes se le negaban y corregía a ciegas). Para leer usa sus herramientas Read/Grep/Glob, que quedan dentro del workspace: `cat`, `grep`, `ls` o `Get-Content` leerían fuera, `rg --pre` ejecuta comandos y `cmake -E rm` borra, así que no se permiten.
 - Entregar una tarea chica a otro agente cuesta casi lo mismo que hacerla: escribir el contrato y revisar el diff no son gratis. Conviene delegar tareas grandes, de mucha lectura o fáciles de verificar con `verify`.
 
 Para delegar desde GitHub Copilot Chat (o Copilot CLI) igual que desde Claude Code: [docs/delegar-desde-copilot.md](docs/delegar-desde-copilot.md).

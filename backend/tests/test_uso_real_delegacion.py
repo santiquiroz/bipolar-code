@@ -71,3 +71,10 @@ async def test_job_records_usage_for_work_and_review_and_sums_it(env, monkeypatc
     assert usage_tracker.record.await_count == 2
     assert (job.tokens_in, job.tokens_out) == (200, 17)
     assert job.cost_usd == pytest.approx(0.2)
+
+
+def test_claude_lane_has_no_out_of_workspace_or_exec_capable_grants():
+    from app.services.cli_agents.adapters import CLAUDE_BUILD_TOOLS
+    forbidden = ("Bash(cat", "Bash(grep", "Bash(rg", "Bash(ls", "Bash(wc", "Bash(find", "Bash(sed", "Bash(cmake",
+                 "PowerShell(Get-Content", "PowerShell(Get-ChildItem", "PowerShell(Select-String")
+    assert not [tool for tool in CLAUDE_BUILD_TOOLS if tool.startswith(forbidden)]
