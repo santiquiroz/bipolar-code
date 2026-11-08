@@ -38,6 +38,7 @@ vi.mock('@/hooks/useDelegate', () => ({
   }] } }),
   useSubmitJob: () => ({ mutate: vi.fn(), isPending: false }),
   useCancelJob: () => ({ mutate: vi.fn() }),
+  useDelegationEfficiency: () => ({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() }),
 }))
 
 const agentCheckbox = () => screen.getAllByLabelText(/habilitado/i)[0] as HTMLInputElement
@@ -119,6 +120,13 @@ describe('Agents', () => {
     expect(detail).toHaveClass('text-red-600')
     expect(screen.getByText('Cambios sin guardar')).toBeInTheDocument()
     expect(agentCheckbox()).toBeChecked()
+  })
+  it('editar el modelo por tier marca cambios y lo guarda en model_by_tier', () => {
+    render(<Agents />)
+    fireEvent.change(screen.getByLabelText('Modelo standard de Claude Code'), { target: { value: 'opus' } })
+    expect(screen.getByText('Cambios sin guardar')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }))
+    expect(h.saveMutate.mock.calls[0][0].cli_agents[0].model_by_tier).toEqual({ standard: 'opus' })
   })
   it('Descartar restaura el estado del servidor', () => {
     withClaudeDisabled()

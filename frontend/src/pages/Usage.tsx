@@ -19,6 +19,15 @@ const PROVIDER_COLORS: Record<string, string> = {
   ollama: '#14b8a6',
 }
 
+const FALLBACK_COLORS = ['#6366f1', '#0ea5e9', '#f43f5e', '#f59e0b', '#10b981', '#a855f7', '#64748b']
+const FREE_CLI = ['cli:openrouter', 'cli:ollama']
+
+function CostCell({ pid, cost }: { pid: string; cost: number }) {
+  if (cost > 0) return <>{`$${cost.toFixed(4)}`}</>
+  if (pid.startsWith('cli:') && !FREE_CLI.includes(pid)) return <span className="text-gray-500 text-xs font-medium">suscripción</span>
+  return <span className="text-emerald-600 text-xs font-medium">GRATIS</span>
+}
+
 function formatTokens(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(0)}k`
@@ -47,7 +56,9 @@ export function Usage() {
     return acc
   }, [])
 
-  const totalCost = Object.values(byProvider).reduce((s: number, p: any) => s + (p.cost_usd || 0), 0)
+  const chartKeys = Array.from(new Set(chartData.flatMap((d: any) => Object.keys(d).filter(k => k !== 'period')))) as string[]
+
+  const totalCost =Object.values(byProvider).reduce((s: number, p: any) => s + (p.cost_usd || 0), 0)
   const totalRequests = Object.values(byProvider).reduce((s: number, p: any) => s + (p.requests || 0), 0)
   const totalInput = Object.values(byProvider).reduce((s: number, p: any) => s + (p.input_tokens || 0), 0)
   const totalOutput = Object.values(byProvider).reduce((s: number, p: any) => s + (p.output_tokens || 0), 0)
@@ -69,8 +80,10 @@ export function Usage() {
             </button>
           ))}
         </div>
+      </div>
 
-        <Card title="Decisiones de routing">
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card title="Decisiones de routing" className="lg:col-span-2 min-w-0">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
             {[
               ['Decisiones', decisionSummary?.count ?? 0],
@@ -81,8 +94,8 @@ export function Usage() {
           </div>
           <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-gray-400 text-left border-b"><th>Hora</th><th>Superficie</th><th>Tier / score</th><th>Intent</th><th>Destino</th><th>Shadow</th><th>Origen</th><th>Resultado</th></tr></thead><tbody>{(decisions?.decisions || []).map(row => <tr key={row.id} className="border-b border-gray-50"><td className="py-2">{row.timestamp.slice(11, 16)}</td><td>{row.surface}</td><td><Badge label={`${row.tier} / ${row.score}`} /></td><td>{row.intent}</td><td>{row.chosen_key}</td><td>{row.would_key}</td><td>{row.source}</td><td>{row.outcome}</td></tr>)}</tbody></table></div>
         </Card>
-        <Card title="Salud de destinos">
-          <table className="w-full text-sm"><thead><tr className="text-gray-400 text-xs text-left border-b"><th>Destino</th><th>Estado</th><th>Fallos</th><th /></tr></thead><tbody>{Object.entries(health?.targets || {}).map(([target, item]) => <tr key={target} className="border-b border-gray-50"><td className="py-2">{target}</td><td><Badge label={item.state} variant={item.state === 'available' ? 'success' : 'warning'} /></td><td>{item.consecutive_failures ?? 0}</td><td><Button size="sm" variant="secondary" onClick={() => resetHealth.mutate(target)}>Reset</Button></td></tr>)}</tbody></table>
+        <Card title="Salud de destinos" className="min-w-0">
+          <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-gray-400 text-xs text-left border-b"><th>Destino</th><th>Estado</th><th>Fallos</th><th /></tr></thead><tbody>{Object.entries(health?.targets || {}).map(([target, item]) => <tr key={target} className="border-b border-gray-50"><td className="py-2">{target}</td><td><Badge label={item.state} variant={item.state === 'available' ? 'success' : 'warning'} /></td><td>{item.consecutive_failures ?? 0}</td><td><Button size="sm" variant="secondary" onClick={() => resetHealth.mutate(target)}>Reset</Button></td></tr>)}</tbody></table></div>
         </Card>
       </div>
 
@@ -112,17 +125,15 @@ export function Usage() {
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={chartData}>
               <XAxis dataKey="period" stroke="#9ca3af" tick={{ fontSize: 11 }} />
-              <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} tickFormatter={v => `$${(v as number).toFixed(3)}`} />
+              <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} tickFormatter={v => { const n = v as number; return `$${n.toFixed(n >= 1 ? 2 : 3)}` }} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 12 }}
                 formatter={(value) => [`$${(+(value ?? 0)).toFixed(4)}`, '']}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              {Object.keys(PROVIDER_COLORS).map(pid =>
-                chartData.some((d: any) => d[pid] !== undefined) ? (
-                  <Bar key={pid} dataKey={pid} stackId="a" fill={PROVIDER_COLORS[pid]} name={pid} />
-                ) : null
-              )}
+              {chartKeys.map((pid, i) => (
+                <Bar key={pid} dataKey={pid} stackId="a" fill={PROVIDER_COLORS[pid] ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length]} name={pid} />
+              ))}
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -155,9 +166,7 @@ export function Usage() {
                   <td className="py-2 text-right">{data.requests}</td>
                   <td className="py-2 text-right">{formatTokens((data.input_tokens || 0) + (data.output_tokens || 0))}</td>
                   <td className="py-2 text-right">
-                    {data.cost_usd > 0
-                      ? `$${data.cost_usd.toFixed(4)}`
-                      : <span className="text-emerald-600 text-xs font-medium">GRATIS</span>}
+                    <CostCell pid={pid} cost={data.cost_usd || 0} />
                   </td>
                 </tr>
               ))}

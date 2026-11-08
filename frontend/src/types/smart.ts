@@ -167,4 +167,20 @@ export interface AccountInfo {
   has_login: boolean | null; state: string; seconds_left: number; usage: AccountUsage | null
 }
 export interface LoginCommands { powershell: string; bash: string; note?: string }
+export type EfficiencyPool = 'anthropic_account' | 'anthropic_api' | 'subscription' | 'prepaid' | 'free'
+export interface EfficiencyTotals {
+  jobs: number; succeeded: number; success_pct: number | null; cost_usd: number
+  tokens_in: number; tokens_out: number; anthropic_share_pct: number | null
+}
+export interface EfficiencyPoolRow { pool: EfficiencyPool; label: string; jobs: number; succeeded: number; cost_usd: number }
+export interface EfficiencyAgent {
+  agent_id: string; name: string; pool: string; jobs: number; succeeded: number; success_pct: number | null
+  statuses: Record<string, number>; accept_pct: number | null; cost_usd: number | null
+  tokens_in: number; tokens_out: number; cost_per_success: number | null; models: string[]
+}
+export interface EfficiencyWarning { level: 'high' | 'medium' | 'info'; code: string; message: string; agent_id: string | null }
+export interface DelegationEfficiency {
+  days: number; since: string; totals: EfficiencyTotals; pools: EfficiencyPoolRow[]
+  agents: EfficiencyAgent[]; warnings: EfficiencyWarning[]
+}
 export interface SseEvent { event: 'status' | 'line' | 'attempt' | 'ping' | 'done'; [key: string]: unknown }

@@ -7,7 +7,7 @@ import type {
 import type {
   AgentStatus, Classification, DecisionsSummary, DecisionRow, DelegationConfig, Job, JobRequest,
   RouteDecision, SseEvent, SmartConfigResponse, SmartRoutingConfig, CliAgent,
-  AccountInfo, LoginCommands,
+  AccountInfo, LoginCommands, DelegationEfficiency,
 } from '@/types/smart'
 
 const STORAGE_KEY = 'bipolar_api_key'
@@ -180,7 +180,12 @@ export const accountsApi = {
   remove: (agentId: string) => api.delete(`/accounts/${encodeURIComponent(agentId)}`).then(r => r.data),
 }
 
+export const healthApi = {
+  get: () => api.get<{ version: string }>('/health').then(r => r.data),
+}
+
 export const delegateApi = {
+  efficiency: (days: number) => api.get<DelegationEfficiency>('/delegate/efficiency', { params: { days } }).then(r => r.data),
   listJobs: (params?: { limit?: number; status?: string }) => api.get<{ jobs: Job[] }>('/delegate/jobs', { params }).then(r => r.data),
   submitJob: (body: JobRequest) => api.post<Job>('/delegate/jobs', body).then(r => r.data),
   getJob: (id: string) => api.get<Job>(`/delegate/jobs/${encodeURIComponent(id)}`).then(r => r.data),
