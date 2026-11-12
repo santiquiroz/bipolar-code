@@ -30,7 +30,7 @@ AUTH_RE = re.compile(
 OVERLOADED_RE = re.compile(rf"overloaded|{_status_code(529)}|{_status_code(503)}|service unavailable", re.I)
 NETWORK_RE = re.compile(r"ENOTFOUND|ECONNRESET|ETIMEDOUT|Can't reach the API server", re.I)
 MODEL_UNAVAILABLE_RE = re.compile(
-    r"No endpoints found|is not a valid model ID|model not found|is not available for free|is unavailable with junie lite-only access",
+    r"No endpoints found|is not a valid model ID|model not found|is not available for free|is unavailable with junie lite-only access|model is not supported when using",
     re.I,
 )
 RETRY_AFTER_RE = re.compile(

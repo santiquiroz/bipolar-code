@@ -135,6 +135,7 @@ def test_detect_signal_dsh_missing_credential_is_auth():
     ("xyz is not a valid model ID", "model_unavailable"),
     ("model not found", "model_unavailable"),
     ("is not available for free", "model_unavailable"),
+    ("The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.", "model_unavailable"),
 ])
 def test_detect_signal_model_unavailable(text, kind):
     signal = qs.detect_signal(text)
