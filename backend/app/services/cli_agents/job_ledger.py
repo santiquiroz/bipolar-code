@@ -22,6 +22,7 @@ _POOL_BY_BASE = {
     "anthropic": "anthropic_api",
     "openrouter": "free",
     "ollama": "free",
+    "junie": "free",
     "deepseek": "prepaid",
 }
 _ANTHROPIC_POOLS = ("anthropic_account", "anthropic_api")

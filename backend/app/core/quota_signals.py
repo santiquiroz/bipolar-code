@@ -24,13 +24,13 @@ EXHAUSTED_RE = re.compile(
 AUTH_RE = re.compile(
     rf"not (?:logged in|authenticated)|authentication required|invalid api key|{_status_code(401)}"
     r"|login required|unauthori[sz]ed|please (?:run|sign in)|missing_credential"
-    r"|sign[_ -]?in[_ -]?required|sign in to \w+ to use",
+    r"|sign[_ -]?in[_ -]?required|sign in to \w+ to use|cannot find authorization|please authenticate",
     re.I,
 )
 OVERLOADED_RE = re.compile(rf"overloaded|{_status_code(529)}|{_status_code(503)}|service unavailable", re.I)
 NETWORK_RE = re.compile(r"ENOTFOUND|ECONNRESET|ETIMEDOUT|Can't reach the API server", re.I)
 MODEL_UNAVAILABLE_RE = re.compile(
-    r"No endpoints found|is not a valid model ID|model not found|is not available for free",
+    r"No endpoints found|is not a valid model ID|model not found|is not available for free|is unavailable with junie lite-only access",
     re.I,
 )
 RETRY_AFTER_RE = re.compile(

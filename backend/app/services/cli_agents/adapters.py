@@ -1,7 +1,7 @@
 """
 Adaptadores por CLI: construyen la línea de comando (argv en lista, nunca shell) y
 parsean la salida. Los flags de seguridad son constantes: no se pueden desactivar
-desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex, dsh)
+desde configuración. El texto de la tarea nunca viaja en argv: va por stdin (codex, dsh, junie)
 o por un archivo puntero dentro del workspace (claude, copilot, agy, cursor, muse).
 """
 import json
@@ -16,7 +16,7 @@ from app.core.config import env_value, get_settings
 from app.models.smart import CliAgent, tier_index
 
 BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
-            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse", "openrouter": "claude"}
+            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse", "openrouter": "claude", "junie": "junie"}
 DSH_ACCOUNT_RECORD = "deepseek-account-platform/default:"
 DSH_CLI_PARTS = ("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
 MODEL_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -33,6 +33,16 @@ CURSOR_CRITICAL_DENY = (
     "Shell(rm)", "Shell(bash)", "Shell(powershell)", "Write(**/.git/**)",
 )
 CURSOR_SHIM_NAMES = ("cursor-agent.cmd", "cursor-agent.ps1", "agent.cmd")
+JUNIE_FREE_MODEL = "junie-lite"
+JUNIE_VERSION_RE = re.compile(r"^[0-9][0-9.]{0,31}$")
+JUNIE_ENV = ("JUNIE_API_KEY", "JUNIE_HOME", "JUNIE_DATA_DIR")
+# sin las *-default-location*=false Junie importa las skills y comandos de ~/.claude (escriben fuera del repo)
+JUNIE_FIXED_FLAGS = (
+    "--skip-update-check", "--output-format", "json", "--skill-default-locations=false",
+    "--command-default-location=false", "--agent-default-location=false", "--mcp-default-locations=false",
+    "--config-default-locations=false", "--share-anonymous-statistics=false",
+)
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 CURSOR_PRELOAD = "\n".join((
     'const os = require("os");',
     "delete process.env.MSYS2_ARG_CONV_EXCL;",
@@ -44,7 +54,9 @@ CURSOR_PRELOAD = "\n".join((
 DANGEROUS_ARG_RE = re.compile(
     r"dangerously|bypass|--yolo|--allow-all|full-auto|danger-full-access|--permission-mode|--sandbox"
     r"|--approve|--add-dir|--cd\b|^-C$|--autopilot|--allow-tool|--allowedTools|--patch|--profile"
-    r"|--disable-|--trust-workspace|--approval|--workspace|--prompt-file|--permission-profile",
+    r"|--disable-|--trust-workspace|--approval|--workspace|--prompt-file|--permission-profile"
+    r"|--brave|--auth|--project|--json-output-file|--gateway|--acp|--system-prompt|--provider|--use-version"
+    r"|--channel|--allowed-tools|--act-as-interactive|location|--litellm|api-key",
     re.I,
 )
 SAFE_ARG_RE = re.compile(r"^--?[A-Za-z0-9][\w-]*(=[\w./:,-]*)?$")
@@ -54,7 +66,7 @@ POSIX_PATH_RE = re.compile(r"^/[^\x00-\x1f]*$")
 def task_constraints(job_id: str) -> str:
     return (
         "\n\nRestricciones: trabaja solo dentro de este directorio con estas instrucciones. "
-        "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, ollama, bipolar). "
+        "No delegues a otros agentes ni CLIs de IA (claude, codex, copilot, agy, cursor-agent, dsh, gemini, junie, ollama, bipolar). "
         "No hagas git commit, push, reset, checkout ni clean; "
         f"no borres archivos con comandos ni los vacíes para simular un borrado. Si la tarea pide eliminar archivos, "
         f"escribe sus rutas relativas a la raíz del workspace, una por línea, en `{POINTER_DIR}/{job_id}/borrar.txt`; "
@@ -909,6 +921,108 @@ def _muse_auth_present(auth: object) -> bool:
     return bool(meta.get("access_token") or meta.get("api_key"))
 
 
+def _junie_usage(entries: list) -> dict:
+    rows = [e for e in entries if isinstance(e, dict)]
+    return {
+        "input_tokens": sum(int(e.get("inputTokens") or 0) + int(e.get("cacheInputTokens") or 0)
+                            + int(e.get("cacheCreateTokens") or 0) for e in rows),
+        "output_tokens": sum(int(e.get("outputTokens") or 0) for e in rows),
+    }
+
+
+def _read_json_file(path: Optional[Path]) -> Optional[dict]:
+    if not path or not path.is_file():
+        return None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+class JunieAdapter:
+    id = "junie"
+    prompt_via = "stdin"
+    supports_read_only = False
+
+    @staticmethod
+    def home() -> Path:
+        return Path(os.environ["JUNIE_HOME"]) if os.environ.get("JUNIE_HOME") else Path.home() / ".junie"
+
+    @staticmethod
+    def data_dir() -> Path:
+        if os.environ.get("JUNIE_DATA_DIR"):
+            return Path(os.environ["JUNIE_DATA_DIR"])
+        return Path.home() / ".local" / "share" / "junie"
+
+    def signed_in(self) -> bool:
+        if os.environ.get("JUNIE_API_KEY"):
+            return True
+        return any((self.home() / "dpapi_credentials").glob("*.dpapi"))
+
+    @staticmethod
+    def extra_env() -> dict:
+        return {key: os.environ[key] for key in JUNIE_ENV if os.environ.get(key)}
+
+    def versioned_binary(self) -> Optional[Path]:
+        versions = self.data_dir() / "versions"
+        try:
+            version = (self.data_dir() / "current").read_text(encoding="utf-8").splitlines()[0].strip()
+        except (OSError, UnicodeError, IndexError):
+            return None
+        if not JUNIE_VERSION_RE.fullmatch(version):
+            return None
+        binary = versions / version / "junie" / "junie.exe"
+        return binary if binary.is_file() and versions.resolve() in binary.resolve().parents else None
+
+    def binary_for(self, exe: str) -> list[str]:
+        # El .bat aplica actualizaciones y lanza PowerShell; el exe directo evita que cmd.exe re-parsee el argv.
+        binary = self.versioned_binary() if Path(exe).name.lower() == "junie.bat" else None
+        return [str(binary)] if binary else exe_argv(exe)
+
+    @staticmethod
+    def skill_args(locations: list[str]) -> list[str]:
+        args: list[str] = []
+        for location in locations:
+            if not Path(validate_path_argv(location)).is_dir():
+                raise AdapterUnsafe("junie_skill_location_invalid")
+            args += ["--skill-location", location]
+        return args
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        if read_only:
+            raise AdapterUnsafe("read_only_unsupported")
+        ws = validate_path_argv(str(workspace))
+        job_dir = workspace / POINTER_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        gitignore = workspace / ".bipolar" / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text("*\n", encoding="utf-8")
+        out = job_dir / "junie-result.json"
+        model = validate_model(model or agent.default_model or JUNIE_FREE_MODEL)
+        argv = self.binary_for(exe) + ["--project", ws, *JUNIE_FIXED_FLAGS,
+                                       "--json-output-file", validate_path_argv(str(out)), "--model", model]
+        if model != JUNIE_FREE_MODEL:
+            argv += ["--effort", effort_for_tier(tier)]
+        argv += self.skill_args(agent.skill_locations)
+        argv += validate_extra_args(agent.extra_args)
+        return LaunchSpec(argv=argv, env=child_env(os.environ, self.extra_env()), cwd=ws,
+                          stdin_payload=(task + task_constraints(job_id)).encode("utf-8"),
+                          out_file=out, timeout_s=timeout_s, redacted=redact(argv, len(task)))
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        obj = _read_json_file(out_file) or {}
+        result = str(obj.get("result") or "")
+        errors = "\n".join(str(e) for e in obj.get("errors") or [])
+        fallback = "\n".join(part for part in (ANSI_RE.sub("", stdout or "").strip(), (stderr or "").strip()) if part)
+        return AdapterResult(
+            text=result or errors or fallback,
+            structured_error=not result or bool(errors) or returncode not in (0, None),
+            usage=_junie_usage(obj.get("llmUsage") or []),
+            session_id=str(obj.get("sessionId") or ""),
+        )
+
+
 ADAPTERS = {
     "anthropic": AnthropicAdapter(),
     "claude": ClaudeAdapter(),
@@ -919,6 +1033,7 @@ ADAPTERS = {
     "deepseek": DeepseekAdapter(),
     "muse": MuseAdapter(),
     "openrouter": OpenRouterAdapter(),
+    "junie": JunieAdapter(),
 }
 
 

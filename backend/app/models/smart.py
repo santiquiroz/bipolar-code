@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field, model_validator
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic", "junie"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic", "junie")
 
-AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse|openrouter|anthropic)(-[a-z0-9]{1,24})?$"
+AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse|openrouter|anthropic|junie)(-[a-z0-9]{1,24})?$"
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -84,6 +84,7 @@ class CliAgent(BaseModel):
     max_monthly_usd: float = Field(default=0, ge=0)
     workspace_allowlist: list[str] = Field(default_factory=list)
     extra_args: list[str] = Field(default_factory=list)
+    skill_locations: list[str] = Field(default_factory=list)
     fallback_models: list[str] = Field(default_factory=list)
 
     @property
@@ -115,9 +116,9 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "deepseek"],
-        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "deepseek"],
-        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "deepseek"],
+        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "junie", "deepseek"],
+        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "junie", "deepseek"],
+        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "junie", "deepseek"],
         "complex": ["anthropic", "muse", "codex", "claude", "antigravity", "deepseek"],
     })
     max_parallel_jobs: int = 3
@@ -195,6 +196,10 @@ DEFAULT_CLI_AGENTS: list[dict] = [
             "poolside/laguna-s-2.1:free",
             "minimax/minimax-m3.1-flash:free",
         ],
+    },
+    {
+        "id": "junie", "name": "JetBrains Junie CLI", "supported_tiers": ["trivial", "simple", "standard"],
+        "default_model": "junie-lite", "quota_reset": "none", "cost_weight": 0.0, "priority": 80, "timeout_s": 900,
     },
 ]
 

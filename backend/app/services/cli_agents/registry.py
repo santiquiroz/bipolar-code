@@ -24,7 +24,7 @@ from app.core.quota_signals import QuotaSignal, cooldown_from_header, detect_sig
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import budget_service, health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, MuseAdapter, OpenRouterAdapter, account_has_login, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, JunieAdapter, MuseAdapter, OpenRouterAdapter, account_has_login, child_env, exe_argv
 
 log = get_logger(__name__)
 
@@ -55,6 +55,7 @@ def known_paths(agent_id: str) -> list[Path]:
         "cursor": [local / "cursor-agent" / "cursor-agent.cmd", _home() / ".local" / "bin" / "cursor-agent"],
         "deepseek": [local / "Programs" / "DeepSeek Harness" / "resources" / "runtime" / "cli" / "bin" / "dsh.cmd"],
         "muse": [local / "Programs" / "muse" / "muse.cmd"],
+        "junie": [_home() / ".local" / "bin" / "junie.bat"],
     }.get(agent_id, [])
 
 
@@ -238,6 +239,19 @@ async def _muse_sandbox(argv: list[str]) -> str:
     return _muse_sandbox_status(out or err)
 
 
+async def _probe_junie(exe: str, status: AgentStatus) -> None:
+    adapter = JunieAdapter()
+    rc, out, err = await run_capture(adapter.binary_for(exe) + ["--version"], timeout=40,
+                                     env=child_env(os.environ, adapter.extra_env()))
+    if rc == 0:
+        status.version = _version_from(out.split("Junie version:")[-1] if "Junie version:" in out else out or err)
+    else:
+        status.error = (err or out or f"exit {rc}").strip()[:200]
+    status.auth = "ok" if adapter.signed_in() else "auth_error"
+    status.default_model = status.default_model or "junie-lite"
+    status.quota = {"meter": "sin medidor headless"}
+
+
 async def _probe_openrouter(exe: str, status: AgentStatus) -> None:
     status.version, status.error = await _probe_version(exe)
     key = OpenRouterAdapter.api_key()
@@ -371,6 +385,8 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
                 await _probe_muse(exe, status)
             elif agent.base == "openrouter":
                 await _probe_openrouter(exe, status)
+            elif agent.base == "junie":
+                await _probe_junie(exe, status)
             else:
                 status.version, status.error = await _probe_version(exe)
             if agent.base == "codex" and not agent.is_account:

@@ -89,9 +89,9 @@ def test_legacy_registry_loads_with_defaults_and_seeds(config_dir):
     assert muse.quota_reset == "none" and muse.cost_weight == 0.4
     assert muse.priority == 5 and muse.timeout_s == 900
     assert registry.delegation.tier_order == {
-        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "deepseek"],
-        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "deepseek"],
-        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "deepseek"],
+        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "junie", "deepseek"],
+        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "junie", "deepseek"],
+        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "junie", "deepseek"],
         "complex": ["anthropic", "muse", "codex", "claude", "antigravity", "deepseek"],
     }
     assert registry.routing_rules[0].tier == "" and registry.routing_rules[0].max_tokens == 0
@@ -238,3 +238,28 @@ def test_parse_cursor_about_signed_in_and_logged_out():
     assert signed_in == {"version": "2026.09.28-64d2043", "tier": "Free", "email": "dev@example.com"}
     logged_out = parse_cursor_about("User Email          Not logged in\r\n")
     assert logged_out == {"version": "", "tier": "", "email": "Not logged in"}
+
+
+def test_previous_version_registry_seeds_junie_disabled_before_deepseek(config_dir):
+    data = _legacy_json()
+    data["cli_agents"] = [dict(d) for d in DEFAULT_CLI_AGENTS if d["id"] != "junie"]
+    data["delegation"] = {"enabled": True, "tier_order": {
+        "simple": ["muse", "openrouter", "deepseek"], "complex": ["codex"]}}
+    (config_dir / "providers.json").write_text(json.dumps(data), encoding="utf-8")
+    registry = providers_service.load_registry()
+    junie = next(a for a in registry.cli_agents if a.id == "junie")
+    assert junie.enabled is False and junie.default_model == "junie-lite"
+    assert junie.supported_tiers == ["trivial", "simple", "standard"] and junie.skill_locations == []
+    assert registry.delegation.tier_order == {
+        "simple": ["muse", "openrouter", "junie", "deepseek"],
+        "complex": ["codex", "junie"],
+    }
+
+
+def test_registry_with_junie_keeps_the_user_order(config_dir):
+    data = _legacy_json()
+    data["cli_agents"] = [dict(d) for d in DEFAULT_CLI_AGENTS]
+    data["delegation"] = {"enabled": True, "tier_order": {"simple": ["deepseek", "muse"]}}
+    (config_dir / "providers.json").write_text(json.dumps(data), encoding="utf-8")
+    registry = providers_service.load_registry()
+    assert registry.delegation.tier_order == {"simple": ["deepseek", "muse"]}
