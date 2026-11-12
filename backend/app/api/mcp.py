@@ -142,7 +142,7 @@ def job_summary(job: Job) -> dict:
         "review_status": job.review_status,
         "attempts": [
             {"kind": a.kind, "agent_id": a.agent_id, "returncode": a.returncode,
-             "signal": a.signal, "detail": a.detail}
+             "signal": a.signal, "error": a.error, "detail": a.detail}
             for a in job.attempts
         ],
         "files_touched": job.files_touched,

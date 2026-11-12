@@ -604,6 +604,14 @@ def test_job_summary_includes_concurrency_fields():
     assert payload["files_touched_exact"] is False
 
 
+def test_job_summary_shows_attempt_error():
+    from app.api.mcp import job_summary
+    from app.models.delegate import Attempt
+    job = broker.Job(id="j1", created_at="t", attempts=[
+        Attempt(agent_id="claude", started_at="t", kind="review", returncode=1, error="You've hit your 5-hour limit")])
+    assert job_summary(job)["attempts"][0]["error"] == "You've hit your 5-hour limit"
+
+
 @pytest.mark.asyncio
 async def test_preferred_agent_exhausted_leaves_redirect_note(env):
     from app.api.mcp import job_summary

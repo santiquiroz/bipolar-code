@@ -18,7 +18,7 @@ def _status_code(code: int) -> str:
 RATE_LIMIT_RE = re.compile(rf"rate.?limit|{_status_code(429)}|too many requests|slow down", re.I)
 EXHAUSTED_RE = re.compile(
     r"quota|usage limit|insufficient_quota|resource_exhausted|out of (?:ai )?credits"
-    r"|credit balance (?:is )?too low|credit_balance_too_low|credits? (?:limit|exhausted)|weekly limit|hit your limit|hit your (?:\w+ )?limit|limit reached|insufficient balance|free-models-per-day",
+    r"|credit balance (?:is )?too low|credit_balance_too_low|credits? (?:limit|exhausted)|weekly limit|hit your (?:[\w-]+ )?limit|limit reached|insufficient balance|free-models-per-day",
     re.I,
 )
 AUTH_RE = re.compile(

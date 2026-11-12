@@ -44,6 +44,13 @@ def test_detect_signal_uses_reset_for_retry_after():
     assert signal.retry_after_s == int(timedelta(hours=1, minutes=45).total_seconds())
 
 
+def test_detect_signal_five_hour_limit():
+    now = _local(2026, 11, 12, 19, 0)
+    signal = detect_signal("You've hit your 5-hour limit · resets 9:40pm (America/Bogota)", None, now=now)
+    assert signal.kind == "quota_exhausted"
+    assert signal.retry_after_s == int(timedelta(hours=2, minutes=40).total_seconds())
+
+
 def test_out_of_range_clock_is_not_a_reset():
     now = _local(2026, 10, 7, 9, 0)
     assert parse_reset_at("quota exceeded, resets 45 minutes", now) is None
