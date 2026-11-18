@@ -1024,9 +1024,11 @@ async def _review(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, wo
         changed = bool(before) and before != after
         # otro job en el mismo workspace también puede escribir durante la revisión: no es culpa del revisor
         concurrent = changed and bool(_overlapping_jobs(rt))
-        tampered = changed and not concurrent
+        tampered = changed and not concurrent and outcome.signal is None
         if concurrent:
             _emit(rt, {"event": "review_tree_changed_concurrent", "agent_id": cand.id})
+        elif changed and outcome.signal is not None:
+            _emit(rt, {"event": "review_tree_changed_external", "agent_id": cand.id})
         verdict = reviewer.parse_verdict(outcome.result.text) if outcome.ok and outcome.result else None
         if verdict is not None:
             verdict = reviewer.resolve_citations(verdict, rt.workspace, diff)

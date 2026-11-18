@@ -1,10 +1,12 @@
 """Review guard: fingerprint del árbol, citas verificables y anti-tamper."""
+import asyncio
 import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from app.core.quota_signals import QuotaSignal
 from app.models.delegate import Job, JobRequest
 from app.services.cli_agents import broker, reviewer
 from app.services.cli_agents.adapters import AdapterResult
@@ -197,6 +199,12 @@ def _two_reviewers(env, monkeypatch):
     return agents
 
 
+async def _wait_long(job_id, timeout=30):
+    # el _wait compartido (5 s) cancela este job en pleno finalize en hosts Windows lentos
+    await asyncio.wait_for(broker._jobs[job_id].task, timeout=timeout)
+    return broker.get_job(job_id)
+
+
 @pytest.mark.asyncio
 async def test_review_tampered_terminates_without_escalation(env, monkeypatch):
     _init_repo(env["workspace"])
@@ -245,6 +253,32 @@ async def test_review_change_with_concurrent_job_is_not_tampered(env, monkeypatc
     assert job.status == "succeeded"
     assert job.review_status == "passed"
     assert "review_tree_changed_concurrent" in broker.job_output(job.id)
+
+
+@pytest.mark.asyncio
+async def test_review_change_with_unavailable_signal_is_not_tampered(env, monkeypatch):
+    _init_repo(env["workspace"])
+    _two_reviewers(env, monkeypatch)
+    ws = env["workspace"]
+
+    async def fake(rt, agent, model, timeout_s, task=None, read_only=False):
+        if not read_only:
+            return _ok_text("hecho")
+        if agent.id == "claude":
+            # el árbol cambió por causa externa mientras el revisor no llegaba a correr
+            (ws / "cambio_externo.py").write_text("x = 2\n", encoding="utf-8")
+            return broker.AttemptOutcome(ok=False, returncode=1,
+                                         signal=QuotaSignal("model_unavailable", 0, "model not supported"),
+                                         error="model not supported")
+        return _ok_text(_verdict_text("approve", []))
+
+    monkeypatch.setattr(broker, "_run_attempt", fake)
+    job = await _wait_long((await broker.submit(JobRequest(task="t", workspace=str(ws), tier_hint="standard"))).id)
+    assert job.status == "succeeded"
+    assert job.review_status == "passed"
+    review = [a for a in job.attempts if a.kind == "review"]
+    assert review[0].detail["tampered"] is False
+    assert "review_tree_changed_external" in broker.job_output(job.id)
 
 
 @pytest.mark.asyncio
