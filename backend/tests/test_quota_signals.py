@@ -23,6 +23,8 @@ from app.core import quota_signals as qs
     ("socket hang up: read ECONNRESET", "network_error"),
     ("connect ETIMEDOUT 104.18.0.1:443", "network_error"),
     ("Can't reach the API server (ConnectionRefused)", "network_error"),
+    ("API Error: API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request.", "network_error"),
+    ("which failed with: other; 7 stream events received, first after 1742 ms, none in the final 119996 ms.", "network_error"),
 ])
 def test_detect_signal_kinds(text, kind):
     signal = qs.detect_signal(text)
