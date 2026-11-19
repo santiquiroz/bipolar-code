@@ -61,6 +61,12 @@ def test_auth_marks_unavailable_one_hour(state_dir):
     assert hs.seconds_left("cli:agy", NOW) == pytest.approx(3600, abs=1)
 
 
+def test_model_unavailable_marks_pool_unavailable_half_day(state_dir):
+    hs.mark_signal("cli:codex", QuotaSignal("model_unavailable", None, "model is not supported"), now=NOW)
+    assert hs.effective_state("cli:codex", NOW) == "unavailable"
+    assert hs.seconds_left("cli:codex", NOW) == pytest.approx(43200, abs=1)
+
+
 def test_three_generic_failures_open_circuit_and_success_clears(state_dir):
     for _ in range(2):
         hs.mark_failure("provider:b", "500", now=NOW)

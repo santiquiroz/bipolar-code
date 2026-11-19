@@ -24,6 +24,8 @@ GENERIC_FAILURES_TO_OPEN = 3
 CIRCUIT_OPEN_SECONDS = 120
 AUTH_UNAVAILABLE_SECONDS = 3600
 OVERLOADED_COOLING_SECONDS = 120
+# un modelo que la cuenta no admite no se arregla solo: se aparta medio día y se vuelve a probar
+MODEL_UNAVAILABLE_SECONDS = 43200
 DEFAULT_COOLDOWN_SECONDS = 900
 UNKNOWN_RESET_SECONDS = 6 * 3600
 
@@ -211,6 +213,8 @@ def mark_signal(
             _set(entry, "exhausted", until, "quota_exhausted", signal.excerpt)
         elif signal.kind == "auth":
             _set(entry, "unavailable", now + timedelta(seconds=AUTH_UNAVAILABLE_SECONDS), "auth", signal.excerpt)
+        elif signal.kind == "model_unavailable":
+            _set(entry, "unavailable", now + timedelta(seconds=MODEL_UNAVAILABLE_SECONDS), "model_unavailable", signal.excerpt)
         _persist()
 
 
