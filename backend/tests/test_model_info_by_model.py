@@ -9,7 +9,7 @@ from app.services.smart_router import PlanStep
 ACTIVE = "openai/gpt-oss-20b"
 MINIMAX = "minimaxai/minimax-m3.1-flash"
 NEMOTRON = "nvidia/nemotron-3-ultra-550b-a55b"
-GLM = "z-ai/glm-5.3-flash"
+KIMI = "moonshotai/kimi-k3.1-pro"
 
 
 def _nvidia_provider(**overrides) -> Provider:
@@ -89,9 +89,9 @@ def test_seed_adds_supports_tools_to_nvidia_models():
     seeded = providers_service._seed_nvidia_model_info(registry)
     provider = next(p for p in registry.providers if p.id == "nvidia_nim")
     assert provider.model_info_by_model == {
-        MINIMAX: {"supports_tools": True},
+        KIMI: {"supports_tools": True},
         NEMOTRON: {"supports_tools": True},
-        GLM: {"supports_tools": True},
+        MINIMAX: {"supports_tools": True},
     }
     assert len(seeded) == 3
 
@@ -103,7 +103,7 @@ def test_seed_does_not_overwrite_existing_supports_tools():
     seeded = providers_service._seed_nvidia_model_info(registry)
     assert provider.model_info_by_model[MINIMAX] == {"supports_tools": False}
     assert provider.model_info_by_model[NEMOTRON] == {"supports_tools": True}
-    assert provider.model_info_by_model[GLM] == {"supports_tools": True}
+    assert provider.model_info_by_model[KIMI] == {"supports_tools": True}
     assert len(seeded) == 2
 
 

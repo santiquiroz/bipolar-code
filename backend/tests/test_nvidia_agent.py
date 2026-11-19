@@ -12,7 +12,7 @@ from app.services.cli_agents import adapters as ad
 from app.services.cli_agents import broker
 from app.services.cli_agents import registry as agents_registry
 
-MODEL = "minimaxai/minimax-m3.1-flash"
+MODEL = "moonshotai/kimi-k3.1-pro"
 FALLBACK = "nvidia/nemotron-3-ultra-550b-a55b"
 DELEGATE_KEY = "del-testkey"
 

@@ -200,12 +200,12 @@ DEFAULT_CLI_AGENTS: list[dict] = [
     {
         "id": "nvidia", "name": "NVIDIA NIM (modelos gratis vía Claude Code)",
         "supported_tiers": ["trivial", "simple", "standard"],
-        "default_model": "minimaxai/minimax-m3.1-flash",
+        "default_model": "moonshotai/kimi-k3.1-pro",
         "quota_reset": "none", "cost_weight": 0.0, "priority": 84, "timeout_s": 900,
         "cooldown_s": 300, "max_concurrency": 1,
         "fallback_models": [
             "nvidia/nemotron-3-ultra-550b-a55b",
-            "z-ai/glm-5.3-flash",
+            "minimaxai/minimax-m3.1-flash",
         ],
     },
     {
