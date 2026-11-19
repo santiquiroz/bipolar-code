@@ -176,6 +176,12 @@ def _new_default_fields(provider: Provider, defaults: dict) -> dict:
     return patches
 
 
+def model_info_for(provider: Provider, model: str) -> dict:
+    if not model or model == provider.active_model:
+        return provider.model_info
+    return provider.model_info_by_model.get(model, {})
+
+
 def _backup_corrupt_registry(path: Path) -> Optional[Path]:
     """Copia el providers.json dañado a un respaldo providers.json.corrupt-<AAAAMMDD-HHMMSS>.
 
@@ -290,6 +296,24 @@ def _seed_claude_tier_models(registry: ProviderRegistry) -> list[str]:
     return seeded
 
 
+def _seed_nvidia_model_info(registry: ProviderRegistry) -> list[str]:
+    seeded: list[str] = []
+    agent = next((a for a in registry.cli_agents if a.id == "nvidia"), None)
+    provider = next((p for p in registry.providers if p.id == "nvidia_nim"), None)
+    if agent is None or provider is None:
+        return seeded
+    models: list[str] = []
+    for m in [agent.default_model, *agent.fallback_models]:
+        if m and m not in models:
+            models.append(m)
+    for m in models:
+        entry = provider.model_info_by_model.setdefault(m, {})
+        if "supports_tools" not in entry:
+            entry["supports_tools"] = True
+            seeded.append(f"nvidia_nim.model_info_by_model[{m}].supports_tools")
+    return seeded
+
+
 def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
     """Agrega agentes CLI faltantes (deshabilitados) y una tabla de tiers inicial
     cuando no hay ninguna. Nunca toca lo que el usuario ya configuró."""
@@ -311,6 +335,7 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
     if not registry.smart.tiers and registry.providers:
         registry.smart.tiers = default_tier_table({p.id for p in registry.providers})
         seeded.append("smart.tiers")
+    seeded += _seed_nvidia_model_info(registry)
     return seeded
 
 

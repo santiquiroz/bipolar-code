@@ -388,17 +388,25 @@ async def test_provider_model(provider_id: str, model: str = Query(...)):
     )
 
     # 3. Guardar en model_info
-    model_info = dict(provider.model_info)
-    model_info.update({
+    detected = {
         "supports_tools": supports_tools,
         "supports_vision": supports_vision,
         "supports_system_prompt": supports_system,
-    })
+    }
     if context_window:
-        model_info["context_window"] = context_window
+        detected["context_window"] = context_window
     if max_output_tokens:
-        model_info["max_output_tokens"] = max_output_tokens
-    providers_service.update_provider(provider_id, {"model_info": model_info})
+        detected["max_output_tokens"] = max_output_tokens
+    if model != provider.active_model:
+        by_model = {k: dict(v) for k, v in (provider.model_info_by_model or {}).items()}
+        entry = dict(by_model.get(model, {}))
+        entry.update(detected)
+        by_model[model] = entry
+        providers_service.update_provider(provider_id, {"model_info_by_model": by_model})
+    else:
+        model_info = dict(provider.model_info)
+        model_info.update(detected)
+        providers_service.update_provider(provider_id, {"model_info": model_info})
 
     capabilities = {
         "supports_tools": supports_tools,

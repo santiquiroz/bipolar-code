@@ -31,6 +31,7 @@ class Provider(BaseModel):
 
     # Overrides de comportamiento litellm
     model_info: dict = {}            # ej: {"supports_response_api": False}
+    model_info_by_model: dict[str, dict] = {}
     drop_params: bool = True
     use_chat_completions_for_anthropic: bool = False
     max_tools: int = 0               # 0 = sin límite; >0 trunca el array de tools al enviarlo

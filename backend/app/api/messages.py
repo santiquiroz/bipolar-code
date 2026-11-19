@@ -356,7 +356,7 @@ def _native_request(step: PlanStep, body: dict, request: Request, settings, mode
 def _oai_request(step: PlanStep, body: dict, model: str) -> tuple[str, dict, dict]:
     provider = step.provider
     provider_model = step.model or provider.active_model or model
-    info = provider.model_info or {}
+    info = providers_service.model_info_for(provider, provider_model) or {}
     is_claude = _is_claude_model(provider_model)
     oai_body = _anthropic_to_oai_request(
         body, provider_model, provider.max_tools, set() if is_claude else {"Agent"},
@@ -545,9 +545,10 @@ def _stream_messages(opened, stack, decision, started, usage_buf, message_id, tr
 # ── Copilot: destino fijado y Auto ───────────────────────────────────────────
 
 def _copilot_context_window(provider: Provider | None, model: str | None) -> int:
-    if provider is None or (model and model != provider.active_model):
+    if provider is None:
         return copilot_catalog.DEFAULT_MAX_INPUT
-    window = int((provider.model_info or {}).get("context_window") or 0)
+    info = providers_service.model_info_for(provider, model or "") or {}
+    window = int(info.get("context_window") or 0)
     return window if window > 0 else copilot_catalog.DEFAULT_MAX_INPUT
 
 
