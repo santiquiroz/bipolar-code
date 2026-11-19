@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # UI auth — si no está en .env, se genera y persiste automáticamente
     ui_api_key: str = ""
 
+    # Clave de delegación para agentes headless: solo vive en memoria
+    delegate_proxy_key: str = ""
+
+    # URL donde escucha el propio backend (la usa el agente nvidia)
+    self_base_url: str = "http://127.0.0.1:8000"
+
     # Clave maestra interna de litellm (bipolar → litellm); se genera y persiste si falta
     litellm_master_key: str = ""
 
@@ -96,6 +102,8 @@ def get_settings() -> Settings:
         object.__setattr__(s, "ui_api_key", key)
     if not s.litellm_master_key:
         object.__setattr__(s, "litellm_master_key", _generate_litellm_master_key())
+    if not s.delegate_proxy_key:
+        object.__setattr__(s, "delegate_proxy_key", secrets.token_urlsafe(32))
     return s
 
 

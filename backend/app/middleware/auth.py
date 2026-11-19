@@ -3,6 +3,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+DELEGATE_PINNED_PROVIDERS = frozenset({"nvidia_nim"})
+_DELEGATE_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
+
 
 def _is_public(path: str) -> bool:
     if path in {"/api/health"}:
@@ -22,12 +25,20 @@ def _matches(provided: str, expected: str) -> bool:
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, ui_key: str, proxy_key: str):
+    def __init__(self, app, ui_key: str, proxy_key: str, delegate_key: str = ""):
         super().__init__(app)
         self._ui_key = ui_key
         # /v1/* también acepta proxy_key: clientes Claude Code configurados antes
         # del cierre de /v1 tienen ANTHROPIC_API_KEY=proxy_key escrito
         self._proxy_key = proxy_key
+        self._delegate_key = delegate_key
+
+    def _delegate_allowed(self, request: Request) -> bool:
+        if request.method != "POST":
+            return False
+        if request.url.path not in _DELEGATE_PATHS:
+            return False
+        return request.headers.get("x-bipolar-provider", "") in DELEGATE_PINNED_PROVIDERS
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -44,6 +55,8 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if provided and _matches(provided, self._ui_key):
             return await call_next(request)
         if path.startswith("/v1") and provided and _matches(provided, self._proxy_key):
+            return await call_next(request)
+        if provided and self._delegate_allowed(request) and _matches(provided, self._delegate_key):
             return await call_next(request)
 
         return JSONResponse(

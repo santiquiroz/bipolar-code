@@ -7,9 +7,12 @@ from app.middleware.rate_limit import RateLimitMiddleware
 VALID_KEY = "bc-testkey123"
 
 
+DELEGATE_KEY = "dc-testkey"
+
+
 def make_app():
     app = FastAPI()
-    app.add_middleware(APIKeyMiddleware, ui_key=VALID_KEY, proxy_key="sk-proxy")
+    app.add_middleware(APIKeyMiddleware, ui_key=VALID_KEY, proxy_key="sk-proxy", delegate_key=DELEGATE_KEY)
 
     @app.get("/api/health")
     def health():
@@ -21,6 +24,14 @@ def make_app():
 
     @app.post("/v1/messages")
     def messages():
+        return {"ok": True}
+
+    @app.post("/v1/messages/count_tokens")
+    def count_tokens():
+        return {"ok": True}
+
+    @app.post("/v1/models")
+    def models():
         return {"ok": True}
 
     return app
@@ -200,3 +211,37 @@ def test_rate_limit_sweeps_idle_buckets():
         mw.admit(ip, now=1000.0)
     mw.admit("5.5.5.5", now=1000.0 + 61)
     assert list(mw._buckets) == ["5.5.5.5"]
+
+
+def _delegate_headers(provider: str = "nvidia_nim"):
+    return {"Authorization": f"Bearer {DELEGATE_KEY}", "x-bipolar-provider": provider}
+
+
+def test_delegate_key_accepted_with_pinned_provider():
+    resp = client.post("/v1/messages", headers=_delegate_headers())
+    assert resp.status_code == 200
+
+
+def test_delegate_key_accepted_on_count_tokens():
+    resp = client.post("/v1/messages/count_tokens", headers=_delegate_headers())
+    assert resp.status_code == 200
+
+
+def test_delegate_key_rejected_without_provider_header():
+    resp = client.post("/v1/messages", headers={"Authorization": f"Bearer {DELEGATE_KEY}"})
+    assert resp.status_code == 401
+
+
+def test_delegate_key_rejected_with_non_pinned_provider():
+    resp = client.post("/v1/messages", headers=_delegate_headers("anthropic"))
+    assert resp.status_code == 401
+
+
+def test_delegate_key_rejected_on_models():
+    resp = client.post("/v1/models", headers=_delegate_headers())
+    assert resp.status_code == 401
+
+
+def test_delegate_key_rejected_on_api():
+    resp = client.get("/api/protected", headers=_delegate_headers())
+    assert resp.status_code == 401

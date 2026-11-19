@@ -16,7 +16,7 @@ from app.core.config import env_value, get_settings
 from app.models.smart import CliAgent, tier_index
 
 BINARIES = {"claude": "claude", "codex": "codex", "copilot": "copilot", "antigravity": "agy", "ollama": "ollama",
-            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse", "openrouter": "claude", "junie": "junie"}
+            "cursor": "cursor-agent", "deepseek": "dsh", "muse": "muse", "openrouter": "claude", "nvidia": "claude", "junie": "junie"}
 DSH_ACCOUNT_RECORD = "deepseek-account-platform/default:"
 DSH_CLI_PARTS = ("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
 MODEL_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -171,6 +171,9 @@ OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_FREE_MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}/[a-z0-9][a-z0-9._-]{0,95}:free$", re.I)
 OPENROUTER_MODEL_VARS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                          "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
+CLAUDE_MODEL_VARS = OPENROUTER_MODEL_VARS
+NVIDIA_NIM_KEY_ENV = "NVIDIA_NIM_API_KEY"
+NVIDIA_MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}/[a-z0-9][a-z0-9._-]{0,95}$")
 
 
 def supports_accounts(base: str) -> bool:
@@ -469,6 +472,52 @@ class OpenRouterAdapter(ClaudeAdapter):
     def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
         result = super().parse(stdout, stderr, returncode, out_file)
         # Claude Code calcula precio de lista aunque el modelo sea :free
+        result.usage["cost_usd"] = 0.0
+        return result
+
+
+class NvidiaAdapter(ClaudeAdapter):
+    id = "nvidia"
+    max_turns = 120
+
+    @staticmethod
+    def config_dir() -> Path:
+        path = Path(get_settings().litellm_config_dir) / "delegate" / "nvidia-claude"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def api_key() -> str:
+        return env_value(NVIDIA_NIM_KEY_ENV)
+
+    @staticmethod
+    def validate_model_slug(model: str) -> str:
+        if not NVIDIA_MODEL_RE.match(model or ""):
+            raise AdapterUnsafe("nvidia_model_invalid")
+        return model
+
+    def nvidia_env(self, model: str) -> dict[str, str]:
+        env = {name: model for name in CLAUDE_MODEL_VARS}
+        env.update({
+            "ANTHROPIC_BASE_URL": get_settings().self_base_url,
+            "ANTHROPIC_AUTH_TOKEN": get_settings().delegate_proxy_key,
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_CUSTOM_HEADERS": "x-bipolar-provider: nvidia_nim",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CONFIG_DIR": str(self.config_dir()),
+        })
+        return env
+
+    def build(self, agent: CliAgent, exe: str, job_id: str, task: str, model: str, workspace: Path, tier: str, timeout_s: int, read_only: bool = False) -> LaunchSpec:
+        model = self.validate_model_slug(model or agent.default_model)
+        if not self.api_key():
+            raise AdapterUnsafe("nvidia_key_missing")
+        spec = super().build(agent, exe, job_id, task, model, workspace, tier, timeout_s, read_only)
+        spec.env.update(self.nvidia_env(model))
+        return spec
+
+    def parse(self, stdout: str, stderr: str, returncode: Optional[int], out_file: Optional[Path]) -> AdapterResult:
+        result = super().parse(stdout, stderr, returncode, out_file)
         result.usage["cost_usd"] = 0.0
         return result
 
@@ -1033,6 +1082,7 @@ ADAPTERS = {
     "deepseek": DeepseekAdapter(),
     "muse": MuseAdapter(),
     "openrouter": OpenRouterAdapter(),
+    "nvidia": NvidiaAdapter(),
     "junie": JunieAdapter(),
 }
 

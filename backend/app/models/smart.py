@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field, model_validator
 Tier = Literal["trivial", "simple", "standard", "complex"]
 TIER_ORDER: tuple[str, ...] = ("trivial", "simple", "standard", "complex")
 
-AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic", "junie"]
-AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "anthropic", "junie")
+AgentId = Literal["claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "nvidia", "anthropic", "junie"]
+AGENT_IDS: tuple[str, ...] = ("claude", "codex", "copilot", "antigravity", "ollama", "cursor", "deepseek", "muse", "openrouter", "nvidia", "anthropic", "junie")
 
-AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse|openrouter|anthropic|junie)(-[a-z0-9]{1,24})?$"
+AGENT_ID_PATTERN = r"^(claude|codex|copilot|antigravity|ollama|cursor|deepseek|muse|openrouter|nvidia|anthropic|junie)(-[a-z0-9]{1,24})?$"
 
 TargetState = Literal["available", "cooling", "exhausted", "unavailable"]
 QuotaReset = Literal["none", "5h", "daily", "weekly"]
@@ -116,9 +116,9 @@ class DelegationConfig(BaseModel):
     enabled: bool = False
     workspace_allowlist: list[str] = Field(default_factory=list)
     tier_order: dict[str, list[str]] = Field(default_factory=lambda: {
-        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "junie", "deepseek"],
-        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "junie", "deepseek"],
-        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "junie", "deepseek"],
+        "trivial": ["anthropic", "muse", "ollama", "copilot", "cursor", "antigravity", "claude", "openrouter", "nvidia", "junie", "deepseek"],
+        "simple": ["anthropic", "muse", "copilot", "cursor", "antigravity", "codex", "claude", "openrouter", "nvidia", "junie", "deepseek"],
+        "standard": ["anthropic", "muse", "codex", "claude", "antigravity", "copilot", "cursor", "openrouter", "nvidia", "junie", "deepseek"],
         "complex": ["anthropic", "muse", "codex", "claude", "antigravity", "deepseek"],
     })
     max_parallel_jobs: int = 3
@@ -195,6 +195,17 @@ DEFAULT_CLI_AGENTS: list[dict] = [
             "nvidia/nemotron-3-ultra-550b-a55b:free",
             "poolside/laguna-s-2.1:free",
             "minimax/minimax-m3.1-flash:free",
+        ],
+    },
+    {
+        "id": "nvidia", "name": "NVIDIA NIM (modelos gratis vía Claude Code)",
+        "supported_tiers": ["trivial", "simple", "standard"],
+        "default_model": "minimaxai/minimax-m3.1-flash",
+        "quota_reset": "none", "cost_weight": 0.0, "priority": 84, "timeout_s": 900,
+        "cooldown_s": 300, "max_concurrency": 1,
+        "fallback_models": [
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "z-ai/glm-5.3-flash",
         ],
     },
     {

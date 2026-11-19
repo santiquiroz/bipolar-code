@@ -24,7 +24,7 @@ from app.core.quota_signals import QuotaSignal, cooldown_from_header, detect_sig
 from app.models.delegate import AgentStatus
 from app.models.smart import CliAgent
 from app.services import budget_service, health_service
-from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, JunieAdapter, MuseAdapter, OpenRouterAdapter, account_has_login, child_env, exe_argv
+from app.services.cli_agents.adapters import BINARIES, AntigravityAdapter, CursorAdapter, DeepseekAdapter, JunieAdapter, MuseAdapter, NvidiaAdapter, OpenRouterAdapter, account_has_login, child_env, exe_argv
 
 log = get_logger(__name__)
 
@@ -42,7 +42,7 @@ def _home() -> Path:
 
 def known_paths(agent_id: str) -> list[Path]:
     local = Path(os.environ.get("LOCALAPPDATA") or (_home() / "AppData" / "Local"))
-    if agent_id == "openrouter":
+    if agent_id in ("openrouter", "nvidia"):
         agent_id = "claude"
     return {
         "claude": [_home() / ".local" / "bin" / "claude.exe", _home() / ".local" / "bin" / "claude",
@@ -276,6 +276,27 @@ async def _probe_openrouter(exe: str, status: AgentStatus) -> None:
             status.error = "usa una clave dedicada con límite de crédito 0: el agente puede leerla"
 
 
+async def _probe_nvidia(exe: str, status: AgentStatus) -> None:
+    status.version, status.error = await _probe_version(exe)
+    key = NvidiaAdapter.api_key()
+    if not key:
+        status.auth, status.error = "auth_error", "NVIDIA_NIM_API_KEY sin valor"
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://integrate.api.nvidia.com/v1/models",
+                                   headers={"Authorization": f"Bearer {key}"})
+    except Exception as e:
+        status.error = f"nvidia unreachable: {e.__class__.__name__}"
+        return
+    if resp.status_code in (401, 403):
+        status.auth = "auth_error"
+        return
+    if resp.status_code == 200:
+        status.auth = "ok"
+        status.quota = {"meter": "40 req/min, sin medidor"}
+
+
 async def _probe_ollama(status: AgentStatus, api_base: str = "http://127.0.0.1:11434") -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -385,6 +406,8 @@ async def probe(agent: CliAgent, force: bool = False) -> AgentStatus:
                 await _probe_muse(exe, status)
             elif agent.base == "openrouter":
                 await _probe_openrouter(exe, status)
+            elif agent.base == "nvidia":
+                await _probe_nvidia(exe, status)
             elif agent.base == "junie":
                 await _probe_junie(exe, status)
             else:

@@ -28,7 +28,7 @@ from app.models.smart import CliAgent
 from app.services import budget_service, health_service, providers_service, usage_tracker
 from app.services.cli_agents import deletions, job_ledger, outcome_stats, registry as agents_registry, reviewer, session, verifier
 from app.services.cli_agents.worker_status import STOP_STATUSES, parse_worker_status
-from app.services.cli_agents.adapters import OPENROUTER_FREE_MODEL_RE, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only, verify_hint, verify_tools, with_allowed_tools
+from app.services.cli_agents.adapters import NVIDIA_MODEL_RE, OPENROUTER_FREE_MODEL_RE, TEXT_CONSTRAINTS, AdapterResult, AdapterUnsafe, AntigravityAdapter, CursorAdapter, account_env, adapter_for, supports_read_only, verify_hint, verify_tools, with_allowed_tools
 from app.services.route_classifier import classify_task
 
 log = get_logger(__name__)
@@ -197,8 +197,8 @@ def _reject_agent(agent: CliAgent, tier: str, mode: str, status: Optional[AgentS
                   workspace: Optional[Path] = None) -> Optional[str]:
     if not agent.enabled:
         return "disabled"
-    # los modelos gratis de OpenRouter pueden guardar los prompts: solo workspaces que el usuario liberó para eso
-    if agent.base == "openrouter" and not _agent_workspace_allowed(agent, workspace):
+    # los modelos gratis pueden guardar los prompts: solo workspaces que el usuario liberó para eso
+    if agent.base in ("openrouter", "nvidia") and not _agent_workspace_allowed(agent, workspace):
         return "agent_workspace_not_allowed"
     if status is not None and not status.installed:
         return "not_installed"
@@ -570,7 +570,7 @@ async def _run_attempt(rt: JobRuntime, agent: CliAgent, model: str, timeout_s: i
     try:
         text = (task or rt.request.task) + ("" if read_only else verify_hint(rt.request.verify))
         spec = adapter_for(agent.base).build(agent, exe, rt.job.id, text, model, rt.workspace, rt.job.tier, timeout_s, read_only=read_only)
-        if not read_only and agent.base in ("claude", "openrouter") and rt.request.verify:
+        if not read_only and agent.base in ("claude", "openrouter", "nvidia") and rt.request.verify:
             # El broker ya corre estos comandos en el host; permitírselos al delegado no amplía nada
             spec.argv = with_allowed_tools(spec.argv, verify_tools(rt.request.verify))
         spec.env.update(account_env(agent))
@@ -765,6 +765,21 @@ def _next_openrouter_model(agent: CliAgent, tried: set[str]) -> Optional[str]:
         tried.add(candidate)
         if not OPENROUTER_FREE_MODEL_RE.match(candidate):
             continue  # el adaptador rechaza modelos no :free; aquí se saltan sin gastar un intento
+        return candidate
+    return None
+
+
+def _nvidia_fallback_eligible(agent: CliAgent, signal: QuotaSignal) -> bool:
+    return agent.base == "nvidia" and bool(agent.fallback_models) and signal.kind in OPENROUTER_MODEL_SIGNALS
+
+
+def _next_nvidia_model(agent: CliAgent, tried: set[str]) -> Optional[str]:
+    for candidate in agent.fallback_models:
+        if candidate in tried:
+            continue
+        tried.add(candidate)
+        if not NVIDIA_MODEL_RE.match(candidate):
+            continue
         return candidate
     return None
 
@@ -1250,8 +1265,8 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 network_retried.add(agent.id)
                 _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt, "retry": True})
                 continue
-            # openrouter con un modelo caído no pone en cooldown al carril: el fallback decide antes
-            fallback_eligible = _openrouter_fallback_eligible(agent, outcome.signal)
+            # un modelo caído no pone en cooldown al carril: el fallback decide antes
+            fallback_eligible = _openrouter_fallback_eligible(agent, outcome.signal) or _nvidia_fallback_eligible(agent, outcome.signal)
             if not network and not fallback_eligible:
                 _apply_signal(agent, model, outcome.signal)
             _emit(rt, {"event": "attempt", "agent_id": agent.id, "signal": outcome.signal.kind, "excerpt": outcome.signal.excerpt})
@@ -1271,7 +1286,10 @@ async def _run_attempts(rt: JobRuntime, registry: ProviderRegistry, statuses: di
                 continue
             if fallback_eligible:
                 openrouter_models_tried.add(model)
-                fallback_model = _next_openrouter_model(agent, openrouter_models_tried)
+                if agent.base == "nvidia":
+                    fallback_model = _next_nvidia_model(agent, openrouter_models_tried)
+                else:
+                    fallback_model = _next_openrouter_model(agent, openrouter_models_tried)
                 if fallback_model is not None:
                     _emit(rt, {"event": "model_fallback", "agent_id": agent.id, "from": model, "to": fallback_model, "signal": outcome.signal.kind})
                     model = fallback_model

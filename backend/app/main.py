@@ -143,7 +143,8 @@ def create_app() -> FastAPI:
     from app.middleware.auth import APIKeyMiddleware
     from app.middleware.rate_limit import RateLimitMiddleware
     from app.middleware.network_guard import ControlPlaneGuardMiddleware
-    app.add_middleware(APIKeyMiddleware, ui_key=settings.ui_api_key, proxy_key=settings.proxy_api_key)
+    app.add_middleware(APIKeyMiddleware, ui_key=settings.ui_api_key, proxy_key=settings.proxy_api_key,
+                           delegate_key=settings.delegate_proxy_key)
     if settings.rate_limit_rpm > 0:
         app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm,
                            trusted_proxies=settings.trusted_proxies)

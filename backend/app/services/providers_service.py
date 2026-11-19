@@ -258,7 +258,10 @@ def load_registry() -> ProviderRegistry:
 def _place_seeded_agent(agent_id: str, order: list[str]) -> list[str]:
     if agent_id in ("muse", "anthropic"):
         return [agent_id] + order
-    if agent_id in ("openrouter", "junie") and "deepseek" in order:
+    if agent_id == "nvidia" and "openrouter" in order:
+        position = order.index("openrouter") + 1
+        return order[:position] + [agent_id] + order[position:]
+    if agent_id in ("openrouter", "junie", "nvidia") and "deepseek" in order:
         position = order.index("deepseek")
         return order[:position] + [agent_id] + order[position:]
     return order + [agent_id]
@@ -300,6 +303,7 @@ def _seed_smart_defaults(registry: ProviderRegistry) -> list[str]:
     _seed_agent_order(registry, existing, "deepseek")
     _seed_agent_order(registry, existing, "muse")
     _seed_agent_order(registry, existing, "openrouter")
+    _seed_agent_order(registry, existing, "nvidia")
     _seed_agent_order(registry, existing, "junie")
     _seed_agent_order(registry, existing, "anthropic")
     if "anthropic" not in existing and "anthropic" not in registry.delegation.thinkers:
