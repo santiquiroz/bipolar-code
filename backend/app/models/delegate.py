@@ -18,6 +18,7 @@ class JobRequest(BaseModel):
     model: str = ""
     timeout_s: Optional[int] = Field(default=None, ge=60, le=3600)
     dry_run: bool = False
+    strict_agent: bool = False
     verify: list[str] = Field(default_factory=list, max_length=10)
     review: Optional[bool] = None
     max_revisions: int = Field(default=1, ge=0, le=3)

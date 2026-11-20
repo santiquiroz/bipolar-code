@@ -387,6 +387,9 @@ async def submit(req: JobRequest, depth_header: str = "") -> Job:
         job.reasons.append(f"redirected:{req.agent_id}->{agent.id}")
     if agent is None:
         raise NoAgentAvailable(job.reasons, skipped)
+    # strict_agent: si se pidió un agente y no se pudo usar, rechazar en vez de redirigir
+    if req.strict_agent and req.agent_id and agent is not None and agent.id != req.agent_id:
+        raise NoAgentAvailable(job.reasons, skipped)
     if req.dry_run:
         return job
     runtime = JobRuntime(job=job, request=req, workspace=workspace, current_task=req.task)
@@ -884,7 +887,12 @@ async def _run_work_attempt(rt: JobRuntime, registry: ProviderRegistry, agent: C
     t0 = time.monotonic()
     agents_registry.adjust_running(agent.id, +1)
     try:
+        # Si el semáforo del agente ya está tomado, el job queda en "queued" hasta que haya cupo
+        if agent_sem.locked():
+            job.status = "queued"
+            _emit(rt, {"event": "waiting_agent_slot", "agent_id": agent.id})
         async with agent_sem:
+            job.status = "running"
             if await _monthly_budget_reached(agent):
                 outcome = AttemptOutcome(ok=False, error="monthly_budget")
             else:
@@ -988,6 +996,9 @@ def _worker_stop(rt: JobRuntime, agent: CliAgent, outcome: AttemptOutcome) -> st
 
 async def _blocked_failover_target(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, agent: CliAgent,
                                    model: str, stop: str, tried: list, blocked_escalated: bool) -> tuple:
+    # strict_agent: no escalar a otro agente
+    if rt.request.strict_agent:
+        return None, ""
     # BLOCKED sin cambios y sin agente fijado suele ser el entorno del carril (p. ej. sandbox): se prueba otro, una vez
     if (not stop.startswith("blocked") or blocked_escalated or rt.request.agent_id
             or _files_touched(rt.workspace, rt.status_before)):
@@ -1135,6 +1146,8 @@ async def _quality_gate(rt: JobRuntime, registry: ProviderRegistry, statuses: di
 
 
 def _escalation_target(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, tried: list) -> tuple:
+    if rt.request.strict_agent:
+        return None, ""
     job = rt.job
     agents = {a.id: a for a in registry.cli_agents}
     for thinker_id in registry.delegation.thinkers:
@@ -1193,6 +1206,9 @@ async def _handle_gate_ok(rt: JobRuntime, registry: ProviderRegistry, statuses: 
 
 
 async def _next_available_agent(rt: JobRuntime, registry: ProviderRegistry, statuses: dict, tried: list) -> tuple:
+    # strict_agent: no cambiar de agente, solo reintentos al mismo
+    if rt.request.strict_agent:
+        return None, ""
     await _refresh_budget_statuses(registry, statuses)
     agent, model, reasons, skipped = choose_agent(rt.job.tier, registry, statuses, exclude=tuple(tried),
                                                  mode=rt.request.mode, model_override=rt.request.model,

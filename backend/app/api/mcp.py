@@ -42,6 +42,7 @@ TOOLS: list[dict] = [
                 "review": {"type": "boolean"},
                 "max_revisions": {"type": "integer", "minimum": 0, "maximum": 3, "default": 1, "description": "Rondas de corrección cuando verify o la revisión fallan."},
                 "timeout_s": {"type": "integer", "minimum": 60, "maximum": 3600, "description": "Tope de la corrida del agente en segundos; sin valor, el del agente."},
+                "strict_agent": {"type": "boolean", "default": False, "description": "Si true y el agente pedido no está disponible, rechazar en vez de redirigir a otro."},
                 "wait_s": {"type": "integer", "minimum": 0, "maximum": 540, "default": 0, "description": "Segundos de espera; el servidor espera como máximo 50 por llamada porque los clientes MCP cortan a los 60 s. Repetí job_status hasta un estado final."},
             },
             "required": ["task", "workspace"],
@@ -177,10 +178,14 @@ async def _tool_delegate(args: dict) -> dict:
         raise ToolError("'review' debe ser true o false")
     max_revisions = _int_in_range(args, "max_revisions", 0, 3, 1)
     timeout_s = _optional_int_in_range(args, "timeout_s", 60, 3600)
+    strict_agent = args.get("strict_agent", False)
+    if not isinstance(strict_agent, bool):
+        raise ToolError("'strict_agent' debe ser true o false")
     wait_s = _int_in_range(args, "wait_s", 0, 540, 0)
     job = await broker.submit(JobRequest(task=task, workspace=workspace, tier_hint=tier,
                                          agent_id=agent, verify=verify, review=review,
-                                         max_revisions=max_revisions, timeout_s=timeout_s))
+                                         max_revisions=max_revisions, timeout_s=timeout_s,
+                                         strict_agent=strict_agent))
     if wait_s > 0:
         job = await broker.wait_job(job.id, min(wait_s, MCP_MAX_WAIT_S)) or job
     return job_summary(job)
