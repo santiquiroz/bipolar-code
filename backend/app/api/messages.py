@@ -15,7 +15,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.utils import sanitize_error as _sanitize_error
 from app.models.provider import Provider
-from app.services import compression_service, copilot_catalog, credentials, providers_service, smart_router, token_service, upstream, usage_service, usage_tracker
+from app.services import compression_service, copilot_catalog, credentials, providers_service, sse_message_collector, smart_router, token_service, upstream, usage_service, usage_tracker
 from app.services.copilot_catalog import AUTO_MODEL_ID
 from app.services.pricing_service import estimate_cost
 from app.services.smart_router import PlanStep
@@ -340,6 +340,8 @@ def _error_message(raw: bytes) -> str:
 def _native_request(step: PlanStep, body: dict, request: Request, settings, model: str) -> tuple[str, dict, dict]:
     provider = step.provider
     payload = {**body, "model": step.model or provider.active_model or model}
+    # el proveedor siempre en stream: los dos caminos producen los mismos eventos SSE
+    payload["stream"] = True
     headers = {"Content-Type": "application/json"}
     for name in ("anthropic-version", "anthropic-beta"):
         if name in request.headers:
@@ -542,6 +544,39 @@ def _stream_messages(opened, stack, decision, started, usage_buf, message_id, tr
     return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
 
 
+async def _collect_messages(opened, stack, decision, started, usage_buf, message_id, truncated, headers):
+    all_lines: list[str] = []
+    try:
+        if opened.kind == "native":
+            async for chunk in _relay_native(opened.resp, usage_buf):
+                # _relay_native yields raw "data: ...\n" lines
+                all_lines.append(chunk)
+        else:
+            async for chunk in _relay_oai(opened.resp, message_id, opened.model, usage_buf):
+                # _relay_oai yields full SSE frames: "event: ...\ndata: ...\n\n"
+                for line in chunk.split("\n"):
+                    all_lines.append(line)
+        _record_usage(opened.step.provider.id, opened.model, usage_buf, truncated)
+        smart_router.report_outcome_sync(decision, opened.step.slot.health_key, True, latency_ms=(time.monotonic() - started) * 1000)
+    except Exception as e:
+        smart_router.report_outcome_sync(decision, opened.step.slot.health_key, False, error=str(e))
+        err_sse = _sse_error(_sanitize_error(str(e)))
+        for line in err_sse.split("\n"):
+            all_lines.append(line)
+    finally:
+        await opened.attempt_stack.aclose()
+        await stack.aclose()
+
+    events = sse_message_collector.parse_sse_events(all_lines)
+    message = sse_message_collector.collect_message(events)
+
+    if message is None:
+        error_event = next((ev for ev in reversed(events) if ev.get("type") == "error"), None)
+        return JSONResponse(status_code=502, content=error_event or {"type": "error", "error": {"type": "api_error", "message": "upstream error"}}, headers=headers)
+
+    return JSONResponse(content=message, headers=headers)
+
+
 # ── Copilot: destino fijado y Auto ───────────────────────────────────────────
 
 def _copilot_context_window(provider: Provider | None, model: str | None) -> int:
@@ -631,6 +666,9 @@ async def messages_passthrough(request: Request):
     smart_router.note_success(decision, result.step, body)
     usage_buf: dict = {"input_tokens": 0, "output_tokens": 0}
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    if body.get("stream") is not True:
+        return await _collect_messages(opened, stack, decision, started, usage_buf, message_id, truncated, headers)
 
     return _stream_messages(opened, stack, decision, started, usage_buf, message_id, truncated, headers)
 

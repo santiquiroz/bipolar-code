@@ -69,11 +69,12 @@ def _mock_stream(lines):
     return stream
 
 
-def _post_messages(client, provider):
+def _post_messages(client, provider, stream=True):
     body = {
         "model": "claude-sonnet-4-6",
         "messages": [{"role": "user", "content": "hola"}],
         "max_tokens": 50,
+        "stream": stream,
     }
     lines = [
         'data: {"type": "message_start", "message": {"usage": {"input_tokens": 3}}}',

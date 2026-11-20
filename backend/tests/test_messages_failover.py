@@ -86,7 +86,7 @@ def harness(tmp_path, monkeypatch):
     smart_router.clear_sticky()
 
 
-BODY = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "hola"}], "max_tokens": 50}
+BODY = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "hola"}], "max_tokens": 50, "stream": True}
 P1 = "https://p1.example.com/v1/chat/completions"
 P2 = "https://p2.example.com/v1/chat/completions"
 
