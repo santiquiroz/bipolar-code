@@ -126,10 +126,9 @@ def model_hint_of(model: str) -> str:
 def detect_intent(text: str, n_tools: int = 0, has_tool_results: bool = False) -> str:
     if has_tool_results and n_tools > 0:
         return "agentic_loop"
-    for name, pattern in INTENT_RULES:
-        if pattern.search(text or ""):
-            return name
-    return "chat"
+    matches = [name for name, pattern in INTENT_RULES if pattern.search(text or "")]
+    # gana la más exigente: "Resumen" como nombre de pantalla no tapa un "implementa"
+    return max(matches, key=lambda name: INTENT_SCORE.get(name, 0), default="chat")
 
 
 def extra_intent_hits(text: str) -> int:

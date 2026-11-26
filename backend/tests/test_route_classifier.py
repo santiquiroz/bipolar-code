@@ -98,6 +98,17 @@ def test_detect_intent_priority_and_default():
     assert rc.detect_intent("ok", n_tools=3, has_tool_results=True) == "agentic_loop"
 
 
+def test_detect_intent_prefers_the_heaviest_matching_intent():
+    task = "Implementa los ajustes del Resumen del tablero según contrato-front-a.md"
+    assert rc.detect_intent(task) == "code_edit"
+    assert rc.detect_intent("resume este documento en tres líneas") == "summarize"
+
+
+def test_classify_task_with_a_screen_named_resumen_is_not_trivial():
+    task = "Implementa el contrato C:/repo/contrato-front-a.md sobre la pantalla Resumen y corre las pruebas"
+    assert rc.classify_task(task).tier != "trivial"
+
+
 def test_classify_task_from_text_counts_paths():
     task = "Renombra Foo en src/a/b.py, src/c/d.py y tests/e/f.py"
     cls = rc.classify_task(task)
