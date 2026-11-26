@@ -20,6 +20,7 @@ from app.api import delegate as delegate_router
 from app.api import accounts as accounts_router
 from app.core.logging import setup_logging, get_logger
 from app.core.config import get_settings
+from app.core.listen_guard import install_listen_guard
 
 setup_logging()
 log = get_logger(__name__)
@@ -29,6 +30,10 @@ APP_VERSION = "2.23.0"
 _REFRESH_MARGIN = 120   # refresh when less than 2 min remain
 _RETRY_ON_ERROR = 60    # retry after 1 min on failure
 _DEFAULT_INTERVAL = 1500  # fallback if token has no exp claim
+
+
+def _log_listen_socket_lost(context: dict) -> None:
+    log.error("listen_socket_lost", error=str(context.get("exception")), action="exit_for_restart")
 
 
 def _token_expires_in(token: str) -> float:
@@ -70,6 +75,7 @@ async def _copilot_token_refresh_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    install_listen_guard(asyncio.get_running_loop(), _log_listen_socket_lost)
     from app.services import usage_tracker
     from app.services.llamacpp_service import autostart_if_configured
     from app.services.telegram_bot import run_telegram_bot

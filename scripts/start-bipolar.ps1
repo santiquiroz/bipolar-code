@@ -84,4 +84,26 @@ if ($null -ne $ownerPid) {
 
 Write-Log "Iniciando bipolar en $BindHost`:$Port (sesión $((Get-Process -Id $PID).SessionId))"
 Set-Location $backendDir
-& $venvPython -m uvicorn app.main:app --host $BindHost --port $Port *>> $LogFile
+$fallosRapidos = 0
+while ($true) {
+    $inicio = Get-Date
+    & $venvPython -m uvicorn app.main:app --host $BindHost --port $Port *>> $LogFile
+    $codigo = $LASTEXITCODE
+    if ($codigo -eq 0) {
+        Write-Log "bipolar terminó con código 0; no se reinicia"
+        break
+    }
+    $vivio = [int]((Get-Date) - $inicio).TotalSeconds
+    $fallosRapidos = if ($vivio -lt 60) { $fallosRapidos + 1 } else { 0 }
+    if ($fallosRapidos -ge 5) {
+        Write-Log "bipolar cayó 5 veces seguidas antes de 60 s (último código $codigo); no se reinicia"
+        exit $codigo
+    }
+    Write-Log "bipolar terminó con código $codigo tras $vivio s; se reinicia en 5 s"
+    Start-Sleep -Seconds 5
+    if ($null -ne (Get-PortOwner -Port $Port)) {
+        Write-Log "Otra instancia ya escucha en $Port; no se reinicia"
+        exit 0
+    }
+    Write-Log "Reiniciando bipolar en $BindHost`:$Port (sesión $((Get-Process -Id $PID).SessionId))"
+}
