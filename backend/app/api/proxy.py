@@ -26,7 +26,7 @@ async def start_proxy():
         raise HTTPException(status_code=404, detail="No hay proveedor activo configurado")
     try:
         config_path = providers_service.generate_litellm_config(provider)
-        providers_service._kill_litellm()
+        await providers_service._kill_litellm()
         providers_service._start_litellm(config_path)
         return {"started": True, "provider": provider.id, "config": str(config_path)}
     except Exception as e:

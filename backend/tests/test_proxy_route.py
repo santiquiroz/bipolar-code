@@ -40,3 +40,24 @@ async def test_check_and_fallback(monkeypatch, user_env_calls):
     await proxy_service._check_and_fallback_once()
     assert proxy_service.get_route_mode() == 'direct'
     assert user_env_calls == CLEARED_USER_ENV
+
+
+@pytest.mark.asyncio
+async def test_start_proxy_kills_old_litellm_before_starting(monkeypatch):
+    from types import SimpleNamespace
+    from app.api import proxy as proxy_api
+
+    calls = []
+
+    async def fake_kill():
+        calls.append("kill")
+
+    monkeypatch.setattr(proxy_api.providers_service, "get_active_provider", lambda: SimpleNamespace(id="anthropic"))
+    monkeypatch.setattr(proxy_api.providers_service, "generate_litellm_config", lambda provider: "config-anthropic.yaml")
+    monkeypatch.setattr(proxy_api.providers_service, "_kill_litellm", fake_kill)
+    monkeypatch.setattr(proxy_api.providers_service, "_start_litellm", lambda path: calls.append(f"start:{path}"))
+
+    result = await proxy_api.start_proxy()
+
+    assert calls == ["kill", "start:config-anthropic.yaml"]
+    assert result == {"started": True, "provider": "anthropic", "config": "config-anthropic.yaml"}
